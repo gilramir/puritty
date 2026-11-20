@@ -36,13 +36,16 @@ import Bytes exposing (Bytes)
 import Console
 import Dict
 import Expect
+import Int64
 import Os.Env
 import Os.Error
 import Os.File as File
 import Os.Net as Net
 import Os.Path as Path
+import Os.Process as OsProcess
 import Os.Random
 import Process
+import SftpDrive
 import Source exposing (Source)
 import Ssh.Agent as Agent
 import Ssh.Auth as Auth
@@ -50,6 +53,7 @@ import Ssh.Config as Config
 import Ssh.Connection as Connection
 import Ssh.KnownHosts as KnownHosts
 import Ssh.Session as Session
+import Ssh.Sftp as Sftp
 import Ssh.Transport as Transport exposing (Event(..), Transport)
 import Ssh.Wire as Wire
 import SshCrypto
@@ -73,6 +77,13 @@ main =
 
                     Just "connection" ->
                         suites (Array.dropFirst 1 r.args) r [ connectionSuite ]
+
+                    Just "sftp" ->
+                        suites (Array.dropFirst 1 r.args) r [ sftpSuite ]
+
+                    Just "sftp-local" ->
+                        -- ssh-tests sftp-local SFTP-SERVER DIR [SIZE PIECE MOST]
+                        sftpLocal r
 
                     _ ->
                         when afterWord "connect" r.args is
@@ -263,6 +274,189 @@ connectionSuite =
                     Nothing
             )
         ]
+
+
+{-| `Ssh.Sftp`'s reading of what a server sends, with no server
+(docs/sftp.md FT14): packets split and joined as a channel may deliver
+them, and the streams it refuses. -}
+sftpSuite : U.Suite
+sftpSuite =
+    let
+        pkt kind body =
+            Bytes.flatten [ Wire.writeUint32 (Bytes.length body + 1), Wire.writeByte kind, body ]
+
+        version n extensions =
+            pkt 2 (Bytes.flatten (Array.pushFirst (Wire.writeUint32 n) extensions))
+
+        posix =
+            [ Wire.writeText "posix-rename@openssh.com", Wire.writeText "1" ]
+
+        ready =
+            (Sftp.received (version 3 posix) Sftp.start.client).client
+
+        -- an ATTRS answer to request 7: size 2^32 + 5, mode 0644, the
+        -- EXTENDED bit with one pair
+        attrs =
+            pkt 105
+                (Bytes.flatten
+                    [ Wire.writeUint32 7
+                    , Wire.writeUint32 -2147483643
+                    , Wire.writeUint64 (Bitwise.shiftLeftBy 32 (Int64.fromInt 1) + Int64.fromInt 5)
+                    , Wire.writeUint32 420
+                    , Wire.writeUint32 1
+                    , Wire.writeText "a@b"
+                    , Wire.writeText "c"
+                    ]
+                )
+
+        status id code =
+            pkt 101 (Bytes.flatten [ Wire.writeUint32 id, Wire.writeUint32 code, Wire.writeText "words", Wire.writeText "" ])
+
+        broken events =
+            Array.any
+                (\e ->
+                    when e is
+                        Sftp.Broken _ ->
+                            True
+
+                        _ ->
+                            False
+                )
+                events
+
+        answers events =
+            Array.mapAndFlatten
+                (\e ->
+                    when e is
+                        Sftp.Answer a ->
+                            [ a.id ]
+
+                        _ ->
+                            []
+                )
+                events
+    in
+    suiteOf "Sftp"
+        [ caseTest "the version, and posix-rename used for a rename"
+            (\_ ->
+                let
+                    r =
+                        Sftp.request (Sftp.Rename { from = Bytes.fromString "a", to = Bytes.fromString "b" }) ready
+                in
+                -- type 200, EXTENDED, after the length
+                if Bytes.get 4 r.send == Just (UInt8.fromInt 200) then
+                    Nothing
+
+                else
+                    Just "a rename was not posix-rename@openssh.com"
+            )
+        , caseTest "a packet split in two reads"
+            (\_ ->
+                let
+                    whole =
+                        status 3 0
+
+                    first =
+                        Sftp.received (Bytes.slice 0 6 whole) ready
+
+                    second =
+                        Sftp.received (Bytes.slice 6 (Bytes.length whole) whole) first.client
+                in
+                if Array.isEmpty first.events && answers second.events == [ 3 ] then
+                    Nothing
+
+                else
+                    Just "the split packet was not read once whole"
+            )
+        , caseTest "two packets in one read"
+            (\_ ->
+                if answers (Sftp.received (Bytes.flatten [ status 1 0, status 2 1 ]) ready).events == [ 1, 2 ] then
+                    Nothing
+
+                else
+                    Just "both answers were not read"
+            )
+        , caseTest "64-bit sizes and the EXTENDED bit"
+            (\_ ->
+                when (Sftp.received attrs ready).events is
+                    [ Sftp.Answer { id = 7, response = Sftp.Attributes a } ] ->
+                        if a.size == Just (Bitwise.shiftLeftBy 32 (Int64.fromInt 1) + Int64.fromInt 5) && a.permissions == Just 420 then
+                            Nothing
+
+                        else
+                            Just "the attributes read wrong"
+
+                    _ ->
+                        Just "no attributes"
+            )
+        , caseTest "an answer before the version"
+            (\_ ->
+                if broken (Sftp.received (status 1 0) Sftp.start.client).events then
+                    Nothing
+
+                else
+                    Just "an answer was taken before the version"
+            )
+        , caseTest "version 4 refused"
+            (\_ ->
+                if broken (Sftp.received (version 4 []) Sftp.start.client).events then
+                    Nothing
+
+                else
+                    Just "version 4 was taken"
+            )
+        , caseTest "a length past 16 MiB"
+            (\_ ->
+                if broken (Sftp.received (Wire.writeUint32 20000000) ready).events then
+                    Nothing
+
+                else
+                    Just "a huge length was waited for"
+            )
+        ]
+
+
+{-| `Ssh.Sftp` against an `sftp-server` run as a child, over pipes, no
+ssh between (docs/sftp.md FT14): every request kind against DIR, or with
+SIZE, PIECE and MOST a timed upload and download of SIZE bytes. -}
+sftpLocal : { args : Array String, fs : File.Permission, net : Net.Permission } -> Task Never {}
+sftpLocal r =
+    when Array.dropFirst 1 r.args is
+        [ server, dir ] ->
+            sftpChild server (\link -> SftpDrive.script link dir)
+
+        [ server, dir, size, piece, most ] ->
+            sftpChild server
+                (\link ->
+                    SftpDrive.transfer link
+                        (Bytes.fromString (dir ++ "/transfer"))
+                        (String.toInt size |> Maybe.withDefault 0)
+                        (String.toInt piece |> Maybe.withDefault 32768)
+                        (String.toInt most |> Maybe.withDefault 64)
+                )
+
+        _ ->
+            say "usage: ssh-tests sftp-local SFTP-SERVER DIR [SIZE PIECE MOST]"
+
+
+sftpChild : String -> (SftpDrive.Link -> Task String {}) -> Task Never {}
+sftpChild server run =
+    OsProcess.initialize
+        |> Task.andThen (\cp -> OsProcess.spawn cp server [] (OsProcess.defaultSpawnOptions OsProcess.External) |> Task.mapError Os.Error.toString)
+        |> Task.andThen
+            (\child ->
+                when OsProcess.pipes child is
+                    Just io ->
+                        run
+                            { send = \bytes -> File.write bytes io.input |> Task.mapError Os.Error.toString, receive = File.read io.output |> Task.mapError Os.Error.toString }
+                            |> Task.andThen (\_ -> File.close io.input |> Task.mapError Os.Error.toString)
+                            |> Task.andThen (\_ -> OsProcess.waitForExit child)
+                            |> Task.andThen (\status -> say ("sftp-server exited, status " ++ String.fromInt status))
+
+                    Nothing ->
+                        Task.fail "no pipes"
+            )
+        |> Task.onError (\why -> say ("failed: " ++ why))
 
 
 {-| A case's test: it passes, or fails saying how. -}
@@ -1717,7 +1911,93 @@ sessionMode r target =
         |> Task.andThen
             (\sources ->
                 Process.spawn (Session.run { net = r.net, fs = r.fs } jumps options sources.notices sources.inputs)
-                    |> Task.andThen (\_ -> watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0 })
+                    |> Task.andThen
+                        (\_ ->
+                            when option "--sftp" r.args is
+                                Just dir ->
+                                    sftpOverSession r.args dir sources
+
+                                Nothing ->
+                                    watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0 }
+                        )
+            )
+
+
+{-| `--sftp DIR`: once the session has started, an `sftp` subsystem on a
+channel beside it (docs/sftp.md FT14), and `SftpDrive`'s script over it,
+or with `--transfer SIZE,PIECE,MOST` its timed transfer. Questions are
+not answered here: the host's key must be known and the key need no
+passphrase. -}
+sftpOverSession : Array String -> String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never {}
+sftpOverSession args dir sources =
+    let
+        untilStarted _ =
+            Source.next sources.notices
+                |> Task.andThen
+                    (\n ->
+                        when n is
+                            Just Session.Started ->
+                                Task.succeed True
+
+                            Just (Session.Failed why) ->
+                                say ("failed: " ++ why) |> Task.map (\_ -> False)
+
+                            Just Session.Ended ->
+                                Task.succeed False
+
+                            Nothing ->
+                                Task.succeed False
+
+                            Just _ ->
+                                untilStarted {}
+                    )
+
+        -- the side channel's output, its end as nothing
+        receive _ =
+            Source.next sources.notices
+                |> Task.andThen
+                    (\n ->
+                        when n is
+                            Just (Session.Side { ref = 1, event = Connection.Output bytes }) ->
+                                Task.succeed bytes
+
+                            Just (Session.Side { ref = 1, event = Connection.Ended }) ->
+                                Task.succeed Bytes.empty
+
+                            Just (Session.Side { ref = 1, event = Connection.Refused why }) ->
+                                say ("the sftp channel was refused: " ++ why) |> Task.map (\_ -> Bytes.empty)
+
+                            Just Session.Ended ->
+                                Task.succeed Bytes.empty
+
+                            Nothing ->
+                                Task.succeed Bytes.empty
+
+                            Just _ ->
+                                receive {}
+                    )
+
+        link =
+            { send = \bytes -> Source.emit sources.inputs (Session.SideWrite { ref = 1, bytes = bytes }), receive = receive {} }
+
+        run =
+            when option "--transfer" args |> Maybe.map (String.split ",") |> Maybe.map (Array.map (\x -> String.toInt x |> Maybe.withDefault 0)) is
+                Just [ size, piece, most ] ->
+                    SftpDrive.transfer link (Bytes.fromString (dir ++ "/transfer")) size piece most
+
+                _ ->
+                    SftpDrive.script link dir
+    in
+    untilStarted {}
+        |> Task.andThen
+            (\started ->
+                if started then
+                    Source.emit sources.inputs (Session.OpenSubsystem { ref = 1, name = "sftp" })
+                        |> Task.andThen (\_ -> run |> Task.onError (\why -> say ("failed: " ++ why)))
+                        |> Task.andThen (\_ -> Source.emit sources.inputs Session.Hangup)
+
+                else
+                    Task.succeed {}
             )
 
 

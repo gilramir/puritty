@@ -865,3 +865,66 @@ sampled every 0.2 s: it is `geng`, the fork's Haskell backend, alone, at
 does, against 1.7 GB with all cached. Most of it is a pass over the whole
 program, which splitting `Main` cannot lower. Recorded in geng-lang's
 register, not fixed (D761); puritty builds under 24 GB.
+
+## FT14 · Step 3 built: an SFTP client (2026-11-19)
+
+**`Ssh.Sftp`**, pure as the rest of `packages/ssh`: SFTP version 3 as
+OpenSSH's `sftp-server` speaks it. `start` gives the `INIT`; `request`
+turns a request into bytes and a number; `received` turns the channel's
+bytes into events (`Ready` with the version and extensions, `Answer` by
+number, `Broken` for a stream it will not read on), joining packets split
+across reads and splitting those joined in one. Any number of requests may
+wait at once; the caller chooses how many.
+
+- Requests: open (for reading; for writing, made and emptied; for writing
+  only if new), close, read, write, stat, lstat, fstat, setstat, fsetstat,
+  opendir, readdir, remove, mkdir, rmdir, realpath and rename, which is
+  `posix-rename@openssh.com` when the server offers it (it replaces a
+  file already there, as `rename(2)` does) and version 3's own else.
+- **Paths and names are `Bytes`**: a host's names need not be UTF-8
+  (EUC-KR, the "bytes first" rule); the caller makes text of them for a
+  person.
+- **Sizes and offsets are `Int64`** (`Wire.uint64`, `Wire.writeUint64`,
+  new), since an `Int` is 32 bits; a mode, an owner's id and the flags
+  are read with `Wire.uint32Bits`, which keeps 2^31 and more as their
+  bits.
+- Refused: an answer before the version, a version other than 3, a
+  packet longer than 16 MiB or shorter than its type.
+
+**Tested.**
+
+- `ssh-tests sftp`, seven unit cases: posix-rename chosen, a packet split
+  in two reads, two in one, a 2^32 + 5 size and the EXTENDED bit, and the
+  three refusals. In the unit gate (`ssh-sftp`), on Linux and Windows.
+- `packages/ssh/tests/sftp.py`, in the ssh gate: `SftpDrive.script`, every
+  request kind once, against `sftp-server` two ways, over pipes with no ssh
+  (`ssh-tests sftp-local`) and over a channel beside a session to the
+  local sshd (`ssh-tests session … --sftp DIR`); the same lines both ways.
+  A 1,000,000-byte file is written 16 requests in flight and read back
+  the same; a byte written at offset 3,000,000,000 makes a file of
+  3,000,000,001 bytes; an EUC-KR name (`c7 d1`) is made, listed as its
+  bytes and removed; mkdir of a directory that is there, a second
+  exclusive open and a second remove give the server's failure and "no
+  such file", as they should.
+
+**Measured** (`SftpDrive.transfer`, 256 MiB up and then down, 32 KiB a
+request, 64 in flight, OpenSSH `sftp`'s defaults):
+
+| | upload | download |
+|---|---|---|
+| over pipes to `sftp-server` on nene, no ssh (two runs) | 1,917 and 2,081 MB/s | 2,314 and 2,684 MB/s |
+| over a side channel to gmktec7 (two runs) | 27.8 and 31.0 MB/s | **92.2 and 91.6 MB/s** |
+| OpenSSH `sftp -R 64` to gmktec7 (FT11) | 41.5 MB/s | 92.2 MB/s |
+
+The client is not what limits anything: through pipes it moves 2 GB/s.
+Downloads to gmktec7 equal OpenSSH's. Uploads are held where FT12 chose,
+a 32 KiB pump each time the socket has under 64 KiB unsent, which keeps a
+key's echo at 5 ms during an upload and costs about 30% of the upload's
+rate on that link. Whether to pump more when no key has been typed for a
+while is a question for the transfer engine (step 4), measured there.
+A request of 256 KiB fails: OpenSSH's `sftp-server` takes no packet of
+256 KiB or more, its header counted, so the engine keeps to 32 or 64 KiB.
+
+The SFTP script and transfer have an over-the-session mode (`--sftp`,
+`--transfer SIZE,PIECE,MOST` on `ssh-tests session`), which is how the
+gmktec7 numbers were taken; the app does not use `Ssh.Sftp` yet (step 4).

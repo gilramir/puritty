@@ -1,0 +1,560 @@
+module Ssh.Sftp exposing
+    ( Attrs
+    , Client
+    , Entry
+    , Event(..)
+    , OpenFor(..)
+    , Request(..)
+    , Response(..)
+    , codeName
+    , noAttrs
+    , received
+    , request
+    , start
+    , statusEof
+    , statusOk
+    )
+
+{-| SFTP, version 3 as OpenSSH's `sftp-server` speaks it
+(draft-ietf-secsh-filexfer-02; puritty `docs/sftp.md` FT14), the client's
+side, over a channel's bytes: a request becomes bytes to send with a number
+of its own, and the bytes that come back become answers by that number.
+Many requests may wait at once, which is what makes a transfer fast on a
+slow link (FT1, FT11); the caller chooses how many.
+
+Pure, as the rest of the package is. Paths and names are `Bytes`, as the
+protocol has them: a host's file names are bytes in its own character set,
+which need not be UTF-8 (EUC-KR, say), and the caller turns them into text
+for a person, not this module.
+
+A rename is OpenSSH's `posix-rename@openssh.com` when the server offers it,
+which replaces a file already there as `rename(2)` does; else version 3's
+own, which fails when the target exists.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Int64
+import Ssh.Reason as Reason
+import Ssh.Wire as Wire
+
+
+{-| A file's attributes, each as the server gave it or not: its size, its
+owner's and group's ids, its mode (type and permission bits, as `st_mode`),
+and when it was last read and changed, in seconds since 1970. -}
+type alias Attrs =
+    { size : Maybe Int64
+    , uid : Maybe Int
+    , gid : Maybe Int
+    , permissions : Maybe Int
+    , atime : Maybe Int64
+    , mtime : Maybe Int64
+    }
+
+
+noAttrs : Attrs
+noAttrs =
+    { size = Nothing, uid = Nothing, gid = Nothing, permissions = Nothing, atime = Nothing, mtime = Nothing }
+
+
+{-| A directory's entry: its name, the line `ls -l` would show for it (the
+server's own, for a person), and its attributes. -}
+type alias Entry =
+    { name : Bytes, longname : Bytes, attrs : Attrs }
+
+
+{-| What a file is opened for: reading; writing, made if it is not there
+and emptied if it is; or writing only if it is not there yet. -}
+type OpenFor
+    = ForReading
+    | ForWriting
+    | ForWritingNew
+
+
+{-| What the client asks. A handle is the server's, from `Handle`. -}
+type Request
+    = Open { path : Bytes, for : OpenFor, attrs : Attrs }
+    | Close Bytes
+    | Read { handle : Bytes, offset : Int64, length : Int }
+    | Write { handle : Bytes, offset : Int64, data : Bytes }
+    | Stat Bytes
+    | LinkStat Bytes
+    | HandleStat Bytes
+    | SetStat { path : Bytes, attrs : Attrs }
+    | HandleSetStat { handle : Bytes, attrs : Attrs }
+    | OpenDir Bytes
+    | ReadDir Bytes
+    | Remove Bytes
+    | MakeDir { path : Bytes, attrs : Attrs }
+    | RemoveDir Bytes
+    | RealPath Bytes
+    | Rename { from : Bytes, to : Bytes }
+
+
+{-| What the server answers a request: a status, with its code and the
+server's words; a handle; data read; a directory's entries, or a path made
+real; attributes. -}
+type Response
+    = Status { code : Int, message : String }
+    | Handle Bytes
+    | Data Bytes
+    | Names (Array Entry)
+    | Attributes Attrs
+
+
+{-| What came:
+
+  - `Ready`: the server's version and its extensions; requests may go.
+  - `Answer`: the response to the request numbered `id`.
+  - `Broken`: bytes that are not SFTP, or a version this client does not
+    speak; nothing more is read, and the channel is to be closed.
+
+-}
+type Event
+    = Ready { version : Int, extensions : Array { name : String, data : Bytes } }
+    | Answer { id : Int, response : Response }
+    | Broken String
+
+
+{-| The bytes of a packet not all here yet; the next request's number;
+whether the server renames as POSIX does; whether it has said its
+version, and whether the stream broke. -}
+type Client
+    = Client
+        { buffer : Bytes
+        , nextId : Int
+        , posixRename : Bool
+        , ready : Bool
+        , broken : Bool
+        }
+
+
+statusOk : Int
+statusOk =
+    0
+
+
+statusEof : Int
+statusEof =
+    1
+
+
+{-| A status code's name, for a person: what `sftp` says for it. -}
+codeName : Int -> String
+codeName code =
+    when code is
+        0 ->
+            "done"
+
+        1 ->
+            "end of file"
+
+        2 ->
+            "no such file"
+
+        3 ->
+            "permission denied"
+
+        4 ->
+            "failure"
+
+        5 ->
+            "bad message"
+
+        6 ->
+            "no connection"
+
+        7 ->
+            "connection lost"
+
+        8 ->
+            "operation not supported"
+
+        _ ->
+            "status " ++ String.fromInt code
+
+
+{-| The client, and its `INIT` to send first. -}
+start : { client : Client, send : Bytes }
+start =
+    { client = Client { buffer = Bytes.empty, nextId = 1, posixRename = False, ready = False, broken = False }
+    , send = packet 1 (Wire.writeUint32 3)
+    }
+
+
+packet : Int -> Bytes -> Bytes
+packet kind body =
+    Bytes.flatten [ Wire.writeUint32 (Bytes.length body + 1), Wire.writeByte kind, body ]
+
+
+{-| A request's bytes, and the number its answer will carry. -}
+request : Request -> Client -> { client : Client, id : Int, send : Bytes }
+request r (Client c) =
+    let
+        id =
+            c.nextId
+
+        withId kind body =
+            packet kind (Bytes.flatten [ Wire.writeUint32 id, body ])
+
+        str =
+            Wire.writeString
+
+        send =
+            when r is
+                Open o ->
+                    withId 3 (Bytes.flatten [ str o.path, Wire.writeUint32 (openFlags o.for), writeAttrs o.attrs ])
+
+                Close handle ->
+                    withId 4 (str handle)
+
+                Read rd ->
+                    withId 5 (Bytes.flatten [ str rd.handle, Wire.writeUint64 rd.offset, Wire.writeUint32 rd.length ])
+
+                Write w ->
+                    withId 6 (Bytes.flatten [ str w.handle, Wire.writeUint64 w.offset, str w.data ])
+
+                LinkStat path ->
+                    withId 7 (str path)
+
+                HandleStat handle ->
+                    withId 8 (str handle)
+
+                SetStat s ->
+                    withId 9 (Bytes.flatten [ str s.path, writeAttrs s.attrs ])
+
+                HandleSetStat s ->
+                    withId 10 (Bytes.flatten [ str s.handle, writeAttrs s.attrs ])
+
+                OpenDir path ->
+                    withId 11 (str path)
+
+                ReadDir handle ->
+                    withId 12 (str handle)
+
+                Remove path ->
+                    withId 13 (str path)
+
+                MakeDir m ->
+                    withId 14 (Bytes.flatten [ str m.path, writeAttrs m.attrs ])
+
+                RemoveDir path ->
+                    withId 15 (str path)
+
+                RealPath path ->
+                    withId 16 (str path)
+
+                Stat path ->
+                    withId 17 (str path)
+
+                Rename names ->
+                    if c.posixRename then
+                        withId 200 (Bytes.flatten [ Wire.writeText "posix-rename@openssh.com", str names.from, str names.to ])
+
+                    else
+                        withId 18 (Bytes.flatten [ str names.from, str names.to ])
+    in
+    { client = Client { c | nextId = id + 1 }, id = id, send = send }
+
+
+openFlags : OpenFor -> Int
+openFlags for =
+    when for is
+        ForReading ->
+            1
+
+        ForWriting ->
+            -- WRITE | CREAT | TRUNC
+            Bitwise.or 2 (Bitwise.or 8 16)
+
+        ForWritingNew ->
+            -- WRITE | CREAT | EXCL
+            Bitwise.or 2 (Bitwise.or 8 32)
+
+
+{-| Attributes as the protocol writes them: the flags of those given, then
+each. A time given alone is written with the other the same. -}
+writeAttrs : Attrs -> Bytes
+writeAttrs a =
+    let
+        times =
+            when { atime = a.atime, mtime = a.mtime } is
+                { atime = Just at, mtime = Just mt } ->
+                    Just { at = at, mt = mt }
+
+                { atime = Just at } ->
+                    Just { at = at, mt = at }
+
+                { mtime = Just mt } ->
+                    Just { at = mt, mt = mt }
+
+                _ ->
+                    Nothing
+
+        ids =
+            Maybe.map2 (\u g -> { u = u, g = g }) a.uid a.gid
+
+        flags =
+            Bitwise.or (flag a.size 1) (Bitwise.or (flag ids 2) (Bitwise.or (flag a.permissions 4) (flag times 8)))
+
+        seconds t =
+            Wire.writeUint32 (Int64.toIntWrap t)
+    in
+    Bytes.flatten
+        [ Wire.writeUint32 flags
+        , Maybe.map Wire.writeUint64 a.size |> Maybe.withDefault (meant Reason.NotSet Bytes.empty)
+        , Maybe.map (\i -> Bytes.flatten [ Wire.writeUint32 i.u, Wire.writeUint32 i.g ]) ids |> Maybe.withDefault (meant Reason.NotSet Bytes.empty)
+        , Maybe.map Wire.writeUint32 a.permissions |> Maybe.withDefault (meant Reason.NotSet Bytes.empty)
+        , Maybe.map (\t -> Bytes.flatten [ seconds t.at, seconds t.mt ]) times |> Maybe.withDefault (meant Reason.NotSet Bytes.empty)
+        ]
+
+
+flag : Maybe a -> Int -> Int
+flag m bit =
+    when m is
+        Just _ ->
+            bit
+
+        Nothing ->
+            -- an attribute not given: its bit not set
+            meant Reason.NotSet 0
+
+
+{-| Bytes from the channel: every whole packet in them read, in order,
+the rest kept for the next. -}
+received : Bytes -> Client -> { client : Client, events : Array Event }
+received bytes (Client c) =
+    if c.broken then
+        { client = Client c, events = [] }
+
+    else
+        packets (Bytes.flatten [ c.buffer, bytes ]) 0 c []
+
+
+packets : Bytes -> Int -> { buffer : Bytes, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool } -> Array Event -> { client : Client, events : Array Event }
+packets all at c events =
+    let
+        left =
+            Bytes.length all - at
+    in
+    if left < 4 then
+        { client = Client { c | buffer = Bytes.slice at (Bytes.length all) all }, events = events }
+
+    else
+        when Wire.uint32 (Wire.reader (Bytes.slice at (at + 4) all)) is
+            Ok size ->
+                if size.value < 1 || size.value > 16777216 then
+                    { client = Client { c | broken = True, buffer = Bytes.empty }, events = Array.pushLast (Broken ("a packet of " ++ String.fromInt size.value ++ " bytes")) events }
+
+                else if left < 4 + size.value then
+                    { client = Client { c | buffer = Bytes.slice at (Bytes.length all) all }, events = events }
+
+                else
+                    let
+                        read =
+                            onPacket (Bytes.slice (at + 4) (at + 4 + size.value) all) c
+                    in
+                    if read.state.broken then
+                        { client = Client { read.state | buffer = Bytes.empty }, events = Array.pushLast read.event events }
+
+                    else
+                        packets all (at + 4 + size.value) read.state (Array.pushLast read.event events)
+
+            Err why ->
+                meant Reason.FromOutside { client = Client { c | broken = True, buffer = Bytes.empty }, events = Array.pushLast (Broken ("a packet's length that does not read: " ++ why)) events }
+
+
+onPacket : Bytes -> { buffer : Bytes, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool } -> { state : { buffer : Bytes, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool }, event : Event }
+onPacket p c =
+    let
+        r =
+            Wire.reader p
+
+        broken why =
+            { state = { c | broken = True }, event = Broken why }
+    in
+    when Wire.byte r is
+        Ok kind ->
+            if kind.value == 2 then
+                when Wire.uint32Bits kind.next is
+                    Ok v ->
+                        if v.value /= 3 then
+                            broken ("the server speaks SFTP version " ++ String.fromInt v.value ++ ", not 3")
+
+                        else
+                            let
+                                extensions =
+                                    readExtensions v.next []
+                            in
+                            { state = { c | ready = True, posixRename = Array.any (\e -> e.name == "posix-rename@openssh.com") extensions }
+                            , event = Ready { version = v.value, extensions = extensions }
+                            }
+
+                    Err why ->
+                        meant Reason.FromOutside broken ("a version that does not read: " ++ why)
+
+            else if not c.ready then
+                broken ("a packet of type " ++ String.fromInt kind.value ++ " before the server's version")
+
+            else
+                when Wire.uint32Bits kind.next is
+                    Ok id ->
+                        when response kind.value id.next is
+                            Ok answer ->
+                                { state = c, event = Answer { id = id.value, response = answer } }
+
+                            Err why ->
+                                meant Reason.FromOutside broken ("an answer of type " ++ String.fromInt kind.value ++ " that does not read: " ++ why)
+
+                    Err why ->
+                        meant Reason.FromOutside broken ("an answer with no number: " ++ why)
+
+        Err why ->
+            meant Reason.FromOutside broken ("an empty packet: " ++ why)
+
+
+{-| A version's extensions, name and data each, as many as read whole. -}
+readExtensions : Wire.Reader -> Array { name : String, data : Bytes } -> Array { name : String, data : Bytes }
+readExtensions r acc =
+    if Wire.remaining r == 0 then
+        acc
+
+    else
+        when Wire.name r |> Result.andThen (\n -> Wire.string n.next |> Result.map (\d -> { name = n.value, data = d.value, next = d.next })) is
+            Ok e ->
+                readExtensions e.next (Array.pushLast { name = e.name, data = e.data } acc)
+
+            Err _ ->
+                meant Reason.FromOutside acc
+
+
+response : Int -> Wire.Reader -> Result String Response
+response kind r =
+    when kind is
+        101 ->
+            Wire.uint32Bits r
+                |> Result.map
+                    (\code ->
+                        { code = code.value
+                        , message =
+                            Wire.string code.next
+                                |> Result.map (\m -> Bytes.toStringLossy m.value)
+                                |> Result.withDefault (meant Reason.FromOutside "")
+                        }
+                    )
+                |> Result.map Status
+
+        102 ->
+            Wire.string r |> Result.map (\h -> Handle h.value)
+
+        103 ->
+            Wire.string r |> Result.map (\d -> Data d.value)
+
+        104 ->
+            Wire.uint32 r |> Result.andThen (\n -> entries n.value n.next [])
+
+        105 ->
+            readAttrs r |> Result.map (\a -> Attributes a.value)
+
+        201 ->
+            -- an extension's own answer: none asked for here answers so
+            Err "an extended reply"
+
+        _ ->
+            Err ("not an answer's type")
+
+
+entries : Int -> Wire.Reader -> Array Entry -> Result String Response
+entries n r acc =
+    if n <= 0 then
+        Ok (Names acc)
+
+    else
+        Wire.string r
+            |> Result.andThen
+                (\name ->
+                    Wire.string name.next
+                        |> Result.andThen
+                            (\long ->
+                                readAttrs long.next
+                                    |> Result.andThen (\a -> entries (n - 1) a.next (Array.pushLast { name = name.value, longname = long.value, attrs = a.value } acc))
+                            )
+                )
+
+
+readAttrs : Wire.Reader -> Result String { value : Attrs, next : Wire.Reader }
+readAttrs r =
+    Wire.uint32Bits r
+        |> Result.andThen
+            (\flags ->
+                let
+                    has bit =
+                        Bitwise.and flags.value bit /= 0
+
+                    optional bit reading rest =
+                        if has bit then
+                            reading rest |> Result.map (\v -> { value = Just v.value, next = v.next })
+
+                        else
+                            Ok { value = Nothing, next = rest }
+
+                    seconds rest =
+                        Wire.uint32Bits rest |> Result.map (\v -> { value = unsigned v.value, next = v.next })
+                in
+                optional 1 Wire.uint64 flags.next
+                    |> Result.andThen
+                        (\size ->
+                            optional 2 (\rest -> Wire.uint32Bits rest |> Result.andThen (\u -> Wire.uint32Bits u.next |> Result.map (\g -> { value = { u = u.value, g = g.value }, next = g.next }))) size.next
+                                |> Result.andThen
+                                    (\ids ->
+                                        optional 4 Wire.uint32Bits ids.next
+                                            |> Result.andThen
+                                                (\mode ->
+                                                    optional 8 (\rest -> seconds rest |> Result.andThen (\at -> seconds at.next |> Result.map (\mt -> { value = { at = at.value, mt = mt.value }, next = mt.next }))) mode.next
+                                                        |> Result.andThen
+                                                            (\times ->
+                                                                (if flags.value < 0 then
+                                                                    -- bit 31, EXTENDED: the sign bit of the flags as read
+                                                                    Wire.uint32 times.next |> Result.andThen (\count -> skipExtended count.value count.next)
+
+                                                                 else
+                                                                    Ok times.next
+                                                                )
+                                                                    |> Result.map
+                                                                        (\next ->
+                                                                            { value =
+                                                                                { size = size.value
+                                                                                , uid = Maybe.map .u ids.value
+                                                                                , gid = Maybe.map .g ids.value
+                                                                                , permissions = mode.value
+                                                                                , atime = Maybe.map .at times.value
+                                                                                , mtime = Maybe.map .mt times.value
+                                                                                }
+                                                                            , next = next
+                                                                            }
+                                                                        )
+                                                            )
+                                                )
+                                    )
+                        )
+            )
+
+
+skipExtended : Int -> Wire.Reader -> Result String Wire.Reader
+skipExtended n r =
+    if n <= 0 then
+        Ok r
+
+    else
+        Wire.string r |> Result.andThen (\t -> Wire.string t.next) |> Result.andThen (\d -> skipExtended (n - 1) d.next)
+
+
+{-| An `Int`'s 32 bits as an unsigned number: a time after 2038 stays
+positive. -}
+unsigned : Int -> Int64
+unsigned n =
+    if n < 0 then
+        Int64.fromInt n + Bitwise.shiftLeftBy 32 (Int64.fromInt 1)
+
+    else
+        Int64.fromInt n

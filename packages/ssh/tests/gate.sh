@@ -10,6 +10,7 @@ cd "$(dirname "$0")"
 ./build.sh >/dev/null
 ./sshd.py
 ./scripted.py
+./sftp.py
 for f in replays/*.txt; do ./ssh-tests fuzz "$f" 5000; done
 ./ssh-tests known-hosts known-hosts.txt
 ./ssh-tests config config-cases.txt

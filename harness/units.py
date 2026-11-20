@@ -201,6 +201,21 @@ SUITES = [
         ],
     ),
     Suite(
+        # sftp.md FT14: Ssh.Sftp reading packets split and joined, 64-bit
+        # sizes, and the streams it refuses
+        "ssh-sftp",
+        7,
+        [
+            Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "sftp"], cwd="packages/ssh/tests"),
+            Run(
+                "windows",
+                ["packages/ssh/tests/build.sh", "--windows"],
+                ["sftp"],
+                exe="packages/ssh/tests/ssh-tests.exe",
+            ),
+        ],
+    ),
+    Suite(
         # since SC27: a channel message that does not read ends the session;
         # 7 since sftp.md FT12: a side channel's bad data closes only it, and
         # its data waits for a pump
