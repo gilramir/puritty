@@ -1,5 +1,6 @@
 module TmuxMode exposing
     ( Asked
+    , DropFolder(..)
     , State
     , activeMode
     , afterSent
@@ -7,6 +8,9 @@ module TmuxMode exposing
     , bells
     , customize
     , diagnose
+    , dragLeft
+    , dragOver
+    , dropTarget
     , dueAt
     , encodeKey
     , idle
@@ -55,6 +59,7 @@ import Bitwise
 import Bytes exposing (Bytes)
 import Clock
 import Dict exposing (Dict)
+import Drop
 import Keys
 import Reason
 import Search
@@ -233,7 +238,19 @@ type alias State =
     , timeFormats : Bool
     -- customize-mode, drawn by puritty (TM62)
     , customizing : Maybe Customizing
+    -- the pane a drag of files is over, marked with the folder they would
+    -- go to on the host (docs/sftp.md FT6, FT23)
+    , dropMark : Maybe { pane : Int, folder : DropFolder }
     }
+
+
+{-| The folder files dropped on a pane would go to: still being asked of
+tmux; the folder, its bytes as the host has them; or none tmux can say,
+and why, which is the folder chooser's to ask. -}
+type DropFolder
+    = Asking (Array Bytes)
+    | Folder Bytes
+    | NoFolder String
 
 
 {-| `choose-tree` shown by puritty (TM32): the sessions and windows tmux
@@ -726,6 +743,7 @@ type Expect
     | ForMenuCommand { serial : Int, item : Int }
     | ForTheme
     | ForClientName
+    | ForDropFolder { pane : Int, part : Int }
     | ForNothing
     -- the end of what a command that runs commands ran (`source-file`,
     -- `if-shell`): each of them answers with a block of puritty's own from
@@ -826,6 +844,7 @@ idle _ =
     , capsKnown = False
     , timeFormats = True
     , customizing = Nothing
+    , dropMark = Nothing
     }
 
 
@@ -1388,6 +1407,9 @@ expectName x =
 
         ForClientName ->
             "this client's name"
+
+        ForDropFolder _ ->
+            "a pane's folder, for a drop"
 
         ForNothing ->
             "nothing (a reply not read)"
@@ -2619,6 +2641,45 @@ outsideOf events =
 replied : Expect -> Bool -> Array Bytes -> (taken acc : Acc) -> Acc
 replied expect ok lines acc =
     when expect is
+        ForDropFolder asked ->
+            let
+                st =
+                    acc.state
+
+                line =
+                    Array.first lines |> Maybe.withDefault (meant Reason.FromOutside Bytes.empty)
+
+                -- each part in turn, the folder read once the last has come
+                next folder =
+                    when folder is
+                        Asking parts ->
+                            if not ok then
+                                NoFolder ("tmux said: " ++ Bytes.toStringLossy line)
+
+                            else if asked.part == Array.length dropParts - 1 then
+                                dropFolderOf (Array.pushLast line parts)
+
+                            else
+                                Asking (Array.pushLast line parts)
+
+                        _ ->
+                            folder
+
+                mark =
+                    when st.dropMark is
+                        Just d ->
+                            -- the drag may have gone to another pane meanwhile
+                            if d.pane == asked.pane then
+                                Just { d | folder = next d.folder }
+
+                            else
+                                Just d
+
+                        Nothing ->
+                            meant Reason.NotOpen Nothing
+            in
+            { acc | state = { st | dropMark = mark } }
+
         ForWindow ->
             { acc | state = Array.foldl replyLine acc.state lines }
 
@@ -4968,6 +5029,7 @@ paint s0 =
                         |> drawPieces treeDrawn
                         |> drawPieces listingDrawn
                         |> drawPieces customizeDrawn
+                        |> dropMarked (tiled ++ floating) s.dropMark
                         |> (\c ->
                                 if tmuxLook then
                                     drawPieces statusBar c
@@ -16688,6 +16750,173 @@ the marked pane's border (TM30). -}
 markedColor : String
 markedColor =
     "\u{001B}[0;38;5;170m"
+
+
+{-| A drag of files over the window (docs/sftp.md FT23): the pane under
+the cell is marked, and when the drag comes to a pane it was not over,
+tmux is asked where its folder is. Off every pane, no mark. -}
+dragOver : { col : Int, row : Int } -> (taken s : State) -> { state : State, commands : Array String, changed : Bool }
+dragOver at s =
+    let
+        under =
+            when s.layout is
+                Just cell ->
+                    placedPanes s cell (Array.reverse (Layout.floating cell) ++ Layout.tiled cell)
+                        |> Array.findFirst (\q -> at.col >= q.x && at.col < q.x + q.w && at.row >= q.y && at.row < q.y + q.h)
+                        |> Maybe.map (\f -> f.value.id)
+
+                Nothing ->
+                    meant Reason.NotYet Nothing
+
+        was =
+            Maybe.map .pane s.dropMark
+    in
+    when under is
+        Just id ->
+            if was == Just id then
+                { state = s, commands = [], changed = False }
+
+            else
+                let
+                    r =
+                        askLine
+                            (Array.indexedMap (\i format -> { command = Command.displayAt ("%" ++ String.fromInt id) format, expect = ForDropFolder { pane = id, part = i } }) dropParts)
+                            { state = { s | dropMark = Just { pane = id, folder = Asking [] } }, outside = [], commands = [], trace = [], run = Nothing }
+                in
+                { state = r.state, commands = r.commands, changed = True }
+
+        Nothing ->
+            -- not over a pane: a divider, the tab bar
+            meant Reason.OutOfRange { state = { s | dropMark = Nothing }, commands = [], changed = was /= Nothing }
+
+
+{-| The pane a drag is over marked (docs/sftp.md FT6, FT23): its first row
+a label saying where the files would go, the rest of it drawn inverse. -}
+dropMarked : Array Layout.Pane -> Maybe { pane : Int, folder : DropFolder } -> (taken t : Vt.Term) -> Vt.Term
+dropMarked placed mark t =
+    when mark |> Maybe.andThen (\d -> Array.findFirst (\p -> p.id == d.pane) placed |> Maybe.map (\f -> { folder = d.folder, at = f.value })) is
+        Just m ->
+            t
+                |> Vt.invert (Array.map (\r -> { row = r, from = m.at.x, to = m.at.x + m.at.w - 1 }) (Array.range (m.at.y + 1) (m.at.y + m.at.h - 1)))
+                |> drawText "\u{001B}[1;30;43m" [ { row = m.at.y, col = m.at.x, text = takeCells m.at.w (dropLabel m.at.w m.folder ++ String.repeat m.at.w " ") } ]
+
+        Nothing ->
+            -- no drag over a pane
+            meant Reason.NotOpen t
+
+
+{-| The mark's label, in `width` cells: a folder too long for it keeps its
+end, the folder's own name, and loses its start. -}
+dropLabel : Int -> DropFolder -> String
+dropLabel width folder =
+    when folder is
+        Asking _ ->
+            " Drop here: asking tmux for the folder "
+
+        Folder path ->
+            let
+                whole =
+                    Bytes.toStringLossy path
+
+                fits text =
+                    textCells (" Drop into " ++ text ++ " ") <= width
+            in
+            if fits whole then
+                " Drop into " ++ whole ++ " "
+
+            else
+                " Drop into …" ++ endFitting fits (String.toArray whole) ++ " "
+
+        NoFolder why ->
+            " Drop here: " ++ why ++ "; a folder will be asked "
+
+
+{-| The longest end of `chars` that `fits` after an ellipsis. -}
+endFitting : (String -> Bool) -> Array Char -> String
+endFitting fits chars =
+    if Array.isEmpty chars || fits ("…" ++ String.fromArray chars) then
+        String.fromArray chars
+
+    else
+        endFitting fits (Array.dropFirst 1 chars)
+
+
+{-| The drag left the window, or was dropped: no mark. -}
+dragLeft : (taken s : State) -> State
+dragLeft s =
+    { s | dropMark = Nothing }
+
+
+{-| Where a drop would go: the pane marked and its folder. -}
+dropTarget : State -> Maybe { pane : Int, folder : DropFolder }
+dropTarget s =
+    s.dropMark
+
+
+{-| What tmux is asked of a pane for a drop, a command each, since tmux's
+answer makes a control character such as a tab `_`: the folder tmux reads
+for its foreground process, that process's name, the shell's own word by
+OSC 7 (`pane_path`, a `file://` URI with its host), and the host's name,
+long and short. -}
+dropParts : Array String
+dropParts =
+    [ "#{pane_current_path}", "#{pane_current_command}", "#{pane_path}", "#{host}", "#{host_short}" ]
+
+
+{-| The folder from tmux's answer (docs/sftp.md FT11's rule): the shell's
+own by OSC 7 when its host is tmux's; else the foreground process's, unless
+that is a program that goes to another host or user, whose folder tmux
+can't see (it reads `/proc`, and a root process's is closed to it); else
+none. -}
+dropFolderOf : Array Bytes -> DropFolder
+dropFolderOf parts =
+    let
+        part n =
+            Array.get n parts |> Maybe.withDefault (meant Reason.FromOutside Bytes.empty)
+
+        command =
+            Bytes.toStringLossy (part 1)
+
+        host =
+            part 3
+
+        short =
+            part 4
+
+        shellSaid =
+            Drop.fileUri (part 2)
+                |> Maybe.andThen
+                    (\u ->
+                        if (Bytes.isEmpty u.host || u.host == host || u.host == short || u.host == Bytes.fromString "localhost") && not (Bytes.isEmpty u.path) then
+                            Just u.path
+
+                        else
+                            Nothing
+                    )
+    in
+    when shellSaid is
+        Just path ->
+            Folder path
+
+        Nothing ->
+            -- the shell sent no OSC 7, or one of another host
+            meant Reason.FromOutside
+                (if Array.member command blindCommands then
+                    NoFolder ("the pane runs " ++ command ++ ", whose folder tmux can't see")
+
+                 else if Bytes.isEmpty (part 0) then
+                    NoFolder "tmux doesn't know the pane's folder"
+
+                 else
+                    Folder (part 0)
+                )
+
+
+{-| Programs that take a pane to another host or user: what tmux reads
+of their folder is where they were started (docs/sftp.md FT11). -}
+blindCommands : Array String
+blindCommands =
+    [ "ssh", "mosh", "mosh-client", "telnet", "su", "sudo", "doas", "pkexec", "machinectl", "docker", "podman", "kubectl", "lxc", "incus", "nsenter", "chroot", "et", "sshpass", "autossh" ]
 
 
 {-| A new tab under `-CC`: tmux's new window, as Ctrl+Shift+T makes one,

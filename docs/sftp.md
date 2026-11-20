@@ -1570,3 +1570,64 @@ The drag's position is not yet used: item 3 marks the pane under it.
   a zip pasted nothing, and the note said why. The diagnostic log has
   each (`drop   1 paths pasted`, `drop   3 paths pasted`, the note).
 
+## FT23 · Step 5, item 3 begun: the pane a drop would go to, under tmux -CC (2026-11-20)
+
+Gilbert: the tmux part of item 3 first. In an ssh tab under `tmux -CC`,
+a drag of files over the window marks the pane under the pointer with the
+folder they would go to (FT6).
+
+**TmuxMode** (`app/src/TmuxMode.geng`). `dragOver` finds the pane under
+the cell (floating ones first, as the pointer's lookups do) and, when the
+drag comes to a pane it was not over, asks tmux on one line, a
+`display-message -p -t %PANE` each: `#{pane_current_path}`,
+`#{pane_current_command}`, `#{pane_path}`, `#{host}` and `#{host_short}`.
+A command each, since tmux's answer makes a control character `_`: the
+first try, one format with tabs between, gave `left dir_sh__nene_nene`.
+The answer is read by FT11's rule (`dropFolderOf`):
+
+1. the shell's own word by OSC 7, `pane_path`'s `file://` URI, when its
+   host is empty, `localhost`, or tmux's host, long or short;
+2. else the folder tmux reads for the pane's foreground process, unless
+   that process is a program that goes to another host or user (`ssh`,
+   `mosh`, `su`, `sudo`, `doas`, `docker`, `kubectl` and the like), whose
+   folder tmux can't see: it reads `/proc`, and a root process's is closed
+   to it;
+3. else none, and why, which is the folder chooser's to ask.
+
+`pane_path` is tmux 3.1's: before it (2.7 to 3.0a, RHEL 8's 2.7 among
+them) tmux answers it empty, which reads as no OSC 7, so the folder is
+rule 2's. `corpus/checks/tmux-formats.tsv` says so for the format check
+(TK8), which held the two new names to the 33 dumped tmuxes.
+
+The folder is kept as the host's bytes, for sending. `paint` draws the
+mark over the composed panes: the pane's first row a label (" Drop into
+FOLDER ", black on yellow; while tmux is asked, " Drop here: asking tmux
+for the folder "; with none, why and that a folder will be asked), the
+rest of it inverse. A folder too long for the pane keeps its end, the
+folder's own name, after an ellipsis. `dragLeft` takes the mark away, as
+does a drop. The diagnostic log names the replies (" a pane's folder,
+for a drop") without their lines, so no host path reaches it.
+
+**The app** sends `dragOver`'s commands and repaints when the mark moved;
+a drop on such a pane, until item 4 sends files, says where they would
+have gone ("they would go to …", or that the pane runs `ssh` and a
+folder would be asked).
+
+**Tested.** `harness/drop.py` gains three cases: an ssh tab to the local
+sshd running `harness/drop/tmux-panes.sh`, `tmux -CC` on a server of its
+own with three panes, and a file dragged from Nemo onto each. A shell in
+`left dir`: its folder. A shell started in `started here` that said by
+OSC 7 it is in `osc dir`: `osc dir`. A program whose name is `ssh`
+(`exec -a ssh`), started in `ssh dir`: none, the pane runs ssh. Each case
+also keeps a screenshot taken while the drag is over the pane
+(`marked.png`), which showed the label and the tint; it first showed a
+long folder cut on the right, which is why the label keeps the end. All
+nine drop cases passed twice.
+
+Not yet: the folder asked at the drop rather than when the drag came to
+the pane (FT6 says at the drop; the mark's answer is a second or so
+older); the folder chooser, for ssh tabs without `tmux -CC` and for a
+pane with no folder; sending (item 4). A host whose files are named in
+EUC-KR under `tmux -CC` shows its folder's bytes as UTF-8 in the label,
+as TmuxMode's panes read every byte (it keeps no charset).
+

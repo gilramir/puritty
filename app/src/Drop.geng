@@ -1,4 +1,4 @@
-module Drop exposing (Dropped, paths, quoted)
+module Drop exposing (Dropped, fileUri, paths, quoted)
 
 {-| Files dropped on the window from another program (`docs/sftp.md`
 FT21, FT22): the list the window's layer gives read into paths, and paths
@@ -52,6 +52,23 @@ paths list =
                     { acc | paths = Array.pushLast line acc.paths }
             )
             { paths = [], others = 0 }
+
+
+{-| A `file://` URI's host and its path's bytes, as OSC 7 gives a shell's
+folder (`file://HOST/PATH`, the path percent-encoded); `Nothing` for
+anything else. -}
+fileUri : Bytes -> Maybe { host : Bytes, path : Bytes }
+fileUri uri =
+    if startsWith "file://" uri then
+        let
+            rest =
+                Bytes.slice 7 (Bytes.length uri) uri
+        in
+        indexOf 47 rest 0
+            |> Maybe.map (\at -> { host = Bytes.slice 0 at rest, path = decoded (Bytes.slice at (Bytes.length rest) rest) })
+
+    else
+        Nothing
 
 
 {-| Each line, its CR and LF taken off. -}

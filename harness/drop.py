@@ -18,13 +18,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
+sys.path.insert(0, str(ROOT / "packages" / "ssh" / "tests"))
+import getpass  # noqa: E402
 import hosts  # noqa: E402  (its xdotool)
 import pixels  # noqa: E402  (its fonts)
+import sshd  # noqa: E402  (the local sshd and the user keys)
 
 APP = ROOT / "app" / "puritty"
 WORK = ROOT / ".harness-work" / "drop"
 PINS = ROOT / "harness" / "drop" / "expected"
 RECORD = ROOT / "harness" / "drop" / "record-paste.py"
+PANES = ROOT / "harness" / "drop" / "tmux-panes.sh"
 DISPLAY = ":86"
 EUC = "euc-kr ".encode() + "한글".encode("euc-kr") + b".txt"
 
@@ -45,6 +49,76 @@ CASES = [
     # Dolphin spoils the EUC-KR name before puritty sees it (FT21)
     ("dolphin-euc-kr-in-euc-kr", "dolphin", ["euc"], "euc-kr"),
 ]
+
+
+# an ssh tab under tmux -CC (FT23): the pane a file is dropped on, by where
+# it is in puritty's window, as tmux-panes.sh lays them out
+TMUX_CASES = [
+    ("tmux-plain-pane", (760, 250)),
+    ("tmux-osc7-pane", (1100, 150)),
+    ("tmux-ssh-pane", (1100, 400)),
+]
+
+
+def run_tmux_case(env0, name, at, keys):
+    home = WORK / name
+    shutil.rmtree(home, ignore_errors=True)
+    files = home / "files"
+    files.mkdir(parents=True)
+    for n in ["a plain.txt", "it's $HOME.txt", "한글 이름.txt"]:
+        (files / n).write_text("x\n")
+    with open(os.path.join(os.fsencode(files), EUC), "w") as f:
+        f.write("x\n")
+    (files / "a folder").mkdir()
+    there = home / "host"
+    server = sshd.Server([])
+    kh = home / ".ssh" / "known_hosts"
+    kh.parent.mkdir(parents=True)
+    pub = (sshd.WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
+    kh.write_text(f"[127.0.0.1]:{server.port} {' '.join(pub)}\n")
+    (home / "config" / "puritty").mkdir(parents=True)
+    (home / "config" / "puritty" / "config.toml").write_text(
+        f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\nidentity = "{keys["ed"]}"\n'
+        f'client = "built-in"\ncommand = "sh {PANES} \'{there}\'"\n\n[debug]\nlog = true\n')
+    env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser())
+    procs = []
+    try:
+        procs.append(subprocess.Popen(["dbus-run-session", "--", "nemo", "--no-desktop", "--geometry=640x700+0+0", str(files)],
+                                      env=dict(env, GTK_THEME="Adwaita"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        procs.append(subprocess.Popen([str(APP), "--host", "test"], env=env, stdout=subprocess.DEVNULL, stderr=open(home / "stderr.txt", "w")))
+        time.sleep(7)
+        for wid in xdo(env, "search", "--class", "nemo").split():
+            xdo(env, "windowmove", wid, 0, 0)
+            xdo(env, "windowsize", wid, 640, 700)
+        for wid in xdo(env, "search", "--class", "puritty").split():
+            xdo(env, "windowmove", wid, 660, 60)
+        time.sleep(1.5)
+        shot = [sys.executable, str(ROOT / "probes" / "xdnd" / "shot.py")]
+        subprocess.run(shot + [str(home / "before.png")], env=env)
+        x, y = NEMO["plain"]
+        xdo(env, "mousemove", x, y)
+        xdo(env, "click", 1)
+        time.sleep(0.5)
+        xdo(env, "mousedown", 1)
+        for i in range(1, 31):
+            xdo(env, "mousemove", x + (at[0] - x) * i // 30, y + (at[1] - y) * i // 30)
+            time.sleep(0.03)
+        xdo(env, "mousemove", at[0] + 1, at[1] + 1)
+        time.sleep(1.5)
+        # the mark, as the drag is over the pane
+        subprocess.run(shot + [str(home / "marked.png")], env=env)
+        xdo(env, "mouseup", 1)
+        time.sleep(2)
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+        subprocess.run(["tmux", "-L", "puritty-drop", "kill-server"], capture_output=True)
+        server.stop()
+    said = [line.split(None, 3)[-1].replace(str(there), "HOST").replace(str(files), "DIR")
+            for log in sorted((home / ".local" / "state" / "puritty" / "logs").glob("*.log"))
+            for line in log.read_text(errors="replace").splitlines() if " paste " in line and "paste button" not in line and "paste asked" not in line]
+    return f"dropped on the pane at {at}\nsaid: {said}\n"
 
 
 def dolphin():
@@ -146,12 +220,16 @@ def main():
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", "1280x800x24", "-nolisten", "tcp"], stderr=subprocess.DEVNULL)
     time.sleep(1)
     fails = ran = 0
+    keys = sshd.user_keys()[0]
+    runs = [(name, (lambda name=name, fm=fm, items=items, charset=charset: run_case(env, name, fm, items, charset)))
+            for name, fm, items, charset in CASES] + \
+        [(name, (lambda name=name, at=at: run_tmux_case(env, name, at, keys))) for name, at in TMUX_CASES]
     try:
-        for name, fm, items, charset in CASES:
+        for name, go in runs:
             if a.only and name not in a.only:
                 continue
             ran += 1
-            got = run_case(env, name, fm, items, charset)
+            got = go()
             pin = PINS / f"{name}.txt"
             if a.update:
                 PINS.mkdir(parents=True, exist_ok=True)

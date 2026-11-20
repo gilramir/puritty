@@ -4423,6 +4423,24 @@ filesDropped list m =
         |> Task.map (\checked -> droppedChecked dropped.others checked m)
 
 
+{-| Where a drop on a tmux pane would have gone, for the note. -}
+dropWhere : Model -> String
+dropWhere m =
+    when TmuxMode.dropTarget m.tmux |> Maybe.map .folder is
+        Just (TmuxMode.Folder path) ->
+            "; they would go to " ++ Bytes.toStringLossy path
+
+        Just (TmuxMode.NoFolder why) ->
+            "; " ++ why ++ ", so a folder would be asked"
+
+        Just (TmuxMode.Asking _) ->
+            "; tmux had not yet said the pane's folder"
+
+        Nothing ->
+            -- no tmux pane marked
+            meant Reason.NotOpen ""
+
+
 droppedChecked : Int -> Array { path : Bytes, there : Bool } -> (taken m : Model) -> Model
 droppedChecked others checked m =
     let
@@ -4473,7 +4491,7 @@ droppedChecked others checked m =
                 -- every file there
                 meant Reason.NoMore
                     (if m.tab.host /= Nothing then
-                        noteUp { text = "Dropping files on an ssh tab is not built yet: nothing was sent", failed = True, kept = False } m
+                        noteUp { text = "Sending dropped files to the host is not built yet: nothing was sent" ++ dropWhere m, failed = True, kept = False } { m | tmux = TmuxMode.dragLeft m.tmux, urgent = True }
 
                      else if Array.length readable < Array.length names || (Charset.encode m.charset (Bytes.fromString pasted)).replaced > 0 then
                         noteUp { text = "A dropped file's name is not in this tab's character set, " ++ charsetName m.charset ++ ", and was not pasted", failed = True, kept = False } m
@@ -5952,13 +5970,26 @@ handleOne remote ms rest ev m =
                                 |> Task.andThen (handle remote ms rest)
                     )
 
-        Window.DragOver _ ->
-            -- where a drop would go is marked from here (FT22's next
-            -- items); a drag over the window changes nothing yet
-            handle remote ms rest m
+        Window.DragOver d ->
+            -- in an ssh tab under tmux -CC, the pane under the pointer is
+            -- marked with the folder the files would go to (docs/sftp.md
+            -- FT6, FT23)
+            if TmuxMode.isOn m.tmux && m.tab.host /= Nothing then
+                let
+                    r =
+                        TmuxMode.dragOver { col = d.x // max 1 d.cellWidth, row = d.y // max 1 d.cellHeight } m.tmux
+                in
+                handle remote ms rest (sendCommands r.commands { m | tmux = r.state, urgent = r.changed || m.urgent })
+
+            else
+                handle remote ms rest m
 
         Window.DragLeft ->
-            handle remote ms rest m
+            if TmuxMode.dropTarget m.tmux /= Nothing then
+                handle remote ms rest { m | tmux = TmuxMode.dragLeft m.tmux, urgent = True }
+
+            else
+                handle remote ms rest m
 
         Window.Dropped more ->
             Window.dropped
