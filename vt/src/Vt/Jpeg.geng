@@ -26,8 +26,10 @@ type alias Decoded =
     { width : Int, height : Int, pixels : Bytes }
 
 
+{-| A frame's component: its sampling factors 1 to 4, as `frameOf` holds
+them. -}
 type alias Component =
-    { id : Int, h : Int, v : Int, q : Int }
+    { id : Int, h : Int, v : Int, q : Int where 1 <= h && h <= 4 && 1 <= v && v <= 4 }
 
 
 type alias Frame =
@@ -37,7 +39,7 @@ type alias Frame =
     , hmax : Int
     , vmax : Int
     , mcusX : Int
-    , mcusY : Int
+    , mcusY : Int where 1 <= width && width <= 10000 && 1 <= height && height <= 10000 && 1 <= hmax && hmax <= 4 && 1 <= vmax && vmax <= 4 && 1 <= mcusX && mcusX <= 1250 && 1 <= mcusY && mcusY <= 1250
     }
 
 
@@ -217,7 +219,9 @@ frameOf body =
         n =
             byteAt body 5
 
-        comps =
+        -- each component's sampling factors as read, tested before they
+        -- are a `Component`'s
+        read =
             Array.range 0 (n - 1)
                 |> Array.map
                     (\i ->
@@ -228,14 +232,17 @@ frameOf body =
                             hv =
                                 byteAt body (at + 1)
                         in
-                        { id = byteAt body at, h = Bitwise.shiftRightBy 4 hv, v = Bitwise.and 15 hv, q = byteAt body (at + 2) }
+                        { id = byteAt body at, hRead = Bitwise.shiftRightBy 4 hv, vRead = Bitwise.and 15 hv, q = byteAt body (at + 2) }
                     )
 
+        comps =
+            Array.map (\c -> { id = c.id, h = clamp 1 4 c.hRead, v = clamp 1 4 c.vRead, q = c.q }) read
+
         hmax =
-            Array.foldl (\c acc -> max c.h acc) 1 comps
+            clamp 1 4 (Array.foldl (\c acc -> max c.h acc) 1 comps)
 
         vmax =
-            Array.foldl (\c acc -> max c.v acc) 1 comps
+            clamp 1 4 (Array.foldl (\c acc -> max c.v acc) 1 comps)
     in
     if precision /= 8 then
         Err "not 8 bits a sample"
@@ -246,11 +253,11 @@ frameOf body =
     else if n /= 1 && n /= 3 then
         Err "not grey or three components"
 
-    else if Array.any (\c -> c.h < 1 || c.h > 4 || c.v < 1 || c.v > 4) comps then
+    else if Array.any (\c -> c.hRead < 1 || c.hRead > 4 || c.vRead < 1 || c.vRead > 4) read then
         Err "sampling"
 
     else
-        Ok { width = width, height = height, comps = comps, hmax = hmax, vmax = vmax, mcusX = (width + 8 * hmax - 1) // (8 * hmax), mcusY = (height + 8 * vmax - 1) // (8 * vmax) }
+        Ok { width = width, height = height, comps = comps, hmax = hmax, vmax = vmax, mcusX = clamp 1 1250 ((width + 8 * hmax - 1) // (8 * hmax)), mcusY = clamp 1 1250 ((height + 8 * vmax - 1) // (8 * vmax)) }
 
 
 {-| DHT: one table after another to the segment's end. -}
@@ -513,7 +520,7 @@ progressiveScan f offsets scan out =
             segmentOf s (Maybe.withDefault (meant Reason.FromOutside Bytes.empty) (Array.get s scan.segments)) acc
         )
         out
-        (Array.range 0 ((blocksOf.units + perSegment - 1) // perSegment - 1))
+        (Array.range 0 (clamp 0 6250000 ((blocksOf.units + perSegment - 1) // perSegment) - 1))
 
 
 progressiveBlock : Frame -> Array Int -> Scan -> Bytes -> { k : Int, bx : Int, by : Int } -> (taken st : { pos : Int, preds : Array Int, eob : Int, out : Builder Int }) -> { pos : Int, preds : Array Int, eob : Int, out : Builder Int }
@@ -528,7 +535,7 @@ progressiveBlock f offsets scan data b st =
                     component f sc.index
 
                 base =
-                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get sc.index offsets) + 64 * (b.by * f.mcusX * c.h + b.bx)
+                    blockBase (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get sc.index offsets)) (clamp 0 10000 b.by * f.mcusX * c.h + clamp 0 10000 b.bx)
             in
             if scan.ss == 0 then
                 if scan.ah == 0 then
@@ -603,8 +610,9 @@ acFirst data table scan pos k base out =
             rs =
                 huffman data table pos
 
+            -- a symbol is a byte: its run 0 to 15
             r =
-                Bitwise.shiftRightBy 4 rs.sym
+                Bitwise.and 15 (Bitwise.shiftRightBy 4 rs.sym)
 
             s =
                 Bitwise.and 15 rs.sym
@@ -715,7 +723,7 @@ advance data scan pos k base value r out =
     else
         let
             z =
-                base + zigzagAt k
+                clamp 0 800000000 base + zigzagAt k
 
             v =
                 getOr z out
@@ -739,7 +747,7 @@ refineRest data scan pos k base out =
     else
         let
             z =
-                base + zigzagAt k
+                clamp 0 800000000 base + zigzagAt k
 
             v =
                 getOr z out
@@ -876,7 +884,7 @@ scanned f offsets scan out =
             segmentOf s (Maybe.withDefault (meant Reason.FromOutside Bytes.empty) (Array.get s scan.segments)) acc
         )
         out
-        (Array.range 0 ((blocksOf.units + perSegment - 1) // perSegment - 1))
+        (Array.range 0 (clamp 0 6250000 ((blocksOf.units + perSegment - 1) // perSegment) - 1))
 
 
 {-| Each block of a scan, by its unit: an interleaved scan's units are its
@@ -999,8 +1007,9 @@ acs data table pos k out quant =
             rs =
                 huffman data table pos
 
+            -- a symbol is a byte: its run 0 to 15
             r =
-                Bitwise.shiftRightBy 4 rs.sym
+                Bitwise.and 15 (Bitwise.shiftRightBy 4 rs.sym)
 
             s =
                 Bitwise.and 15 rs.sym
@@ -1024,9 +1033,17 @@ acs data table pos k out quant =
             acs data table v.pos (at + 1) (Builder.set (zigzagAt at) (v.value * quantAt quant at) out) quant
 
 
-zigzagAt : Int -> Int
+zigzagAt : Int -> (r : Int where 0 <= r && r <= 63)
 zigzagAt k =
-    Maybe.withDefault (meant Reason.FromOutside 63) (Array.get k zigzag)
+    clamp 0 63 (Maybe.withDefault (meant Reason.FromOutside 63) (Array.get k zigzag))
+
+
+{-| Where block `index` of a plane at `offset` begins in the coefficients:
+a plane holds at most 400,000,000 samples (`pixelsOf`), so 6,250,000
+blocks, which the clamps say to the checker. -}
+blockBase : Int -> Int -> (r : Int where 0 <= r && r <= 800000000)
+blockBase offset index =
+    clamp 0 400000000 offset + 64 * clamp 0 6250000 index
 
 
 zigzag : Array Int
