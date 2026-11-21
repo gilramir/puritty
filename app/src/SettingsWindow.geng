@@ -1130,40 +1130,40 @@ rowsKey k m =
                 else if (k.sym == sym.left || k.sym == sym.escape) && onHosts m && m.form /= Nothing then
                     -- back to the list, on the host the form was of
                     let
-                        name =
-                            Maybe.withDefault "" m.form
-
                         back =
                             { m | form = Nothing, message = Nothing }
 
                         row =
-                            Array.findFirst (\h -> h.name == name && h.recent == Nothing) (hostRows back) |> Maybe.map (\f -> f.index + 3) |> Maybe.withDefault (meant Reason.Gone 0)
+                            m.form
+                                |> Maybe.andThen (\name -> Array.findFirst (\h -> h.name == name && h.recent == Nothing) (hostRows back))
+                                |> Maybe.map (\f -> f.index + 3)
+                                |> Maybe.withDefault (meant Reason.Gone 0)
                     in
                     done (keepInView { back | row = row })
 
                 else if (k.sym == sym.delete || k.sym == sym.backspace) && inList m then
                     when hostAt m m.row is
                         Just h ->
-                            if h.recent /= Nothing then
-                                when h.recent is
-                                    Just r ->
-                                        let
-                                            left =
-                                                { m | recents = Recent.forgotten r m.recents, message = Just (Words.message "message.recentForgotten" |> Words.with "name" h.name) }
-                                        in
-                                        { model = keepInView { left | row = min left.row (rowCount left - 1) }, effects = [ ForgetRecent r ] }
+                            when h.recent is
+                                Just r ->
+                                    let
+                                        left =
+                                            { m | recents = Recent.forgotten r m.recents, message = Just (Words.message "message.recentForgotten" |> Words.with "name" h.name) }
+                                    in
+                                    { model = keepInView { left | row = min left.row (rowCount left - 1) }, effects = [ ForgetRecent r ] }
 
-                                    Nothing ->
-                                        done m
+                                Nothing ->
+                                    -- a host of the settings, PuTTY's or ~/.ssh/config's
+                                    meant Reason.NotOpen
+                                        (if h.own then
+                                            hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (Words.message "message.hostRemoved" |> Words.with "name" h.name) m
 
-                            else if h.own then
-                                hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (Words.message "message.hostRemoved" |> Words.with "name" h.name) m
+                                         else if h.putty /= Nothing then
+                                            done { m | message = Just (Words.message "message.fromPutty" |> Words.with "name" h.name) }
 
-                            else if h.putty /= Nothing then
-                                done { m | message = Just (Words.message "message.fromPutty" |> Words.with "name" h.name) }
-
-                            else
-                                done { m | message = Just (Words.message "message.fromSshConfig" |> Words.with "name" h.name) }
+                                         else
+                                            done { m | message = Just (Words.message "message.fromSshConfig" |> Words.with "name" h.name) }
+                                        )
 
                         Nothing ->
                             meant Reason.OutOfRange done m
@@ -1461,7 +1461,7 @@ typingKey k t m =
         -- a host renamed on Enter, its table and those under it
         let
             from =
-                Maybe.withDefault "" m.form
+                Maybe.withDefault (meant Reason.NotOpen "") m.form
 
             to =
                 String.trim (String.fromArray t.chars)
@@ -1533,7 +1533,7 @@ typingKey k t m =
                     set s (Text name) { m | typing = Nothing, message = Nothing }
 
             Nothing ->
-                done { m | typing = Nothing }
+                meant Reason.NotOpen (done { m | typing = Nothing })
 
     else if (k.sym == sym.up || k.sym == sym.down) && isFamily m then
         let

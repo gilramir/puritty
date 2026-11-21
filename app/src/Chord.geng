@@ -42,40 +42,42 @@ parse text =
 
             names =
                 Array.map String.trim parts
+
+            -- a split has one piece at least, so a last name
+            last =
+                Array.getProven (Array.length names - 1) names
+
+            initial =
+                Array.dropLast 1 names
         in
-        when Array.popLast names is
-            Nothing ->
-                Err ("\"" ++ text ++ "\" names no key")
-
-            Just { last, initial } ->
-                Array.foldl
-                    (\name acc ->
-                        acc
-                            |> Result.andThen
-                                (\mods ->
-                                    when modifier name is
-                                        Just bit ->
-                                            if Bitwise.and mods bit /= 0 then
-                                                Err ("\"" ++ text ++ "\" names " ++ name ++ " twice")
-
-                                            else
-                                                Ok (Bitwise.or mods bit)
-
-                                        Nothing ->
-                                            meant Reason.NotKnown Err ("\"" ++ name ++ "\" in \"" ++ text ++ "\" is not Ctrl, Shift, Alt or Super")
-                                )
-                    )
-                    (Ok 0)
-                    initial
+        Array.foldl
+            (\name acc ->
+                acc
                     |> Result.andThen
                         (\mods ->
-                            when keySym last is
-                                Just sym ->
-                                    Ok (Just { mods = mods, sym = sym })
+                            when modifier name is
+                                Just bit ->
+                                    if Bitwise.and mods bit /= 0 then
+                                        Err ("\"" ++ text ++ "\" names " ++ name ++ " twice")
+
+                                    else
+                                        Ok (Bitwise.or mods bit)
 
                                 Nothing ->
-                                    meant Reason.NotKnown Err ("\"" ++ last ++ "\" in \"" ++ text ++ "\" is not a key puritty knows")
+                                    meant Reason.NotKnown Err ("\"" ++ name ++ "\" in \"" ++ text ++ "\" is not Ctrl, Shift, Alt or Super")
                         )
+            )
+            (Ok 0)
+            initial
+            |> Result.andThen
+                (\mods ->
+                    when keySym last is
+                        Just sym ->
+                            Ok (Just { mods = mods, sym = sym })
+
+                        Nothing ->
+                            meant Reason.NotKnown Err ("\"" ++ last ++ "\" in \"" ++ text ++ "\" is not a key puritty knows")
+                )
 
 
 modifier : String -> Maybe Int

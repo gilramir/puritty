@@ -43,6 +43,7 @@ import Vt.Kitty as Kitty
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Prompt exposing (..)
+import Vt.Reason as Reason
 import Vt.Recut exposing (recut)
 import Vt.Resize exposing (..)
 import Vt.Screen exposing (..)
@@ -61,13 +62,13 @@ splitWide : Int64 -> (o : Int where 0 <= o) -> (x : Int where 0 <= x) -> (xEnd :
 splitWide fill o x xEnd ext cells =
     let
         firstCell =
-            Maybe.withDefault 0 (Builder.get (o + x) cells)
+            Builder.getProven (o + x) cells
 
         -- no cell before an empty run at the row's start: a read at -1
         -- would count back from the builder's end (§VC57)
         lastCell =
             if xEnd > 0 then
-                Maybe.withDefault 0 (Builder.get (o + xEnd - 1) cells)
+                Builder.getProven (o + xEnd - 1) cells
 
             else
                 0
@@ -98,13 +99,13 @@ splitWhole : Int64 -> (o : Int where 0 <= o) -> (x : Int where 0 <= x) -> (xEnd 
 splitWhole fill o x xEnd ext cells =
     let
         firstCell =
-            Maybe.withDefault 0 (Builder.get (o + x) cells)
+            Builder.getProven (o + x) cells
 
         -- no cell before an empty run at the row's start: a read at -1
         -- would count back from the builder's end (§VC57)
         lastCell =
             if xEnd > 0 then
-                Maybe.withDefault 0 (Builder.get (o + xEnd - 1) cells)
+                Builder.getProven (o + xEnd - 1) cells
 
             else
                 0
@@ -146,7 +147,7 @@ unheadAbove y s =
             rowOffset s (y - 1) + s.cols - 1
 
         c =
-            Maybe.withDefault 0 (Builder.get p s.cells)
+            Builder.getProven p s.cells
     in
     if cellWide c == spacerHead then
         { s | cells = Builder.set p (Bitwise.and (Bitwise.complement 0x600000) c) s.cells }
@@ -189,7 +190,7 @@ insertCells o x count erase s =
                     cells1
 
             lastKept =
-                Maybe.withDefault 0 (Builder.get (o + s.cols - 1) moved)
+                Builder.getProven (o + s.cols - 1) moved
 
             tidy =
                 if keepTo > x && keepTo + n >= s.cols && cellWide lastKept == wideHead then
@@ -207,7 +208,7 @@ insertCells o x count erase s =
 
             -- the row's wrapped flag kept, as Ghostty's ICH keeps it (§VC16)
             m =
-                Maybe.withDefault 0 (Builder.get (o + s.cols) tidy)
+                Builder.getProven (o + s.cols) tidy
         in
         { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt newExt)) (Builder.fill (o + x) (o + x + n) erase tidy) }
 
@@ -475,7 +476,7 @@ eraseUnprotected from to fill cells =
     if from >= to then
         cells
 
-    else if Bitwise.and protectBit (Maybe.withDefault 0 (Builder.get from cells)) /= 0 then
+    else if Bitwise.and protectBit (Maybe.withDefault (meant Reason.OutOfRange 0) (Builder.get from cells)) /= 0 then
         eraseUnprotected (from + 1) to fill cells
 
     else
@@ -595,7 +596,7 @@ rowHasText o ext x s =
     else
         let
             c =
-                Maybe.withDefault 0 (Builder.get (o + x) s.cells)
+                Builder.getProven (o + x) s.cells
         in
         if cellPoint c /= 0 || cellIsCluster c then
             True

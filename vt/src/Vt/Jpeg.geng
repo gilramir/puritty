@@ -43,10 +43,12 @@ type alias Frame =
     }
 
 
-{-| A Huffman table: the codes of each length, 1 to 16, and the symbols in
-code order. -}
+{-| A Huffman table: the codes of each length, 1 to 16 (the standard's
+BITS), and the symbols in code order (HUFFVAL). Named so, its shape is not
+Inflate's `Huffman`'s, whose invariant would be asked of it too
+(geng-lang `m4-refine-t1.md` Dnene22). -}
 type alias Table =
-    { counts : Array Int, symbols : Array Int }
+    { bits : Array Int where Array.length bits == 16, values : Array Int }
 
 
 {-| A scan's component: its place in the frame, its tables, and the
@@ -60,20 +62,13 @@ type alias Quant =
     (q : Array Int where Array.length q == 64)
 
 
-{-| A `Quant` kept in `Parsed`'s `Dict`, whose value cannot be a refined
-alias in a record's field: the constructor asks its length where it is
-built and knows it where it is matched. -}
-type QuantTable
-    = QuantTable Quant
-
-
 type alias Scan =
     { comps : Array ScanComp, segments : Array Bytes, restart : Int, ss : Int, se : Int, ah : Int, al : Int }
 
 
 type alias Parsed =
     { frame : Maybe Frame
-    , quant : Dict Int QuantTable
+    , quant : Dict Int Quant
     , dc : Dict Int Table
     , ac : Dict Int Table
     , restart : Int
@@ -290,7 +285,7 @@ tables body at p =
                 Array.foldl (+) 0 counts
 
             table =
-                { counts = counts, symbols = Array.map (\i -> byteAt body (at + 17 + i)) (Array.range 0 (total - 1)) }
+                { bits = counts, values = Array.map (\i -> byteAt body (at + 17 + i)) (Array.range 0 (total - 1)) }
 
             id =
                 Bitwise.and 15 tc
@@ -336,7 +331,7 @@ quantTables body at p =
                     128
                   )
             )
-            { p | quant = Dict.set id (QuantTable values) p.quant }
+            { p | quant = Dict.set id values p.quant }
 
 
 {-| SOS's header: each component of the scan with its tables. -}
@@ -368,7 +363,7 @@ scanOf body p =
                     -- a progressive scan uses one of its two tables, and
                     -- the other need not be defined yet (IT6)
                     when { dc = tableOr p.progressive (Dict.get (Bitwise.shiftRightBy 4 td) p.dc), ac = tableOr p.progressive (Dict.get (Bitwise.and 15 td) p.ac), quant = Dict.get q p.quant } is
-                        { dc = Just dc, ac = Just ac, quant = Just (QuantTable quant) } ->
+                        { dc = Just dc, ac = Just ac, quant = Just quant } ->
                             if index < 0 then
                                 Err "a scan's component not in the frame"
 
@@ -392,7 +387,7 @@ tableOr progressive t =
         Nothing ->
             meant Reason.NotSet
                 (if progressive then
-                    Just { counts = Array.repeat 16 0, symbols = [] }
+                    Just { bits = Array.repeat 16 0, values = [] }
 
                  else
                     Nothing
@@ -796,7 +791,7 @@ corrected data pos al z v out =
 {-| The coefficients made samples: each block dequantized by its
 component's table (its values in zigzag order) and transformed, in place
 in its plane. -}
-transformed : Frame -> Array Int -> Dict Int QuantTable -> Array Int -> Builder Int
+transformed : Frame -> Array Int -> Dict Int Quant -> Array Int -> Builder Int
 transformed f offsets quants coefs =
     Array.foldl
         (\k out ->
@@ -805,12 +800,7 @@ transformed f offsets quants coefs =
                     component f k
 
                 quant =
-                    when Dict.get c.q quants is
-                        Just (QuantTable table) ->
-                            table
-
-                        Nothing ->
-                            meant Reason.FromOutside (Array.repeat 64 1)
+                    Maybe.withDefault (meant Reason.FromOutside (Array.repeat 64 1)) (Dict.get c.q quants)
 
                 bpl =
                     f.mcusX * c.h
@@ -832,7 +822,7 @@ transformed f offsets quants coefs =
                             clamp 0 400000000 off + 64 * blockIndex
 
                         natural =
-                            Array.initialize 64 0 (\i -> Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (at + clamp 0 63 i) coefs) * quantAt quant (unzigAt (clamp 0 63 i)))
+                            Array.initialize 64 0 (\i -> Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (at + i) coefs) * quantAt quant (unzigAt i))
 
                         samples =
                             idct natural
@@ -998,13 +988,13 @@ block f offsets scan data b st =
 
 
 {-| A block's 64 samples written into its plane at `base`, `w` wide. -}
-written : Array Int -> Int -> Int -> Int -> (taken out : Builder Int) -> Builder Int
+written : (samples : Array Int where Array.length samples == 64) -> Int -> Int -> (i : Int where 0 <= i) -> (taken out : Builder Int) -> Builder Int
 written samples base w i out =
     if i > 63 then
         out
 
     else
-        written samples base w (i + 1) (Builder.set (base + (i // 8) * w + modBy 8 i) (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i samples)) out)
+        written samples base w (i + 1) (Builder.set (base + (i // 8) * w + modBy 8 i) (Array.getProven i samples) out)
 
 
 quantAt : (quant : Quant) -> (k : Int where 0 <= k && k < 64) -> Int
@@ -1014,7 +1004,7 @@ quantAt quant k =
 
 {-| The AC coefficients from `k` to 63, each dequantized and put in its
 place in the natural order. -}
-acs : Bytes -> Table -> Int -> Int -> (taken out : Builder Int) -> Quant -> { pos : Int, out : Builder Int }
+acs : Bytes -> Table -> Int -> Int -> (taken out : Builder Int where Builder.length out == 64) -> Quant -> (r : { pos : Int, out : Builder Int } where Builder.length r.out == 64)
 acs data table pos k out quant =
     if k > 63 then
         { pos = pos, out = out }
@@ -1133,7 +1123,7 @@ huffman data table pos =
     huffmanLen data table pos 1 0 0 0
 
 
-huffmanLen : Bytes -> Table -> Int -> Int -> (code : Int where 0 <= code && code <= 65536) -> (first : Int where 0 <= first && first <= 65536) -> (index : Int where 0 <= index && index <= 65536) -> { sym : Int, pos : Int }
+huffmanLen : Bytes -> Table -> Int -> (len : Int where 1 <= len) -> (code : Int where 0 <= code && code <= 65536) -> (first : Int where 0 <= first && first <= 65536) -> (index : Int where 0 <= index && index <= 65536) -> { sym : Int, pos : Int }
 huffmanLen data table pos len code first index =
     if len > 16 then
         -- a code the table does not have
@@ -1145,10 +1135,10 @@ huffmanLen data table pos len code first index =
                 clamp 0 65537 (Bitwise.or code (bitAt data pos))
 
             count =
-                clamp 0 256 (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (len - 1) table.counts))
+                clamp 0 256 (Array.getProven (len - 1) table.bits)
         in
         if c - first < count then
-            { sym = Maybe.withDefault (meant Reason.FromOutside 0) (Array.get (index + c - first) table.symbols), pos = pos + 1 }
+            { sym = Maybe.withDefault (meant Reason.FromOutside 0) (Array.get (index + c - first) table.values), pos = pos + 1 }
 
         else
             -- each held to 16 bits' codes, as a table of 16 lengths has
@@ -1161,11 +1151,11 @@ huffmanLen data table pos len code first index =
 {-| The inverse DCT of a block's coefficients (natural order), as samples
 0 to 255, each sum of eight written out. A block with only its DC is one
 value. -}
-idct : Array Int -> Array Int
+idct : (coefs : Array Int where Array.length coefs == 64) -> (r : Array Int where Array.length r == 64)
 idct coefs =
     let
         dc =
-            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get 0 coefs)
+            Array.getProven 0 coefs
     in
     if Array.all (\v -> v == 0) (Array.dropFirst 1 coefs) then
         Array.repeat 64 (clamp 0 255 (Math.round (toFloat dc / 8) + 128))
@@ -1200,17 +1190,17 @@ idct coefs =
 
 
 {-| Σk a[ia + k·sa] · b[ib + k·sb], k from 0 to 7. -}
-dot8 : Array Float -> (ia : Int where 0 <= ia && ia <= 63) -> (sa : Int where 0 <= sa && sa <= 8) -> Array Float -> (ib : Int where 0 <= ib && ib <= 63) -> (sb : Int where 0 <= sb && sb <= 8) -> Float
+dot8 : (a : Array Float where Array.length a == 64) -> (ia : Int where 0 <= ia && ia + 7 * sa <= 63) -> (sa : Int where 0 <= sa && sa <= 8) -> (b : Array Float where Array.length b == 64) -> (ib : Int where 0 <= ib && ib + 7 * sb <= 63) -> (sb : Int where 0 <= sb && sb <= 8) -> Float
 dot8 a ia sa b ib sb =
     let
         x k =
-            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (ia + k * sa) a) * Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (ib + k * sb) b)
+            Array.getProven (ia + k * sa) a * Array.getProven (ib + k * sb) b
     in
     x 0 + x 1 + x 2 + x 3 + x 4 + x 5 + x 6 + x 7
 
 
 {-| C(x, u) = c(u) / 2 · cos((2x + 1)uπ / 16), c(0) = 1/√2, by x then u. -}
-cosines : Array Float
+cosines : (c : Array Float where Array.length c == 64)
 cosines =
     [ 0.353553390593, 0.490392640202, 0.461939766256, 0.415734806151, 0.353553390593, 0.27778511651, 0.191341716183, 0.097545161008, 0.353553390593, 0.415734806151, 0.191341716183, -0.097545161008, -0.353553390593, -0.490392640202, -0.461939766256, -0.27778511651, 0.353553390593, 0.27778511651, -0.191341716183, -0.490392640202, -0.353553390593, 0.097545161008, 0.461939766256, 0.415734806151, 0.353553390593, 0.097545161008, -0.461939766256, -0.27778511651, 0.353553390593, 0.415734806151, -0.191341716183, -0.490392640202, 0.353553390593, -0.097545161008, -0.461939766256, 0.27778511651, 0.353553390593, -0.415734806151, -0.191341716183, 0.490392640202, 0.353553390593, -0.27778511651, -0.191341716183, 0.490392640202, -0.353553390593, -0.097545161008, 0.461939766256, -0.415734806151, 0.353553390593, -0.415734806151, 0.191341716183, 0.097545161008, -0.353553390593, 0.490392640202, -0.461939766256, 0.27778511651, 0.353553390593, -0.490392640202, 0.461939766256, -0.415734806151, 0.353553390593, -0.27778511651, 0.191341716183, -0.097545161008 ]
 

@@ -186,7 +186,7 @@ recutPages pageRows clear keep cols rows cursor saved clusters s pages =
             cols == 1
 
         opened =
-            if not lossy && count > 0 && Maybe.withDefault False (Maybe.map lastWrapped (Array.last pages)) then
+            if not lossy && count > 0 && lastWrapped (Array.getProven (count - 1) pages) then
                 let
                     all =
                         recut pageRows reflowed s.cols cols clusters count pages
@@ -545,17 +545,11 @@ lineStart pages k =
     else if k < 0 then
         k
 
+    else if lastWrapped (Array.getProven (count - k - 1) pages) then
+        lineStart pages (k + 1)
+
     else
-        when Array.get (count - k - 1) pages is
-            Just page ->
-                if lastWrapped page then
-                    lineStart pages (k + 1)
-
-                else
-                    k
-
-            Nothing ->
-                k
+        k
 
 
 {-| A cursor waiting to wrap that a resize moved off the right edge goes on
@@ -1242,16 +1236,11 @@ promptIn starts k lo hi =
             mid =
                 lo + (hi - lo) // 2
         in
-        when Array.get mid starts is
-            Just st ->
-                if st.at <= k then
-                    promptIn starts k (mid + 1) hi
+        if (Array.getProven mid starts).at <= k then
+            promptIn starts k (mid + 1) hi
 
-                else
-                    promptIn starts k lo mid
-
-            Nothing ->
-                0
+        else
+            promptIn starts k lo mid
 
 
 splitAt : (cols : Int where 1 <= cols && cols <= 1000) -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }

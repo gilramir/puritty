@@ -105,9 +105,10 @@ def table():
     return out
 
 
-def arr(name, xs):
+def arr(name, xs, sized=False):
     body = "\n    , ".join(str(x) for x in xs)
-    return f"{name} : Array Int\n{name} =\n    [ {body}\n    ]\n"
+    tipe = f"(a : Array Int where Array.length a == {len(xs)})" if sized else "Array Int"
+    return f"{name} : {tipe}\n{name} =\n    [ {body}\n    ]\n"
 
 
 print(f"""module Vt.Width exposing (width, pictographic)
@@ -126,13 +127,8 @@ import Bitwise
 {{-| How many cells a codepoint at or above 0x80 takes: 0, 1 or 2. -}}
 width : Int -> Int
 width cp =
-    if cp < 0x20000 then
-        when Array.get (Bitwise.shiftRightZfBy 4 cp) table is
-            Just word ->
-                Bitwise.and 3 (Bitwise.shiftRightZfBy (2 * Bitwise.and 15 cp) word)
-
-            Nothing ->
-                1
+    if 0 <= cp && cp < 0x20000 then
+        Bitwise.and 3 (Bitwise.shiftRightZfBy (2 * Bitwise.and 15 cp) (Array.getProven (Bitwise.shiftRightZfBy 4 cp) table))
 
     else
         searched cp
@@ -150,23 +146,24 @@ searched cp =
         1
 
 
-find : Array Int -> Array Int -> Int -> Int -> Int -> Bool
+find : (starts : Array Int) -> Array Int -> Int -> (lo : Int where 0 <= lo) -> (hi : Int where hi < Array.length starts) -> Bool
 find starts ends cp lo hi =
     if lo > hi then
         False
 
     else
         let
+            -- not `(lo + hi) // 2`, which a sum past `Int` would wrap
             mid =
-                (lo + hi) // 2
+                lo + (hi - lo) // 2
 
             s =
-                Maybe.withDefault 0 (Array.get mid starts)
+                Array.getProven mid starts
         in
         if cp < s then
             find starts ends cp lo (mid - 1)
 
-        else if cp > Maybe.withDefault 0 (Array.get mid ends) then
+        else if cp > Array.getProven mid ends then
             find starts ends cp (mid + 1) hi
 
         else
@@ -181,7 +178,7 @@ pictographic cp =
     find pictoStarts pictoEnds cp 0 (Array.length pictoStarts - 1)
 
 """)
-print(arr("table", table()))
+print(arr("table", table(), sized=True))
 print()
 print(arr("wideStarts", [a for a, _ in wide]))
 print()

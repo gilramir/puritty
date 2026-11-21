@@ -14,13 +14,8 @@ import Bitwise
 {-| How many cells a codepoint at or above 0x80 takes: 0, 1 or 2. -}
 width : Int -> Int
 width cp =
-    if cp < 0x20000 then
-        when Array.get (Bitwise.shiftRightZfBy 4 cp) table is
-            Just word ->
-                Bitwise.and 3 (Bitwise.shiftRightZfBy (2 * Bitwise.and 15 cp) word)
-
-            Nothing ->
-                1
+    if 0 <= cp && cp < 0x20000 then
+        Bitwise.and 3 (Bitwise.shiftRightZfBy (2 * Bitwise.and 15 cp) (Array.getProven (Bitwise.shiftRightZfBy 4 cp) table))
 
     else
         searched cp
@@ -50,12 +45,12 @@ find starts ends cp lo hi =
                 lo + (hi - lo) // 2
 
             s =
-                Maybe.withDefault 0 (Array.get mid starts)
+                Array.getProven mid starts
         in
         if cp < s then
             find starts ends cp lo (mid - 1)
 
-        else if cp > Maybe.withDefault 0 (Array.get mid ends) then
+        else if cp > Array.getProven mid ends then
             find starts ends cp (mid + 1) hi
 
         else
@@ -70,7 +65,7 @@ pictographic cp =
     find pictoStarts pictoEnds cp 0 (Array.length pictoStarts - 1)
 
 
-table : Array Int
+table : (a : Array Int where Array.length a == 8192)
 table =
     [ 1431655765
     , 1431655765

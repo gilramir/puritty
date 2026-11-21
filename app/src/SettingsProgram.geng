@@ -433,13 +433,22 @@ one ev s =
                 old =
                     s.preedit
 
+                -- the span the input method changed, within the old text: its
+                -- first and length are the X server's, and their sum could
+                -- wrap (docs/refine-survey.md RS9)
+                spanStart =
+                    clamp 0 (Array.length old.points) p.first
+
+                spanEnd =
+                    spanStart + clamp 0 (Array.length old.points - spanStart) p.length
+
                 points =
-                    Array.takeFirst p.first old.points ++ cps ++ Array.dropFirst (p.first + p.length) old.points
+                    Array.takeFirst spanStart old.points ++ cps ++ Array.dropFirst spanEnd old.points
 
                 feedback =
-                    Array.takeFirst p.first old.feedback
+                    Array.takeFirst spanStart old.feedback
                         ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault (meant Reason.FromOutside 0) (Array.get i p.feedback))
-                        ++ Array.dropFirst (p.first + p.length) old.feedback
+                        ++ Array.dropFirst spanEnd old.feedback
             in
             Task.succeed { s | preedit = { points = points, feedback = feedback, caret = p.caret } }
 
@@ -595,7 +604,7 @@ effect e s =
                         |> Task.andThen (whenLauncher (Recent.Quick (String.trim target)))
 
                 Nothing ->
-                    Task.succeed s
+                    meant Reason.FromOutside (Task.succeed s)
 
         SettingsWindow.Write w ->
             writeWith (Schema.write w.setting w.value) s

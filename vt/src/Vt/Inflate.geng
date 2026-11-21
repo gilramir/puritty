@@ -194,7 +194,7 @@ pushBytes data from to out =
 {-| A Huffman code, as `puff.c` keeps one: how many codes there are of each
 length (1 to 15), and the symbols in the order of their codes. -}
 type alias Huffman =
-    { counts : Array Int, symbols : Array Int }
+    { counts : Array Int where Array.length counts == 16, symbols : Array Int }
 
 
 {-| The code whose lengths are `lengths`, symbol by symbol; none when it
@@ -202,21 +202,26 @@ asks for more codes of a length than there are (over-subscribed). -}
 huffman : Array Int -> Maybe Huffman
 huffman lengths =
     let
+        -- how many codes of each length, 0 to 15
         counts =
-            Array.foldl (\l c -> Array.update l (\k -> k + 1) c) (Array.repeat 16 0) lengths
+            Array.initialize 16
+                0
+                (\l ->
+                    Array.foldl
+                        (\x n ->
+                            if x == l then
+                                n + 1
+
+                            else
+                                n
+                        )
+                        0
+                        lengths
+                )
 
         -- over-subscribed when a length has more codes than are left
         left =
-            Array.foldl
-                (\len acc ->
-                    if acc < 0 then
-                        acc
-
-                    else
-                        (acc * 2) - Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get len counts)
-                )
-                1
-                (Array.range 1 15)
+            codesLeft counts 1 1
 
         symbols =
             Array.indexedMap (\sym len -> { sym = sym, len = len }) lengths
@@ -238,13 +243,24 @@ huffman lengths =
         Just { counts = Array.set 0 0 counts, symbols = symbols }
 
 
+{-| The codes left after those of lengths `len` to 15 are given out, from
+`acc` left before `len`; below 0 when a length asks for more than are left. -}
+codesLeft : (counts : Array Int where Array.length counts == 16) -> (len : Int where 1 <= len) -> Int -> Int
+codesLeft counts len acc =
+    if len > 15 || acc < 0 then
+        acc
+
+    else
+        codesLeft counts (len + 1) ((acc * 2) - Array.getProven len counts)
+
+
 {-| A symbol of code `h` from `pos`: `puff.c`'s `decode`, a bit at a time. -}
 decode : Bytes -> Int -> Huffman -> Int -> Maybe { sym : Int, pos : Int }
 decode data end h pos =
     decodeLen data end h pos 1 0 0 0
 
 
-decodeLen : Bytes -> Int -> Huffman -> Int -> Int -> Int -> Int -> Int -> Maybe { sym : Int, pos : Int }
+decodeLen : Bytes -> Int -> Huffman -> Int -> (len : Int where 1 <= len) -> Int -> Int -> Int -> Maybe { sym : Int, pos : Int }
 decodeLen data end h pos len code first index =
     if len > 15 || pos >= end then
         Nothing
@@ -255,7 +271,7 @@ decodeLen data end h pos len code first index =
                 Bitwise.or code (Bitwise.and 1 (Bitwise.shiftRightZfBy (Bitwise.and pos 7) (byteAt data (Bitwise.shiftRightZfBy 3 pos))))
 
             count =
-                Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get len h.counts)
+                Array.getProven len h.counts
         in
         if c - count < first then
             Maybe.map (\sym -> { sym = sym, pos = pos + 1 }) (Array.get (index + (c - first)) h.symbols)
@@ -285,27 +301,27 @@ fixed =
                         8
                 )
     in
-    { lit = Maybe.withDefault (meant Reason.NotKnown { counts = [], symbols = [] }) (huffman lit)
-    , dist = Maybe.withDefault (meant Reason.NotKnown { counts = [], symbols = [] }) (huffman (Array.repeat 30 5))
+    { lit = Maybe.withDefault (meant Reason.NotKnown { counts = Array.repeat 16 0, symbols = [] }) (huffman lit)
+    , dist = Maybe.withDefault (meant Reason.NotKnown { counts = Array.repeat 16 0, symbols = [] }) (huffman (Array.repeat 30 5))
     }
 
 
-lengthBase : Array Int
+lengthBase : (a : Array Int where Array.length a == 29)
 lengthBase =
     [ 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 ]
 
 
-lengthExtra : Array Int
+lengthExtra : (a : Array Int where Array.length a == 29)
 lengthExtra =
     [ 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 ]
 
 
-distBase : Array Int
+distBase : (a : Array Int where Array.length a == 30)
 distBase =
     [ 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 ]
 
 
-distExtra : Array Int
+distExtra : (a : Array Int where Array.length a == 30)
 distExtra =
     [ 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 ]
 
@@ -326,54 +342,71 @@ codes most data h st =
             else if s.sym == 256 then
                 Ok { st | pos = s.pos }
 
+            else if s.sym > 285 then
+                -- 286 and 287 are no length: a damaged stream's
+                Err "length code"
+
             else
                 let
                     i =
                         s.sym - 257
 
                     lenExtra =
-                        Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i lengthExtra)
+                        Array.getProven i lengthExtra
+
+                    base =
+                        Array.getProven i lengthBase
                 in
-                when { l = bits data st.end s.pos lenExtra, base = Array.get i lengthBase } is
-                    { l = Just le, base = Just base } ->
+                when bits data st.end s.pos lenExtra is
+                    Just le ->
                         let
                             len =
                                 clamp 0 258 base + clamp 0 31 le
                         in
                         when decode data st.end h.dist (s.pos + lenExtra) is
                             Just d ->
-                                let
-                                    dExtra =
-                                        Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get d.sym distExtra)
-                                in
-                                when { e = bits data st.end d.pos dExtra, base = Array.get d.sym distBase } is
-                                    { e = Just de, base = Just db } ->
-                                        let
-                                            -- a base to 24577, and at
-                                            -- most thirteen extra bits
-                                            dist =
-                                                clamp 0 24577 db + clamp 0 8191 de
+                                if d.sym < 0 || d.sym > 29 then
+                                    -- 30 and 31 are no distance: a damaged stream's
+                                    Err "distance code"
 
-                                            have =
-                                                Builder.length st.out
-                                        in
-                                        if dist > have then
-                                            Err "distance too far"
+                                else
+                                    let
+                                        dExtra =
+                                            Array.getProven d.sym distExtra
 
-                                        else if have + len > most then
-                                            Err "too large"
+                                        db =
+                                            Array.getProven d.sym distBase
+                                    in
+                                    when bits data st.end d.pos dExtra is
+                                        Just de ->
+                                            let
+                                                -- a base to 24577, and at
+                                                -- most thirteen extra bits
+                                                dist =
+                                                    clamp 0 24577 db + clamp 0 8191 de
 
-                                        else
-                                            codes most data h { st | pos = d.pos + dExtra, out = copyBack (clamp 1 32768 dist) len st.out }
+                                                have =
+                                                    Builder.length st.out
+                                            in
+                                            if dist < 1 || dist > have then
+                                                Err "distance too far"
 
-                                    _ ->
-                                        Err "distance"
+                                            else if have + len > most then
+                                                Err "too large"
+
+                                            else
+                                                codes most data h { st | pos = d.pos + dExtra, out = copyBack dist len st.out }
+
+                                        Nothing ->
+                                            -- the stream ended in the distance's extra bits
+                                            meant Reason.FromOutside Err "distance"
 
                             Nothing ->
                                 meant Reason.FromOutside Err "distance code"
 
-                    _ ->
-                        Err "length"
+                    Nothing ->
+                        -- the stream ended in the length's extra bits
+                        meant Reason.FromOutside Err "length"
 
         Nothing ->
             meant Reason.FromOutside Err "code"
@@ -381,7 +414,7 @@ codes most data h st =
 
 {-| `len` bytes copied from `dist` back, one at a time, as they may
 overlap what is being written. -}
-copyBack : (dist : Int where 1 <= dist && dist <= 32768) -> Int -> (taken out : Builder UInt8) -> Builder UInt8
+copyBack : (dist : Int where 1 <= dist && dist <= 32768) -> Int -> (taken out : Builder UInt8 where dist <= Builder.length out) -> Builder UInt8
 copyBack dist len out =
     if len <= 0 then
         out
@@ -389,7 +422,7 @@ copyBack dist len out =
     else
         let
             b =
-                Maybe.withDefault (meant Reason.OutOfRange (UInt8.fromInt 0)) (Builder.get (Builder.length out - dist) out)
+                Builder.getProven (Builder.length out - dist) out
         in
         copyBack dist (len - 1) (Builder.pushLast b out)
 
@@ -419,12 +452,7 @@ dynamic most data st =
                 lengths =
                     Array.foldl
                         (\k acc ->
-                            when Array.get k order is
-                                Just slot ->
-                                    Array.set slot (Maybe.withDefault (meant Reason.OutOfRange 0) (bits data st.end (start + 3 * k) 3)) acc
-
-                                Nothing ->
-                                    acc
+                            Array.set (Array.getProven k order) (Maybe.withDefault (meant Reason.FromOutside 0) (bits data st.end (start + 3 * k) 3)) acc
                         )
                         (Array.repeat 19 0)
                         (Array.range 0 (hclen - 1))

@@ -1343,7 +1343,7 @@ spawnFirst cp commands options =
             meant Reason.NoMore Task.fail { kind = Os.Error.NotFound, operation = "spawn", path = Nothing, detail = "no program to run" }
 
         Just { first, rest } ->
-            Process.spawn cp (Maybe.withDefault "" (Array.first first)) (Array.dropFirst 1 first) options
+            Process.spawn cp (Maybe.withDefault (meant Reason.NotSet "") (Array.first first)) (Array.dropFirst 1 first) options
                 |> Task.onError
                     (\err ->
                         if err.kind == Os.Error.NotFound && not (Array.isEmpty rest) then
@@ -1856,7 +1856,7 @@ restoreInto restoring m =
         Just c ->
             let
                 first =
-                    Array.first c.state.tabs |> Maybe.withDefault { name = "", color = HostsColor, directory = Nothing }
+                    Array.first c.state.tabs |> Maybe.withDefault (meant Reason.FromOutside { name = "", color = HostsColor, directory = Nothing })
 
                 info =
                     m.tab
@@ -1889,7 +1889,7 @@ restoreInto restoring m =
                                         )
 
                             Nothing ->
-                                Task.succeed shown
+                                meant Reason.NotSet (Task.succeed shown)
                     )
 
         Nothing ->
@@ -3656,7 +3656,7 @@ popupItems m =
                 Array.slice 0 (at.index + 1) items ++ [ { label = "Customize tmux…", does = Customizes } ] ++ Array.dropFirst (at.index + 1) items
 
             Nothing ->
-                Array.pushLast { label = "Customize tmux…", does = Customizes } items
+                meant Reason.NotKnown (Array.pushLast { label = "Customize tmux…", does = Customizes } items)
 
     else
         items
@@ -3832,7 +3832,7 @@ menuKey sym menu m =
                 menuDo item { m | menu = Nothing, urgent = True }
 
             Nothing ->
-                Task.succeed { m | menu = Nothing, urgent = True }
+                meant Reason.OutOfRange (Task.succeed { m | menu = Nothing, urgent = True })
 
     else
         Task.succeed { m | menu = Nothing, urgent = True }
@@ -3858,12 +3858,7 @@ menuPress p menu m =
             cell.col > box.col && cell.col < box.col + box.width - 1 && i >= 0 && i < Array.length menu.items
     in
     if inside && p.button == 1 then
-        when Array.get i menu.items is
-            Just item ->
-                menuDo item { m | menu = Nothing, urgent = True }
-
-            Nothing ->
-                Task.succeed { m | menu = Nothing, urgent = True }
+        menuDo (Array.getProven i menu.items) { m | menu = Nothing, urgent = True }
 
     else
         Task.succeed { m | menu = Nothing, urgent = True }
@@ -6377,7 +6372,7 @@ questionDialog screen =
 
                         -- the key's own name, after the last / or \
                         name =
-                            String.split "/" file |> Array.last |> Maybe.withDefault file |> String.split "\\" |> Array.last |> Maybe.withDefault file
+                            lastPiece "\\" (lastPiece "/" file)
                     in
                     Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], check = Nothing, hint = "Enter: unlock the key    Esc: skip this key", buttons = [] }
 
@@ -6586,254 +6581,209 @@ handleOne : Backend -> Int -> Array Window.Event -> Window.Event -> (taken m : M
 handleOne remote ms rest ev m =
     when ev is
         Window.Key k ->
-            if m.startFailed /= Nothing then
-                -- the box saying a tab did not start takes the keys
-                (if k.action /= 0 then
-                    startFailedKey k m
+            -- the dialog that is up takes the keys (docs/refine-survey.md RS3)
+            when dialogUp m is
+                StartFailedUp ->
+                    -- the box saying a tab did not start takes the keys
+                    (if k.action /= 0 then
+                        startFailedKey k m
 
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
 
-            else if Maybe.isJust m.dropAsk then
-                -- the question before dropped files are sent (FT28)
-                (if k.action /= 0 then
-                    when m.dropAsk is
-                        Just a ->
-                            dropKey k a m
+                DropAsking a ->
+                    -- the question before dropped files are sent (FT28)
+                    (if k.action /= 0 then
+                        dropKey k a m
 
-                        Nothing ->
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                Conflicting sending ->
+                    -- the conflict question takes the keys (docs/sftp.md FT25)
+                    (if k.action /= 0 then
+                        conflictKey k sending m
+
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                PickingUp pk ->
+                    -- the folder picker's working model takes the keys (docs/sftp.md FT32)
+                    (if k.action /= 0 then
+                        pickerStep (Picker.key demoWith { sym = k.sym, unshifted = k.unshifted, mods = k.mods, text = Bytes.toStringLossy k.text } pk.picker) pk m
+
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                ChoosingUp c ->
+                    -- the folder chooser takes the keys (docs/sftp.md FT24)
+                    (if k.action /= 0 then
+                        chooserKey k c m
+
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                PasteAsking a ->
+                    -- the question before a picture is written takes the keys (docs/sftp.md FT16)
+                    (if k.action /= 0 then
+                        pasteKey k a m
+
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                ClosingUp c ->
+                    -- the question before closing takes the keys (TB4)
+                    (if k.action /= 0 then
+                        closeKey k c m
+
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                RenamingUp r ->
+                    -- the rename box takes the keys while it is open (TB1)
+                    (if k.action /= 0 then
+                        renameKey k r m
+
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                ColoringUp id ->
+                    -- and the color box (TB9)
+                    (if k.action /= 0 then
+                        colorKey k id m
+
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                NoDialog ->
+                    if ownScreenUp m then
+                        -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
+                        (if k.action /= 0 then
+                            sshKey remote k m
+
+                         else
                             Task.succeed m
+                        )
+                            |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
+                    else
+                        when { menu = m.menu, search = m.search, pressed = k.action /= 0, copy = isCopyKey m.config k } is
+                            { menu = Just menu, search = _, pressed = True, copy = _ } ->
+                                -- the menu takes the keys while it is open
+                                menuKey k.sym menu m |> Task.andThen (\next -> handle remote ms rest next)
 
-            else if sendingAsks m then
-                -- the conflict question takes the keys (docs/sftp.md FT25)
-                (if k.action /= 0 then
-                    when m.sending is
-                        Just s ->
-                            conflictKey k s m
+                            { menu = Nothing, search = Just s, pressed = True, copy = False } ->
+                                -- the search bar takes the keys while it is open (§23),
+                                -- but Ctrl+Shift+C, which copies the match
+                                handle remote ms rest (searchKey k s m)
 
-                        Nothing ->
-                            meant Reason.NotOpen (Task.succeed m)
+                            _ ->
+                                if isSearchKey m.config k && not (TmuxMode.isOn m.tmux) then
+                                    handle remote ms rest { m | search = Just Search.start, urgent = True }
 
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
+                                else if isSettingsKey m.config k then
+                                    -- Ctrl+Comma: the settings window (docs/settings.md ST9),
+                                    -- which raises one already open
+                                    openSettings m |> Task.andThen (\next -> handle remote ms rest next)
 
-            else if Maybe.isJust m.picking then
-                -- the folder picker's working model takes the keys (docs/sftp.md FT32)
-                (if k.action /= 0 then
-                    when m.picking is
-                        Just pk ->
-                            pickerStep (Picker.key demoWith { sym = k.sym, unshifted = k.unshifted, mods = k.mods, text = Bytes.toStringLossy k.text } pk.picker) pk m
+                                else if tabAction k m /= Nothing then
+                                    -- the tabs' keys (docs/tabs.md TB1)
+                                    when tabAction k m is
+                                        Just action ->
+                                            tabDo action m |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                        Nothing ->
-                            Task.succeed m
-
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if Maybe.isJust m.choosing then
-                -- the folder chooser takes the keys (docs/sftp.md FT24)
-                (if k.action /= 0 then
-                    when m.choosing is
-                        Just c ->
-                            chooserKey k c m
-
-                        Nothing ->
-                            Task.succeed m
-
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if m.pasteAsk /= Nothing then
-                -- the question before a picture is written takes the keys
-                -- (docs/sftp.md FT16)
-                (if k.action /= 0 then
-                    when m.pasteAsk is
-                        Just a ->
-                            pasteKey k a m
-
-                        Nothing ->
-                            Task.succeed m
-
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if m.closing /= Nothing then
-                -- the question before closing takes the keys (TB4)
-                (if k.action /= 0 then
-                    when m.closing is
-                        Just c ->
-                            closeKey k c m
-
-                        Nothing ->
-                            Task.succeed m
-
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if m.renaming /= Nothing then
-                -- the rename box takes the keys while it is open (TB1)
-                (if k.action /= 0 then
-                    when m.renaming is
-                        Just r ->
-                            renameKey k r m
-
-                        Nothing ->
-                            Task.succeed m
-
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if m.coloring /= Nothing then
-                -- and the color box (TB9)
-                (if k.action /= 0 then
-                    when m.coloring is
-                        Just id ->
-                            colorKey k id m
-
-                        Nothing ->
-                            Task.succeed m
-
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if ownScreenUp m then
-                -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
-                (if k.action /= 0 then
-                    sshKey remote k m
-
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if m.menu /= Nothing && k.action /= 0 then
-                -- the menu takes the keys while it is open
-                when m.menu is
-                    Just menu ->
-                        menuKey k.sym menu m |> Task.andThen (\next -> handle remote ms rest next)
-
-                    Nothing ->
-                        handle remote ms rest m
-
-            else if m.search /= Nothing && k.action /= 0 && not (isCopyKey m.config k) then
-                -- the search bar takes the keys while it is open (§23),
-                -- but Ctrl+Shift+C, which copies the match
-                when m.search is
-                    Just s ->
-                        handle remote ms rest (searchKey k s m)
-
-                    Nothing ->
-                        handle remote ms rest m
-
-            else if isSearchKey m.config k && not (TmuxMode.isOn m.tmux) then
-                handle remote ms rest { m | search = Just Search.start, urgent = True }
-
-            else if isSettingsKey m.config k then
-                -- Ctrl+Comma: the settings window (docs/settings.md ST9),
-                -- which raises one already open
-                openSettings m |> Task.andThen (\next -> handle remote ms rest next)
-
-            else if tabAction k m /= Nothing then
-                -- the tabs' keys (docs/tabs.md TB1)
-                when tabAction k m is
-                    Just action ->
-                        tabDo action m |> Task.andThen (\next -> handle next.remote ms rest next)
-
-                    Nothing ->
-                        handle remote ms rest m
-
-            else
-                when zoomOf m k is
-                    Just points ->
-                        Window.zoom points
-                            |> Task.andThen
-                                (\cell ->
-                                    -- every cell is drawn again at the new size
-                                    handle remote ms rest (cellSized cell { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True })
-                                )
-
-                    Nothing ->
-                        meant Reason.NotKnown
-                            if isPasteKey m.config k /= Nothing then
-                                -- Shift+Insert and Ctrl+Shift+V, the
-                                -- terminal's before the program's
-                                owned remote ms rest { m | toPaste = Maybe.map (pasteFrom m.config) (isPasteKey m.config k) }
-
-                            else if isCopyKey m.config k then
-                                -- Ctrl+Shift+C: the selection to CLIPBOARD
-                                -- (docs/user/copy-and-paste.md), the key
-                                -- puritty's with or without one
-                                owned remote
-                                    ms
-                                    rest
-                                    (if TmuxMode.isOn m.tmux then
-                                        when TmuxMode.selectedText m.tmux is
-                                            Just text ->
-                                                { m | toOwn = Just { which = Window.Clipboard, text = text } }
-
-                                            Nothing ->
-                                                meant Reason.NotOpen m
-
-                                     else
-                                        when m.selection is
-                                            Just s ->
-                                                { m | toOwn = Just { which = Window.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
-
-                                            Nothing ->
-                                                meant Reason.NotOpen m
-                                    )
-
-                            else if
-                                TmuxMode.isOn m.tmux
-                            then
-                                -- the tabs' keys, then the active pane's
-                                -- view (docs/tmux.md TM17, TM18)
-                                let
-                                    tabbed =
-                                        TmuxMode.tabKey k m.tmux
-                                in
-                                if tabbed.used then
-                                    handle remote ms rest (sendCommands tabbed.commands { m | tmux = tabbed.state, urgent = True })
+                                        Nothing ->
+                                            meant Reason.NotKnown (handle remote ms rest m)
 
                                 else
-                                    let
-                                        scrolled =
-                                            TmuxMode.scrollKey k tabbed.state
-                                    in
-                                    if scrolled.used then
-                                        handle remote ms rest { m | tmux = scrolled.state, urgent = True }
+                                    when zoomOf m k is
+                                        Just points ->
+                                            Window.zoom points
+                                                |> Task.andThen
+                                                    (\cell ->
+                                                        -- every cell is drawn again at the new size
+                                                        handle remote ms rest (cellSized cell { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True })
+                                                    )
 
-                                    else
-                                        key remote ms rest k { m | tmux = scrolled.state }
+                                        Nothing ->
+                                            meant Reason.NotKnown
+                                                if isPasteKey m.config k /= Nothing then
+                                                    -- Shift+Insert and Ctrl+Shift+V, the
+                                                    -- terminal's before the program's
+                                                    owned remote ms rest { m | toPaste = Maybe.map (pasteFrom m.config) (isPasteKey m.config k) }
 
-                            else
-                                when scrollKeyOf m k is
-                                    Just back ->
-                                        handle remote ms rest { m | back = back, urgent = True }
+                                                else if isCopyKey m.config k then
+                                                    -- Ctrl+Shift+C: the selection to CLIPBOARD
+                                                    -- (docs/user/copy-and-paste.md), the key
+                                                    -- puritty's with or without one
+                                                    owned remote
+                                                        ms
+                                                        rest
+                                                        (if TmuxMode.isOn m.tmux then
+                                                            when TmuxMode.selectedText m.tmux is
+                                                                Just text ->
+                                                                    { m | toOwn = Just { which = Window.Clipboard, text = text } }
 
-                                    Nothing ->
-                                        meant Reason.NotKnown key remote ms rest k m
+                                                                Nothing ->
+                                                                    meant Reason.NotOpen m
+
+                                                         else
+                                                            when m.selection is
+                                                                Just s ->
+                                                                    { m | toOwn = Just { which = Window.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
+
+                                                                Nothing ->
+                                                                    meant Reason.NotOpen m
+                                                        )
+
+                                                else if
+                                                    TmuxMode.isOn m.tmux
+                                                then
+                                                    -- the tabs' keys, then the active pane's
+                                                    -- view (docs/tmux.md TM17, TM18)
+                                                    let
+                                                        tabbed =
+                                                            TmuxMode.tabKey k m.tmux
+                                                    in
+                                                    if tabbed.used then
+                                                        handle remote ms rest (sendCommands tabbed.commands { m | tmux = tabbed.state, urgent = True })
+
+                                                    else
+                                                        let
+                                                            scrolled =
+                                                                TmuxMode.scrollKey k tabbed.state
+                                                        in
+                                                        if scrolled.used then
+                                                            handle remote ms rest { m | tmux = scrolled.state, urgent = True }
+
+                                                        else
+                                                            key remote ms rest k { m | tmux = scrolled.state }
+
+                                                else
+                                                    when scrollKeyOf m k is
+                                                        Just back ->
+                                                            handle remote ms rest { m | back = back, urgent = True }
+
+                                                        Nothing ->
+                                                            meant Reason.NotKnown key remote ms rest k m
 
         Window.Resized size ->
             -- every tab at the window's size, less the bar's row
@@ -6903,39 +6853,38 @@ handleOne remote ms rest ev m =
             handle remote ms rest m
 
         Window.Commit text ->
-            if m.renaming /= Nothing then
-                when m.renaming is
-                    Just r ->
-                        handle remote ms rest (renameTyped (Bytes.toStringLossy text) r m)
+            when m.renaming is
+                Just r ->
+                    handle remote ms rest (renameTyped (Bytes.toStringLossy text) r m)
 
-                    Nothing ->
-                        handle remote ms rest m
+                Nothing ->
+                    meant Reason.NotOpen
+                        (if m.coloring /= Nothing then
+                            -- what the IME commits is no answer to the color box
+                            handle remote ms rest m
 
-            else if m.coloring /= Nothing then
-                -- what the IME commits is no answer to the color box
-                handle remote ms rest m
+                         else if ownScreenUp m then
+                            -- what the IME commits, typed into the question
+                            handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
 
-            else if ownScreenUp m then
-                -- what the IME commits, typed into the question
-                handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
+                         else if TmuxMode.isAsking m.tmux then
+                            -- typed into tmux's prompt that puritty asks (TM25)
+                            handle remote ms rest { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
 
-            else if TmuxMode.isAsking m.tmux then
-                -- typed into tmux's prompt that puritty asks (TM25)
-                handle remote ms rest { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
+                         else
+                            -- the key path: the text as typed, never as a paste (V46)
+                            -- one key sound for the commit (feature-plan.md §3)
+                            imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
+                                |> Task.andThen
+                                    (\_ ->
+                                        if m.config.soundKeys then
+                                            Window.sound 0 |> Task.map (\_ -> {})
 
-            else
-                -- the key path: the text as typed, never as a paste (V46)
-                -- one key sound for the commit (feature-plan.md §3)
-                imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
-                    |> Task.andThen
-                        (\_ ->
-                            if m.config.soundKeys then
-                                Window.sound 0 |> Task.map (\_ -> {})
-
-                            else
-                                Task.succeed {}
+                                        else
+                                            Task.succeed {}
+                                    )
+                                |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
                         )
-                    |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
 
         Window.Preedit p ->
             let
@@ -6945,13 +6894,22 @@ handleOne remote ms rest ev m =
                 old =
                     m.preedit
 
+                -- the span the input method changed, within the old text: its
+                -- first and length are the X server's, and their sum could
+                -- wrap (docs/refine-survey.md RS9)
+                spanStart =
+                    clamp 0 (Array.length old.points) p.first
+
+                spanEnd =
+                    spanStart + clamp 0 (Array.length old.points - spanStart) p.length
+
                 points =
-                    Array.takeFirst p.first old.points ++ cps ++ Array.dropFirst (p.first + p.length) old.points
+                    Array.takeFirst spanStart old.points ++ cps ++ Array.dropFirst spanEnd old.points
 
                 feedback =
-                    Array.takeFirst p.first old.feedback
+                    Array.takeFirst spanStart old.feedback
                         ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault (meant Reason.FromOutside 0) (Array.get i p.feedback))
-                        ++ Array.dropFirst (p.first + p.length) old.feedback
+                        ++ Array.dropFirst spanEnd old.feedback
             in
             imeLine m.imeLog ("preedit " ++ String.fromArray (Array.mapAndKeepJust Char.fromCode points) ++ " caret " ++ String.fromInt p.caret ++ " feedback " ++ String.join " " (Array.map String.fromInt feedback))
                 |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = points, feedback = feedback, caret = p.caret }, urgent = True })
@@ -6985,174 +6943,135 @@ handleOne remote ms rest ev m =
                 -- a second time (DG7)
                 handleOne remote ms rest (Window.Pointer p) { m | hover = Just p }
 
-            else if m.startFailed /= Nothing then
-                -- and the pointer: its button dismisses it
-                (if p.action == 0 then
-                    startFailedPress p m
+            else
+                -- the dialog that is up takes the pointer (docs/refine-survey.md RS3)
+                when dialogUp m is
+                    StartFailedUp ->
+                        -- and the pointer: its button dismisses it
+                        (if p.action == 0 then
+                            startFailedPress p m
 
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
+                         else
+                            Task.succeed m
+                        )
+                            |> Task.andThen (\next -> handle next.remote ms rest next)
 
-            else if Maybe.isJust m.dropAsk then
-                -- the question before dropped files are sent
-                (if p.action == 0 then
-                    when m.dropAsk is
-                        Just a ->
+                    DropAsking a ->
+                        -- the question before dropped files are sent
+                        (if p.action == 0 then
                             dropPress p a m
 
-                        Nothing ->
+                         else
                             Task.succeed m
+                        )
+                            |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
+                    Conflicting sending ->
+                        -- the conflict question takes the pointer
+                        (if p.action == 0 then
+                            conflictPress p sending m
 
-            else if sendingAsks m then
-                -- the conflict question takes the pointer
-                (if p.action == 0 then
-                    when m.sending is
-                        Just s ->
-                            conflictPress p s m
-
-                        Nothing ->
-                            meant Reason.NotOpen (Task.succeed m)
-
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if Maybe.isJust m.sending && p.action == 0 && p.button == 1 && Dialog.noteBarAt (overlaySize m) (Maybe.map .text m.note |> Maybe.withDefault (meant Reason.NotOpen "")) { x = p.x, y = p.y } && Maybe.isJust m.note then
-                -- a click on the progress cancels the batch (FT25)
-                (when m.sending is
-                    Just s ->
-                        sendingStep (Sending.cancel s) { m | urgent = True }
-
-                    Nothing ->
-                        Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if Maybe.isJust m.picking then
-                -- the folder picker's working model takes the pointer, its
-                -- motion too, for what is under it
-                (when m.picking is
-                    Just pk ->
-                        pickerStep (Picker.pointer (overlaySize m) demoWith { action = p.action, button = p.button, x = p.x, y = p.y, ms = ms } pk.picker) pk m
-
-                    Nothing ->
-                        Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if Maybe.isJust m.choosing then
-                -- the folder picker takes the pointer, its motion too, for
-                -- what is under it (docs/sftp.md FT32)
-                (when m.choosing is
-                    Just c ->
-                        chooserPointer p ms c m
-
-                    Nothing ->
-                        Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
-
-            else if m.pasteAsk /= Nothing then
-                -- the paste question takes the pointer, as the close
-                -- question does
-                (if p.action == 0 then
-                    when m.pasteAsk is
-                        Just a ->
-                            pastePress p a m
-
-                        Nothing ->
+                         else
                             Task.succeed m
+                        )
+                            |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
+                    up ->
+                        when noteBarSending p m is
+                            Just sending ->
+                                -- a click on the progress cancels the batch (FT25)
+                                sendingStep (Sending.cancel sending) { m | urgent = True }
+                                    |> Task.andThen (\next -> handle next.remote ms rest next)
 
-            else if m.closing /= Nothing then
-                -- the close question takes the pointer: its buttons
-                -- answer it, and nothing reaches the terminal (TB12)
-                (if p.action == 0 then
-                    when m.closing is
-                        Just c ->
-                            closePress p c m
+                            Nothing ->
+                                meant Reason.NotOpen
+                                    (when up is
+                                        PickingUp pk ->
+                                            -- the folder picker's working model takes the pointer, its motion too, for what is under it
+                                            pickerStep (Picker.pointer (overlaySize m) demoWith { action = p.action, button = p.button, x = p.x, y = p.y, ms = ms } pk.picker) pk m
+                                                |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                        Nothing ->
-                            Task.succeed m
+                                        ChoosingUp c ->
+                                            -- the folder picker takes the pointer, its motion too, for what is under it (docs/sftp.md FT32)
+                                            chooserPointer p ms c m
+                                                |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
+                                        PasteAsking a ->
+                                            -- the paste question takes the pointer, as the close question does
+                                            (if p.action == 0 then
+                                                pastePress p a m
 
-            else if m.coloring /= Nothing then
-                -- the color box takes the presses while it is open (TB9)
-                (if p.action == 0 then
-                    when m.coloring is
-                        Just id ->
-                            colorPress p id m
+                                             else
+                                                Task.succeed m
+                                            )
+                                                |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                        Nothing ->
-                            Task.succeed m
+                                        ClosingUp c ->
+                                            -- the close question takes the pointer: its buttons answer it, and nothing reaches the terminal (TB12)
+                                            (if p.action == 0 then
+                                                closePress p c m
 
-                 else
-                    Task.succeed m
-                )
-                    |> Task.andThen (\next -> handle next.remote ms rest next)
+                                             else
+                                                Task.succeed m
+                                            )
+                                                |> Task.andThen (\next -> handle next.remote ms rest next)
 
-            else if p.action == 0 && p.button == 1 && ownScreenUp m && rememberOffered m then
-                -- the ssh question's box: a click on its checkbox ticks it
-                -- and gives it the keys, one elsewhere gives them back to
-                -- the field (docs/saved-secrets.md PW10)
-                handle remote ms rest (rememberPress p m)
+                                        ColoringUp id ->
+                                            -- the color box takes the presses while it is open (TB9)
+                                            (if p.action == 0 then
+                                                colorPress p id m
 
-            else if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
-                -- a press on the tab bar (docs/tabs.md TB1)
-                barPress ms p m |> Task.andThen (\next -> handle next.remote ms rest next)
+                                             else
+                                                Task.succeed m
+                                            )
+                                                |> Task.andThen (\next -> handle next.remote ms rest next)
 
-            else if p.action == 0 && m.menu /= Nothing then
-                when m.menu is
-                    Just menu ->
-                        menuPress p menu m |> Task.andThen (\next -> handle remote ms rest next)
+                                        _ ->
+                                            if p.action == 0 && p.button == 1 && ownScreenUp m && rememberOffered m then
+                                                -- the ssh question's box: a click on its checkbox ticks it
+                                                -- and gives it the keys, one elsewhere gives them back to
+                                                -- the field (docs/saved-secrets.md PW10)
+                                                handle remote ms rest (rememberPress p m)
 
-                    Nothing ->
-                        handle remote ms rest m
+                                            else if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
+                                                -- a press on the tab bar (docs/tabs.md TB1)
+                                                barPress ms p m |> Task.andThen (\next -> handle next.remote ms rest next)
 
-            else if isMenuClick p then
-                openMenu p m |> Task.andThen (\next -> handle remote ms rest next)
+                                            else
+                                                when { menu = m.menu, pressed = p.action == 0 } is
+                                                    { menu = Just menu, pressed = True } ->
+                                                        menuPress p menu m |> Task.andThen (\next -> handle remote ms rest next)
 
-            else if
-                isZoomStep p
-            then
-                -- Ctrl and the wheel: puritty's always, a point a
-                -- step, the steps that came together one zoom
-                -- (docs/phase3-select.md §11, §17)
-                let
-                    steps =
-                        zoomSteps rest (stepOf p)
+                                                    _ ->
+                                                        if isMenuClick p then
+                                                            openMenu p m |> Task.andThen (\next -> handle remote ms rest next)
 
-                    points =
-                        clamp 4 96 (m.points + steps.net)
-                in
-                if points == m.points then
-                    handle remote ms steps.rest m
+                                                        else if
+                                                            isZoomStep p
+                                                        then
+                                                            -- Ctrl and the wheel: puritty's always, a point a
+                                                            -- step, the steps that came together one zoom
+                                                            -- (docs/phase3-select.md §11, §17)
+                                                            let
+                                                                steps =
+                                                                    zoomSteps rest (stepOf p)
 
-                else
-                    Window.zoom points
-                        |> Task.andThen
-                            (\cell ->
-                                handle remote ms steps.rest (cellSized cell { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True })
-                            )
+                                                                points =
+                                                                    clamp 4 96 (m.points + steps.net)
+                                                            in
+                                                            if points == m.points then
+                                                                handle remote ms steps.rest m
 
-            else
-                owned remote ms rest (pointer ms p m)
+                                                            else
+                                                                Window.zoom points
+                                                                    |> Task.andThen
+                                                                        (\cell ->
+                                                                            handle remote ms steps.rest (cellSized cell { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True })
+                                                                        )
+
+                                                        else
+                                                            owned remote ms rest (pointer ms p m)
+                                    )
 
         Window.Pasted more ->
             Window.pasted
@@ -7453,24 +7372,22 @@ lineEndsFrom bytes i n last out =
         out
 
     else
-        when Bytes.get i bytes is
-            Just u ->
-                let
-                    b =
-                        UInt8.toInt u
-                in
-                if b == 0x0A then
-                    if last == 0x0D then
-                        lineEndsFrom bytes (i + 1) n b out
+        let
+            u =
+                Bytes.getProven i bytes
 
-                    else
-                        lineEndsFrom bytes (i + 1) n b (Array.pushLast (UInt8.fromInt 0x0D) out)
+            b =
+                UInt8.toInt u
+        in
+        if b == 0x0A then
+            if last == 0x0D then
+                lineEndsFrom bytes (i + 1) n b out
 
-                else
-                    lineEndsFrom bytes (i + 1) n b (Array.pushLast u out)
+            else
+                lineEndsFrom bytes (i + 1) n b (Array.pushLast (UInt8.fromInt 0x0D) out)
 
-            Nothing ->
-                out
+        else
+            lineEndsFrom bytes (i + 1) n b (Array.pushLast u out)
 
 
 pasteInto : Bool -> Bytes -> (taken m : Model) -> Model
@@ -8358,6 +8275,129 @@ spotOver layers cursor =
                 )
 
 
+{-| The last piece of `s` cut at `sep`: a separator that is not empty cuts
+at least one piece, so the last is always there. -}
+lastPiece : (sep : String where 1 <= String.count sep) -> String -> String
+lastPiece sep s =
+    let
+        parts =
+            String.split sep s
+    in
+    Array.getProven (Array.length parts - 1) parts
+
+
+{-| The dialog that takes the keys and the pointer: the first that is up,
+in the order they are asked (docs/refine-survey.md RS3). -}
+type Dialog
+    = StartFailedUp
+    | DropAsking { folder : Bytes, files : Array Bytes, tab : Int }
+    | Conflicting Sending.Sending
+    | PickingUp Picking
+    | ChoosingUp Choosing
+    | PasteAsking PasteAsk
+    | ClosingUp { id : Int, why : String, window : Bool }
+    | RenamingUp { id : Int, typed : String }
+    | ColoringUp Int
+    | NoDialog
+
+
+dialogUp : Model -> Dialog
+dialogUp m =
+    if m.startFailed /= Nothing then
+        StartFailedUp
+
+    else
+        dialogFromDrop m
+
+
+dialogFromDrop : Model -> Dialog
+dialogFromDrop m =
+    when m.dropAsk is
+        Just a ->
+            DropAsking a
+
+        Nothing ->
+            meant Reason.NotOpen
+                (when { asks = sendingAsks m, sending = m.sending } is
+                    { asks = True, sending = Just sending } ->
+                        Conflicting sending
+
+                    _ ->
+                        dialogFromPicker m
+                )
+
+
+dialogFromPicker : Model -> Dialog
+dialogFromPicker m =
+    when m.picking is
+        Just pk ->
+            PickingUp pk
+
+        Nothing ->
+            meant Reason.NotOpen (dialogFromChooser m)
+
+
+dialogFromChooser : Model -> Dialog
+dialogFromChooser m =
+    when m.choosing is
+        Just c ->
+            ChoosingUp c
+
+        Nothing ->
+            meant Reason.NotOpen (dialogFromPaste m)
+
+
+dialogFromPaste : Model -> Dialog
+dialogFromPaste m =
+    when m.pasteAsk is
+        Just a ->
+            PasteAsking a
+
+        Nothing ->
+            meant Reason.NotOpen (dialogFromClosing m)
+
+
+dialogFromClosing : Model -> Dialog
+dialogFromClosing m =
+    when m.closing is
+        Just c ->
+            ClosingUp c
+
+        Nothing ->
+            meant Reason.NotOpen (dialogFromRenaming m)
+
+
+dialogFromRenaming : Model -> Dialog
+dialogFromRenaming m =
+    when m.renaming is
+        Just r ->
+            RenamingUp r
+
+        Nothing ->
+            meant Reason.NotOpen (dialogFromColoring m)
+
+
+dialogFromColoring : Model -> Dialog
+dialogFromColoring m =
+    when m.coloring is
+        Just id ->
+            ColoringUp id
+
+        Nothing ->
+            meant Reason.NotOpen (NoDialog)
+
+
+{-| The batch being sent, when a press is on its progress in the note bar:
+the press cancels it (docs/sftp.md FT25). -}
+noteBarSending : Window.PointerEvent -> Model -> Maybe Sending.Sending
+noteBarSending p m =
+    if Maybe.isJust m.sending && p.action == 0 && p.button == 1 && Dialog.noteBarAt (overlaySize m) (Maybe.map .text m.note |> Maybe.withDefault (meant Reason.NotOpen "")) { x = p.x, y = p.y } && Maybe.isJust m.note then
+        m.sending
+
+    else
+        Nothing
+
+
 {-| A frame drawn, and the window's title made the program's. -}
 draw : Int -> (taken m : Model) -> Task x Model
 draw ms m =
@@ -8549,7 +8589,7 @@ draw ms m =
 
                     else if ownUp then
                         -- puritty's own while its screen is up, which no server can set
-                        "puritty: ssh to " ++ (m.ssh |> Maybe.map .host |> Maybe.withDefault "")
+                        "puritty: ssh to " ++ (m.ssh |> Maybe.map .host |> Maybe.withDefault (meant Reason.NotOpen ""))
 
                     else if m.term.title == "" then
                         m.config.title
@@ -9519,7 +9559,7 @@ reopenTab m =
                     openTabWith { directory = directory, name = name, color = color, kept = Just c.tab } { m | closedTabs = out.builder, bellsHeard = m.bellsHeard + c.tab.term.bells }
 
                 Nothing ->
-                    Task.succeed { m | closedTabs = out.builder }
+                    meant Reason.NoMore (Task.succeed { m | closedTabs = out.builder })
 
         Nothing ->
             meant Reason.NoMore Task.succeed m
@@ -9735,10 +9775,10 @@ shortTitle title =
             String.split " - " title
 
         first =
-            Maybe.withDefault title (Array.first parts)
+            Array.getProven 0 parts
 
         name =
-            Maybe.withDefault first (Array.last (String.split "\\" first))
+            lastPiece "\\" first
     in
     if String.contains "\\" first && String.endsWith ".exe" (String.toLower first) then
         String.join " - " ([ String.dropLast 4 name ] ++ Array.dropFirst 1 parts)
@@ -10101,7 +10141,7 @@ colorBox m =
         swatch choice =
             when choice is
                 Picked c ->
-                    { color = c, label = String.fromInt (1 + (Array.findFirst (\x -> x == c) tabColors |> Maybe.map .index |> Maybe.withDefault 0)), marked = info.color == choice }
+                    { color = c, label = String.fromInt (1 + (Array.findFirst (\x -> x == c) tabColors |> Maybe.map .index |> Maybe.withDefault (meant Reason.NotKnown 0))), marked = info.color == choice }
 
                 NoColor ->
                     { color = 0x3A3A3A, label = "0", marked = info.color == NoColor || (info.color == HostsColor && hostOwn == Nothing) }

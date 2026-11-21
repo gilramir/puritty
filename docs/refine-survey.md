@@ -184,3 +184,78 @@ Both are geng-lang's to decide; written here first, for its register.
 5. **gren-toml**: the index refinements that settle its four open checks
    and most of `Toml.Edit`'s fallbacks, then marks for the rest; then
    argparse, civil-time and i18next, which are small.
+
+## RS9 · Done (2026-11-21)
+
+Gilbert: "fix the 2 checker gaps as well, and fix our pilot workaround.
+Fix everything you listed; you can choose the order."
+
+**The checker's gaps** (geng-lang `m4-refine-wrap.md` Dnene65). RS7's
+first gap turned out to be two: the place (a record alias's field could
+not name a `Dict`'s values) and the thing under it (an element that is a
+container, refined by its own length, was neither known nor asked). Both
+are closed, and `Vt.Jpeg` keeps `quant : Dict Int Quant` in `Parsed` with
+no wrapper type. The second gap was `core`'s: `Array.initialize` said its
+result's length and not its callback's index; it says both now, and
+`unzigAt i` needs no clamp. Its first finding was in puritty: the input
+method's preedit span (`p.first + p.length`, the X server's) could wrap;
+`Main` and `SettingsProgram` clamp it to the old text.
+
+**RS3, the 115 that never ran: none left.** vt's cell reads, the split
+firsts and lasts (a `lastPiece` with a refined separator), byte reads
+(`Bytes.getProven`), reads at an index the code had already tested, and
+`Char.fromCodeProven` (new in `core`) for the four `Char.fromCode`
+defaults. The dialogs' chains in `Main.handleOne` (`Key`, `Pointer`,
+`Commit`) match `dialogUp m`, which says which dialog is up with its
+value, once, where each tested a field and matched it again; their order
+is kept, the progress bar's click where it was in the pointer's.
+
+**RS4**: Inflate's Huffman counts (16) and its length and distance tables
+(29, 30) are stated, `decodeLen` and the code-length loop read them proved,
+and the symbols a damaged stream can send (286, 287; 30, 31) are tested and
+said; `copyBack` asks its output to hold the distance, which the caller
+tests. Jpeg's quantization (64) and Huffman (16, BITS) tables, `idct`'s and
+`written`'s 64 and `dot8`'s true bounds (`ia + 7·sa <= 63`) are stated and
+read proved; `Table` is named by the standard's BITS and HUFFVAL so its
+shape is not Inflate's `Huffman`'s, whose invariant every record of the
+shape would keep (Dnene22). TmuxMode's sort names are read around their
+length. Left: the decoders' reads that tie one structure to another (a
+block's component in a frame's, a plane's offset), which need an invariant
+across two arrays.
+
+**RS5**: `Vt.Width.width` reads its table (stated 8,192, through the
+generator, which also now writes `find` as the file had it) for any code
+from 0; the terminal's record states its style cache's 1,024 entries, so
+`withPen` reads it proved; `Schema.hex` and `Tmux.Borders` read literal
+tables at a bounded index (`typeOf` says 1 to 12); `Schema.distance` keeps
+its rows' lengths through a recursion that states them. The rest of the 70
+are marked `meant` with their reasons, and the baseline list is empty.
+`Vt.Style.intern`'s read of an id from its `Dict`'s arrays stays a mark: a
+`Dict`'s arrays' elements' relation to another field is past what the
+checker says.
+
+**The libraries** (RS6). A helper took gren-argparse, gren-civil-time and
+gren-i18next to no unmarked fallback, none that never runs and nothing open
+(argparse 7 proved, 29 marked; civil-time 1 and 5; i18next 6 marked), their
+suites passing as before (136, 101, 34). gren-toml went further. Gilbert,
+reading its first pass: "It's using meant oddly." Its 78 marks were read
+for what a mark is for, a fallback that runs by design, and 22 were not:
+`TryNext` (7) marked a grammar's next alternative, which is now an
+`orElseLazy` or `Result.onError` chain; `NotYet` (10) marked an upsert's
+insert, which now matches `Toml.Slot`'s `Absent` and `Present` (Gilbert:
+restructure); `Empty` (5) defaulted what cannot be, now proved by
+`Toml.Ast.Document` having its last line and `Toml.Literal.key` a part
+(Gilbert: yes to the public type saying so); `Unproved` (4), of which
+`TableArrayValue`'s at least one table and an error branch settle two, and
+two are another library's promise no refinement states
+(`PromisedElsewhere`). 57 marks, each a real fallback; 159 checks hold
+where 126 did; its 268 tests and its toml-test conformance pass.
+
+**Checked.** puritty: 2,940 checks hold, 950 invariant checks, nothing open,
+the list empty; replay 357 of 357, keys 50,000 agree, drop 26, sshwindow
+33, settings 20, the unit gate 19 of 19 (app 449, tmux 136, vt 211 on node,
+Linux and Windows), and the Windows build, with the four libraries as
+committed. geng-lang: refine 89 of 89 with `element-measures`, `run`,
+`optimize`, `own` and `suites` (49) pass, `core-golden`'s changes only the
+four `core` modules' hashes.
+

@@ -1066,7 +1066,7 @@ sections =
                         Array.pushLast section acc
 
                 Nothing ->
-                    acc
+                    meant Reason.FromOutside (acc)
         )
         []
         settings
@@ -1462,7 +1462,7 @@ hostLook at here named table key value r =
                         meant Reason.FromOutside bad why
 
             Nothing ->
-                r
+                meant Reason.FromOutside (r)
 
 
 report : Int -> String -> Decoded -> Decoded
@@ -1642,7 +1642,7 @@ alternatives names =
                 String.join ", " initial ++ " or " ++ last
 
         Nothing ->
-            "anything"
+            meant Reason.NoMore ("anything")
 
 
 {-| A value as the file writes it, for a report. -}
@@ -1683,7 +1683,7 @@ hex : Int -> String
 hex n =
     let
         digit d =
-            String.fromChar (Maybe.withDefault '0' (String.toArray "0123456789abcdef" |> Array.get d))
+            String.fromChar (Array.getProven d [ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' ])
 
         two b =
             digit (b // 16) ++ digit (modBy 16 b)
@@ -1732,43 +1732,56 @@ distance a b =
         bs =
             String.toArray b
 
-        first =
-            Array.range 0 (Array.length bs)
+        n =
+            Array.length bs
     in
-    String.foldl
-        (\ca row ->
-            let
-                start =
-                    Maybe.withDefault 0 (Array.first row) + 1
-            in
-            Array.indexedFoldl
-                (\j cb acc ->
-                    let
-                        above =
-                            Maybe.withDefault 0 (Array.get (j + 1) row)
+    -- the first row, 0 to n: `range` promises its length only below
+    -- `Int`'s largest span, which a length is not known to be
+    Array.getProven n (rowsFrom (String.toArray a) 0 bs (Array.pushFirst 0 (Array.initialize n 1 (\j -> j))))
 
-                        diagonal =
-                            Maybe.withDefault 0 (Array.get j row)
 
-                        left =
-                            Maybe.withDefault 0 (Array.last acc)
+{-| The edit distances' rows for `chars` from its `i`th character on, after
+`row`. -}
+rowsFrom : Array Char -> (i : Int where 0 <= i) -> (bs : Array Char) -> (row : Array Int where Array.length row == Array.length bs + 1) -> (r : Array Int where Array.length r == Array.length bs + 1)
+rowsFrom chars i bs row =
+    if i >= Array.length chars then
+        row
 
-                        cost =
-                            if ca == cb then
-                                0
+    else
+        rowsFrom chars (i + 1) bs (nextRow (Array.getProven i chars) bs row)
 
-                            else
-                                1
-                    in
-                    Array.pushLast (min (min (above + 1) (left + 1)) (diagonal + cost)) acc
-                )
-                [ start ]
-                bs
-        )
-        first
-        a
-        |> Array.last
-        |> Maybe.withDefault 0
+
+{-| The edit distances' next row, for `ca` against each of `bs`: as long
+as the row before, one longer than `bs`. -}
+nextRow : Char -> (bs : Array Char) -> (row : Array Int where Array.length row == Array.length bs + 1) -> (r : Array Int where Array.length r == Array.length bs + 1)
+nextRow ca bs row =
+    rowFrom ca bs row 0 [ Array.getProven 0 row + 1 ]
+
+
+rowFrom : Char -> (bs : Array Char) -> (row : Array Int where Array.length row == Array.length bs + 1) -> (j : Int where 0 <= j && j <= Array.length bs) -> (acc : Array Int where Array.length acc == j + 1) -> (r : Array Int where Array.length r == Array.length bs + 1)
+rowFrom ca bs row j acc =
+    if j >= Array.length bs then
+        acc
+
+    else
+        let
+            above =
+                Array.getProven (j + 1) row
+
+            diagonal =
+                Array.getProven j row
+
+            left =
+                Array.getProven j acc
+
+            cost =
+                if ca == Array.getProven j bs then
+                    0
+
+                else
+                    1
+        in
+        rowFrom ca bs row (j + 1) (Array.pushLast (min (min (above + 1) (left + 1)) (diagonal + cost)) acc)
 
 
 -- A HOST'S FIELDS

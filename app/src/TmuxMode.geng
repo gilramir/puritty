@@ -1790,7 +1790,7 @@ celledFrom window embedder cells i panes =
     if i < Builder.length panes then
         let
             cell =
-                Maybe.withDefault { width = window.width, height = window.height } (Array.get i cells)
+                Array.getProven i cells
 
             -- the window's embedder, Kitty's pictures drawn into the cells
             -- (IM30) and Sixel's and iTerm2's drawn, and no file a pane's
@@ -2031,7 +2031,7 @@ titleControls s p =
             max 0 (p.w - 2)
 
         tcUsed =
-            min tcRoom (tcWidth (Maybe.withDefault "" (Array.first tcParts)))
+            min tcRoom (tcWidth (Array.getProven 0 tcParts))
 
         tcRight =
             String.join "" (Array.dropFirst 1 tcParts)
@@ -2046,13 +2046,13 @@ titleControls s p =
                     (\tcSeg acc ->
                         let
                             tcSpec =
-                                String.split "]" tcSeg |> Array.first |> Maybe.withDefault ""
+                                Array.getProven 0 (String.split "]" tcSeg)
 
                             tcBody =
                                 String.dropFirst (String.count tcSpec + 1) tcSeg
 
                             tcIn =
-                                String.split "#[norange]" tcBody |> Array.first |> Maybe.withDefault tcBody
+                                Array.getProven 0 (String.split "#[norange]" tcBody)
 
                             n =
                                 if String.startsWith "control|" tcSpec then
@@ -2073,7 +2073,7 @@ titleControls s p =
                                     meant Reason.FromOutside acc.spans
                         }
                     )
-                    { at = tcWidth (Maybe.withDefault "" (Array.first (String.split "#[range=" tcRight))), spans = [] }
+                    { at = tcWidth (Array.getProven 0 (String.split "#[range=" tcRight)), spans = [] }
                 |> .spans
     in
     if (tcStatus /= "top" && tcStatus /= "bottom") || tcUsed + 1 + tcWidth tcRight > tcRoom then
@@ -2827,7 +2827,7 @@ replied expect ok lines acc =
                     st.keys
             in
             if ok then
-                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs }, version = versionOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") |> String.split " " |> Array.last |> Maybe.withDefault "") } }
+                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs }, version = versionOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") |> lastPiece " ") } }
 
             else
                 { acc | state = st }
@@ -3162,10 +3162,10 @@ replied expect ok lines acc =
                         notice (SubscriptionChanged { name = p.name, window = -1, pane = -1, value = text }) a
 
                     else if p.scope == 1 then
-                        notice (SubscriptionChanged { name = p.name, window = idOf (Maybe.withDefault "" (Array.first parts)), pane = -1, value = String.join "\t" (Array.dropFirst 1 parts) }) a
+                        notice (SubscriptionChanged { name = p.name, window = idOf (Array.getProven 0 parts), pane = -1, value = String.join "\t" (Array.dropFirst 1 parts) }) a
 
                     else
-                        notice (SubscriptionChanged { name = p.name, window = idOf (Maybe.withDefault "" (Array.get 0 parts)), pane = idOf (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 parts)), value = String.join "\t" (Array.dropFirst 2 parts) }) a
+                        notice (SubscriptionChanged { name = p.name, window = idOf (Array.getProven 0 parts), pane = idOf (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 parts)), value = String.join "\t" (Array.dropFirst 2 parts) }) a
                 )
                 acc
                 (if ok then
@@ -3464,16 +3464,18 @@ replied expect ok lines acc =
                             |> Array.map Bytes.toStringLossy
                             |> Array.mapAndKeepJust
                                 (\line ->
-                                    when String.split ": " line |> Array.popFirst is
-                                        Just { first = n, rest = rest } ->
-                                            if rest /= [] && String.toInt n /= Nothing then
-                                                Just (String.join ": " rest)
+                                    let
+                                        pieces =
+                                            String.split ": " line
 
-                                            else
-                                                Nothing
+                                        rest =
+                                            Array.dropFirst 1 pieces
+                                    in
+                                    if rest /= [] && String.toInt (Array.getProven 0 pieces) /= Nothing then
+                                        Just (String.join ": " rest)
 
-                                        Nothing ->
-                                            Nothing
+                                    else
+                                        Nothing
                                 )
                 in
                 { acc | state = { st | tmuxHistory = Dict.set kind entries st.tmuxHistory } }
@@ -5062,7 +5064,7 @@ paint s0 =
                             )
                         |> drawPieces borders.tiled
                         |> drawPieces tiledMarks
-                        |> (\c -> Array.foldl (\p acc -> acc |> drawText (Maybe.withDefault boxColor (Dict.get p.id frameColors)) (boxAround cols rows p) |> Vt.composeStyled s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
+                        |> (\c -> Array.foldl (\p acc -> acc |> drawText (Maybe.withDefault (meant Reason.NotSet boxColor) (Dict.get p.id frameColors)) (boxAround cols rows p) |> Vt.composeStyled s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> drawPieces floatMarks
                         |> drawPieces borders.floating
                         |> drawPieces scrollbars
@@ -5406,19 +5408,14 @@ typedHere k bytes ms s =
 
     else
         when { asking = s.asking, menu = s.menu, numbers = s.numbers, view = s.view } is
-            { asking = Just _, menu = Just m, numbers = _, view = _ } ->
+            { asking = Just asked, menu = Just m, numbers = _, view = _ } ->
                 -- the prompt's menu of matches takes the keys over the
                 -- prompt (TM98); another menu waits
                 if m.completes then
                     menuKey k m { s | clock = ms }
 
                 else
-                    when s.asking is
-                        Just a ->
-                            promptKey k bytes ms a { s | clock = ms }
-
-                        Nothing ->
-                            { state = s, commands = [] }
+                    promptKey k bytes ms asked { s | clock = ms }
 
             { asking = Just a, menu = _, numbers = _, view = _ } ->
                 promptKey k bytes ms a { s | clock = ms }
@@ -6192,7 +6189,7 @@ emacsKey k bytes ms a0 s =
             Bytes.toStringLossy k.text
 
         plainText =
-            Bitwise.and k.mods 6 == 0 && text /= "" && Maybe.withDefault False (Maybe.map (\c -> Char.toCode c.first >= 0x20 && Char.toCode c.first /= 0x7F) (String.popFirst text))
+            Bitwise.and k.mods 6 == 0 && text /= "" && Maybe.withDefault (meant Reason.NoMore False) (Maybe.map (\c -> Char.toCode c.first >= 0x20 && Char.toCode c.first /= 0x7F) (String.popFirst text))
 
         enter =
             name == "Enter" || name == "KPEnter" || name == "C-m" || name == "C-j"
@@ -6469,7 +6466,7 @@ completed lists version a =
                                     Array.range 0 (min (String.count m) (String.count acc))
                                         |> Array.findLast (\k -> String.takeFirst k m == String.takeFirst k acc)
                                         |> Maybe.map .value
-                                        |> Maybe.withDefault 0
+                                        |> Maybe.withDefault (meant Reason.NoMore 0)
                             in
                             String.takeFirst shared acc
                         )
@@ -6571,25 +6568,25 @@ targetCompleted rows current a =
                 items
 
         prefixOf items =
-            when Array.first items is
-                Just first ->
-                    Array.foldl
-                        (\m acc ->
-                            let
-                                shared =
-                                    Array.range 0 (min (String.count m) (String.count acc))
-                                        |> Array.findLast (\k -> String.takeFirst k m == String.takeFirst k acc)
-                                        |> Maybe.map .value
-                                        -- nothing in common
-                                        |> Maybe.withDefault (meant Reason.NoMore 0)
-                            in
-                            String.takeFirst shared acc
-                        )
-                        first
-                        items
-
-                Nothing ->
-                    ""
+            let
+                -- `more`: two or more, so a first
+                first =
+                    Array.getProven 0 items
+            in
+            Array.foldl
+                (\m acc ->
+                    let
+                        shared =
+                            Array.range 0 (min (String.count m) (String.count acc))
+                                |> Array.findLast (\k -> String.takeFirst k m == String.takeFirst k acc)
+                                |> Maybe.map .value
+                                -- nothing in common
+                                |> Maybe.withDefault (meant Reason.NoMore 0)
+                    in
+                    String.takeFirst shared acc
+                )
+                first
+                items
 
         sessions =
             rows |> Array.map .session |> unique |> Array.sort |> Array.keepIf (\name -> String.startsWith wanted name)
@@ -7385,7 +7382,7 @@ keyName k =
             Bytes.toStringLossy k.text
 
         printable str =
-            String.count str == 1 && Maybe.withDefault False (Maybe.map (\c -> Char.toCode c >= 0x20 && Char.toCode c /= 0x7F) (Maybe.map .first (String.popFirst str)))
+            String.count str == 1 && Maybe.withDefault (meant Reason.NoMore False) (Maybe.map (\c -> Char.toCode c >= 0x20 && Char.toCode c /= 0x7F) (Maybe.map .first (String.popFirst str)))
     in
     if Bitwise.and mods 8 /= 0 then
         Nothing
@@ -7564,7 +7561,7 @@ spans : Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
 spans q s =
     when Dict.get q.id s.copy |> Maybe.andThen .selection is
         Just sel ->
-            copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, located = False, cx = 0, cy = 0, selection = Nothing, rectangle = False, marked = False, count = 0, partial = False, timedOut = False, lineTime = "", search = "" } (Dict.get q.id s.copy)) sel
+            copySpans q (Maybe.withDefault (meant Reason.NotOpen { scroll = 0, hsize = 0, located = False, cx = 0, cy = 0, selection = Nothing, rectangle = False, marked = False, count = 0, partial = False, timedOut = False, lineTime = "", search = "" }) (Dict.get q.id s.copy)) sel
 
         Nothing ->
             meant Reason.NotOpen ownSpans q s
@@ -7765,7 +7762,7 @@ eachPlaces panes s _ =
 
 placesIn : Int -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int, fg : Int, bg : Int } } -> Array { index : Int, x : Int, y : Int, back : Int, fg : Int, bg : Int }
 placesIn id all =
-    Array.findFirst (\e -> e.id == id) all |> Maybe.map (\e -> e.value.places) |> Maybe.withDefault []
+    Array.findFirst (\e -> e.id == id) all |> Maybe.map (\e -> e.value.places) |> Maybe.withDefault (meant Reason.NotKnown [])
 
 
 spansAll : Array Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
@@ -7780,7 +7777,7 @@ withSpans panes s _ =
 
 spansIn : Int -> Array { id : Int, spans : Array { row : Int, from : Int, to : Int } } -> Array { row : Int, from : Int, to : Int }
 spansIn id all =
-    Array.findFirst (\e -> e.id == id) all |> Maybe.map (\e -> e.value.spans) |> Maybe.withDefault []
+    Array.findFirst (\e -> e.id == id) all |> Maybe.map (\e -> e.value.spans) |> Maybe.withDefault (meant Reason.NotKnown [])
 
 
 before : Vt.Point -> Vt.Point -> Bool
@@ -7840,12 +7837,7 @@ linkAt p s =
                     in
                     when Array.findFirst (\i -> i == f.value.id) s.ids is
                         Just found ->
-                            when Builder.get found.index s.panes is
-                                Just t ->
-                                    Vt.linkAt back place t
-
-                                Nothing ->
-                                    Nothing
+                            Vt.linkAt back place (Builder.getProven found.index s.panes)
 
                         Nothing ->
                             meant Reason.Gone Nothing
@@ -8551,7 +8543,7 @@ keyNamed name =
                     code =
                         String.toArray letter |> Array.first |> Maybe.map Char.toCode |> Maybe.withDefault (meant Reason.NotKnown 0x61) |> clamp 0x61 0x7A
                 in
-                { action = 0, keycode = 0, mods = 2, consumed = 0, unshifted = code, sym = code, text = Bytes.fromString (String.fromChar (Maybe.withDefault ' ' (Char.fromCode (code - 0x60)))) }
+                { action = 0, keycode = 0, mods = 2, consumed = 0, unshifted = code, sym = code, text = Bytes.fromString (String.fromChar (Char.fromCodeProven (code - 0x60))) }
 
             else
                 textKey name
@@ -8797,7 +8789,7 @@ selecting how p col row q s =
                 withPane q.id s (\t -> Vt.lineAt at t |> Maybe.map (\w -> Vt.selectionText w.start w.end t)) |> Maybe.andThen identity |> Maybe.withDefault (meant Reason.OutOfRange "")
 
             binding =
-                Dict.get "root MouseDown3Pane" s.keys.bindings |> Maybe.map .command |> Maybe.withDefault ""
+                Dict.get "root MouseDown3Pane" s.keys.bindings |> Maybe.map .command |> Maybe.withDefault (meant Reason.NotSet "")
 
             r =
                 runHeld { pane = q.id, mouse = Just { col = col, row = row } } word line (Command.ifShellMouse (paneName q.id) "#{mouse}" binding) s
@@ -9153,7 +9145,7 @@ paneBorders tmuxLook cols rows active cells tiled floating status =
                         max 0 (p.w - 2)
 
                     leftRuns =
-                        takeRuns room (Style.runs style (Maybe.withDefault "" (Array.first parts)))
+                        takeRuns room (Style.runs style (Array.getProven 0 parts))
 
                     rightRuns =
                         Style.runs style (String.join "" (Array.dropFirst 1 parts))
@@ -9341,7 +9333,7 @@ pollsFor s =
                     String.split ":" sub
 
                 name =
-                    Maybe.withDefault "" (Array.get 0 parts)
+                    Array.getProven 0 parts
 
                 target =
                     Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 parts)
@@ -9448,24 +9440,29 @@ expand them as for a client of 24-bit color, as puritty is. 3.6 sends
 nothing. -}
 themeAsked : String -> (taken acc : Acc) -> Acc
 themeAsked value acc =
-    when String.split "\t" value |> Array.popFirst is
-        Just { first, rest } ->
-            if first == "" || Array.length rest /= 20 then
-                acc
+    let
+        fields =
+            String.split "\t" value
 
-            else
-                let
-                    st =
-                        acc.state
+        first =
+            Array.getProven 0 fields
 
-                    format =
-                        Array.map (\v -> String.replace "#{client_colours}" "16777216" v |> String.replace "%" "%%") rest
-                            |> String.join "\t"
-                in
-                ask [ { command = Command.display format, expect = ForTheme } ] { acc | state = withStatus st.rawStatus { st | themeChoice = first } }
+        rest =
+            Array.dropFirst 1 fields
+    in
+    if first == "" || Array.length rest /= 20 then
+        acc
 
-        Nothing ->
-            acc
+    else
+        let
+            st =
+                acc.state
+
+            format =
+                Array.map (\v -> String.replace "#{client_colours}" "16777216" v |> String.replace "%" "%%") rest
+                    |> String.join "\t"
+        in
+        ask [ { command = Command.display format, expect = ForTheme } ] { acc | state = withStatus st.rawStatus { st | themeChoice = first } }
 
 
 {-| The bells tmux's panes have rung, added up (docs/sounds.md SN6). -}
@@ -9486,13 +9483,7 @@ paneBellsFrom i ids panes acc =
         paneBellsFrom (i + 1)
             ids
             panes
-            (when Array.get i ids is
-                Just id ->
-                    Dict.set id (0 + (Builder.getProven i panes).bells) acc
-
-                Nothing ->
-                    acc
-            )
+            (Dict.set (Array.getProven i ids) (0 + (Builder.getProven i panes).bells) acc)
 
     else
         acc
@@ -9674,12 +9665,11 @@ subscribed name window pane value status =
             perWindow (\w -> { w | flags = value })
 
         "puritty-borders" ->
-            when String.split " " value |> Array.popFirst is
-                Just { first, rest } ->
-                    { status | borderStatus = first, borderStyle = String.join " " rest }
-
-                Nothing ->
-                    status
+            let
+                words =
+                    String.split " " value
+            in
+            { status | borderStatus = Array.getProven 0 words, borderStyle = String.join " " (Array.dropFirst 1 words) }
 
         "puritty-ptitle" ->
             perPane (\q -> { q | title = value })
@@ -10791,7 +10781,7 @@ chooseItem : Int -> Menuing -> (taken s : State) -> { state : State, commands : 
 chooseItem index m s =
     let
         command =
-            Array.get index m.items |> Maybe.map .command |> Maybe.withDefault ""
+            Array.get index m.items |> Maybe.map .command |> Maybe.withDefault (meant Reason.OutOfRange "")
     in
     if m.completes then
         -- the prompt's word made the item (`status_prompt_menu_callback`,
@@ -11025,6 +11015,17 @@ strayMs =
     1500
 
 
+{-| The last piece of `s` cut at `sep`: a separator that is not empty cuts
+at least one piece, so the last is always there. -}
+lastPiece : (sep : String where 1 <= String.count sep) -> String -> String
+lastPiece sep s =
+    let
+        parts =
+            String.split sep s
+    in
+    Array.getProven (Array.length parts - 1) parts
+
+
 {-| Whether control mode is to end at the next read, which may be an empty
 one: tmux did not answer after a line that was not its own (TK14). -}
 givingUp : State -> Bool
@@ -11059,7 +11060,7 @@ paneNumber version colors tmuxLook isActive n p =
                 -- the number, from 3.2 (TM79)
                 letter =
                     if index > 9 && index < 35 && (version == 0 || version >= 32) then
-                        Maybe.withDefault "" (Maybe.map String.fromChar (Char.fromCode (0x61 + index - 10)))
+                        String.fromChar (Char.fromCodeProven (0x61 + index - 10))
 
                     else
                         ""
@@ -11484,7 +11485,7 @@ listRows l =
     Array.sortWith (\a b -> flip (order a b)) keptRows
 
 
-listSortNames : Int -> String -> Array String
+listSortNames : Int -> String -> (r : Array String where 3 <= Array.length r)
 listSortNames version kind =
     if kind == "buffer" then
         [ if version >= 38 then
@@ -11743,12 +11744,7 @@ listKey k l s =
     else
         when Array.findFirst (\i -> treeRowKey i == Just name) (Array.range 0 (min count 36 - 1)) is
             Just found ->
-                when Array.get found.value rows is
-                    Just r ->
-                        chosen r s
-
-                    Nothing ->
-                        { state = s, commands = [] }
+                chosen (Array.getProven found.value rows) s
 
             Nothing ->
                 meant Reason.NotKnown { state = s, commands = [] }
@@ -11909,8 +11905,14 @@ drawListing colors tmuxLook version place l =
         chosenName =
             Array.get l.selected rows |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "")
 
+        -- the order's name; read around, as the key steps it, should
+        -- tmux's version change its list (TM77)
         sortName =
-            Array.get l.sort (listSortNames version l.kind) |> Maybe.withDefault (meant Reason.OutOfRange "")
+            let
+                names =
+                    listSortNames version l.kind
+            in
+            Array.getProven (modBy (Array.length names) l.sort) names
 
         plainInk =
             if tmuxLook then
@@ -13730,7 +13732,7 @@ refiltered passing t =
 {-| The tree's orders as tmux names them: 3.6's `window_tree_sort_list`,
 3.8's `window_tree_order_seq` (`activity` is 3.6's `time`; `z`, the
 floating panes' order, sorts as index here). -}
-sortNames : Int -> Array String
+sortNames : Int -> (r : Array String where 3 <= Array.length r)
 sortNames version =
     if version >= 38 then
         [ "index", "name", "activity", "z" ]
@@ -14210,7 +14212,7 @@ previewItem line =
         style =
             String.join "\t" (Array.dropFirst 1 parts)
     in
-    when String.split " " (Maybe.withDefault "" (Array.first parts)) |> Array.popFirst is
+    when String.split " " (Array.getProven 0 parts) |> Array.popFirst is
         Just { first = "Q", rest = rest } ->
             let
                 num i =
@@ -15104,8 +15106,13 @@ drawTree theme colors tmuxLook version place t =
         chosenName =
             Array.get t.selected rows |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "")
 
+        -- the order's name, read around as the key steps it (TM77)
         sortName =
-            Array.get t.sort (sortNames version) |> Maybe.withDefault (meant Reason.OutOfRange "index")
+            let
+                names =
+                    sortNames version
+            in
+            Array.getProven (modBy (Array.length names) t.sort) names
 
         previewDrawn =
             if withPreview then
@@ -15870,7 +15877,7 @@ previewLabel version at session borderColor labelColor label =
 
             shown =
                 if session && textCells whole > sx then
-                    " " ++ Maybe.withDefault label (Array.first (String.split ":" label)) ++ " "
+                    " " ++ (Array.getProven 0 (String.split ":" label)) ++ " "
 
                 else
                     whole
@@ -16866,15 +16873,6 @@ dragOver at s =
         was =
             Maybe.map .pane s.dropMark
 
-        -- the same pane, asked over a second ago, its answer in
-        stale =
-            when s.dropMark is
-                Just d ->
-                    not d.inFlight && Clock.since d.askedAt at.ms >= 1000
-
-                Nothing ->
-                    meant Reason.NotOpen False
-
         askFolder id mark st =
             askLine
                 (Array.indexedMap (\i format -> { command = Command.displayAt ("%" ++ String.fromInt id) format, expect = ForDropFolder { pane = id, part = i } }) dropParts)
@@ -16882,29 +16880,37 @@ dragOver at s =
     in
     when under is
         Just id ->
-            if was == Just id then
-                if stale then
-                    -- asked again, the folder shown kept till it is answered
-                    let
-                        r =
-                            when s.dropMark is
-                                Just d ->
+            when s.dropMark is
+                Just d ->
+                    if d.pane == id then
+                        -- the same pane, asked over a second ago, its answer in:
+                        -- asked again, the folder shown kept till it is answered
+                        if not d.inFlight && Clock.since d.askedAt at.ms >= 1000 then
+                            let
+                                r =
                                     askFolder id { d | parts = [], inFlight = True, askedAt = at.ms } s
+                            in
+                            { state = r.state, commands = r.commands, changed = False }
 
-                                Nothing ->
-                                    askFolder id { pane = id, folder = Asking [], parts = [], inFlight = True, askedAt = at.ms } s
-                    in
-                    { state = r.state, commands = r.commands, changed = False }
+                        else
+                            { state = s, commands = [], changed = False }
 
-                else
-                    { state = s, commands = [], changed = False }
+                    else
+                        let
+                            r =
+                                askFolder id { pane = id, folder = Asking [], parts = [], inFlight = True, askedAt = at.ms } s
+                        in
+                        { state = r.state, commands = r.commands, changed = True }
 
-            else
-                let
-                    r =
-                        askFolder id { pane = id, folder = Asking [], parts = [], inFlight = True, askedAt = at.ms } s
-                in
-                { state = r.state, commands = r.commands, changed = True }
+                Nothing ->
+                    -- no pane marked yet
+                    meant Reason.NotOpen
+                        (let
+                            r =
+                                askFolder id { pane = id, folder = Asking [], parts = [], inFlight = True, askedAt = at.ms } s
+                         in
+                         { state = r.state, commands = r.commands, changed = True }
+                        )
 
         Nothing ->
             -- not over a pane: a divider, the tab bar

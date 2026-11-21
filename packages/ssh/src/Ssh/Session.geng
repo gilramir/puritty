@@ -1073,7 +1073,7 @@ beginAuth st =
                 }
         in
         tell (Status ("logging in as " ++ st.options.user)) st
-            |> Task.andThen (onAuth (Auth.begin config (Transport.sessionId st.transport |> Maybe.withDefault Bytes.empty)))
+            |> Task.andThen (onAuth (Auth.begin config (Transport.sessionId st.transport |> Maybe.withDefault (meant Reason.NotYet Bytes.empty))))
 
 
 onAuth : Auth.Step -> State -> Task Os.Error.Error State
@@ -1125,7 +1125,7 @@ onRequest request st =
         { request = Auth.NeedSignature need, auth = Just auth } ->
             when Array.findFirst (\i -> i.identity.id == need.id) st.identities |> Maybe.map .value is
                 Nothing ->
-                    onAuth (Auth.unsigned need.id auth) st
+                    meant Reason.NotKnown (onAuth (Auth.unsigned need.id auth) st)
 
                 Just { file = Nothing, identity = identity } ->
                     when st.agent is
@@ -1144,7 +1144,7 @@ onRequest request st =
                                 |> Task.andThen (\step -> onAuth step st)
 
                         Nothing ->
-                            onAuth (Auth.unsigned need.id auth) st
+                            meant Reason.Refused (onAuth (Auth.unsigned need.id auth) st)
 
                 Just { file = Just file } ->
                     when SshCrypto.keyFileInfo file.text is
@@ -1176,7 +1176,7 @@ signWith : { id : Int, algorithm : String, data : Bytes } -> Bytes -> Bytes -> S
 signWith need text passphrase st =
     when st.auth is
         Nothing ->
-            Task.succeed st
+            meant Reason.NotYet (Task.succeed st)
 
         Just auth ->
             SshCrypto.loadKey text passphrase

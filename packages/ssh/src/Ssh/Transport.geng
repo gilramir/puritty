@@ -517,7 +517,7 @@ unpad plain rest =
             Bytes.length plain - 4
 
         padding =
-            Bytes.get 4 plain |> Maybe.map UInt8.toInt |> Maybe.withDefault 0
+            Bytes.get 4 plain |> Maybe.map UInt8.toInt |> Maybe.withDefault (meant Reason.FromOutside 0)
 
         payloadLength =
             length - 1 - padding
@@ -540,7 +540,7 @@ wrapAdd n =
 
 messageNumber : Bytes -> Int
 messageNumber payload =
-    Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault -1
+    Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault (meant Reason.FromOutside -1)
 
 
 {-| A packet taken: the transport's own messages here, the rest for the
@@ -808,7 +808,7 @@ theirKexinit seq payload st0 =
                                         Random.bytes 32 st.random
 
                                     public =
-                                        SshCrypto.x25519Public secret.value |> Maybe.withDefault Bytes.empty
+                                        SshCrypto.x25519Public secret.value |> Maybe.withDefault (meant Reason.NotKnown Bytes.empty)
 
                                     wrongGuess =
                                         theirs.follows
@@ -867,7 +867,7 @@ ecdhReply payload st =
                 Just shared ->
                     let
                         ourPublic =
-                            SshCrypto.x25519Public secret |> Maybe.withDefault Bytes.empty
+                            SshCrypto.x25519Public secret |> Maybe.withDefault (meant Reason.NotKnown Bytes.empty)
 
                         exchangeHash =
                             SshCrypto.hash SshCrypto.Sha256
@@ -1008,7 +1008,7 @@ theirNewkeys st =
                             emit (KeysChanged algorithms) done
 
                         Nothing ->
-                            done
+                            meant Reason.FromOutside (done)
             in
             Array.foldl sendPacket told st.queued
 
