@@ -1888,3 +1888,55 @@ alpha` and `dangling`; the chooser lists the first among the folders and
 not the second (`ssh-chooser`'s `after-2.png`), the six cases that list
 the folder re-pinned for the two links.
 
+## FT31 · Tabs of OpenSSH's ssh send through ControlMaster (2026-11-20)
+
+FT10: "The OpenSSH-client tabs on Linux get the same through
+`ControlMaster` after step 4". On Linux OpenSSH's `ssh` is the default
+client, so until now a drop or a pasted picture on most Linux ssh tabs
+said it could not be sent.
+
+**The tab's `ssh` a master** (`Main.controlled`, at the tab's start and
+at each new tab of the window): for a host of the settings run with
+OpenSSH, `-o ControlMaster=auto -o ControlPath=SOCKET -o
+ControlPersist=no` before the rest of its command, SOCKET
+`$XDG_RUNTIME_DIR/puritty-` and ten random hex digits, a tab each, gone
+with the tab. Where the runtime folder is too deep for Linux's 108 bytes
+with the 17 OpenSSH adds while it makes the socket (FT11), `/tmp`. A host
+whose own config sets up a master already (`ssh -G` says `controlmaster`
+is not `no` and a `controlpath`) is left as it is, and the helpers use the
+user's master: another socket would be a second login, its second factor
+included. Not on Windows: its OpenSSH has no masters.
+
+**Side channels by helpers** (`Backend.withSshHelpers`): the pty's
+backend gains the session's `side` inputs, each a helper `ssh` on pipes
+that goes through the master: `ssh -S SOCKET -o ControlMaster=no -o
+BatchMode=yes OPTIONS -s HOST sftp` for SFTP, `… HOST COMMAND` for an
+exec; the host's options (port, user, key, jump) as the tab's
+(`Hosts.sshOptions`). `BatchMode` makes one that finds no master fail
+rather than ask for a password. Its output comes through the backend's
+`read` as the session's `Side` notices do, raced with the pty's own read
+(a race loses nothing a branch took, geng-lang `m3-os.md` OS28); a write
+is answered `Sent 0` once the pipe has taken it, for the shell engine's
+pacing; a subsystem whose helper ends having written nothing, its status
+not 0, is `Refused` with what `ssh` said, so the shell fallback (FT18)
+works as on the built-in client. Sending, the chooser and the picture
+paste are unchanged above it.
+
+A tab is an ssh tab, for the drop, the OSC 7 host and pictures from
+files, when it has either client's host (`isRemoteTab`): before, a tab
+of OpenSSH's `ssh` was taken for one on this computer, its drop pasted
+paths and, with `[images] read_files` on, a program on the host could
+have had a local file shown. `sideUp` takes an OpenSSH tab with helpers
+as up.
+
+**Tested.** `harness/drop.py`: `openssh-chooser` (a tab of OpenSSH's ssh,
+no tmux: the chooser and the file sent) and `openssh-tmux` (a `tmux -CC`
+pane's folder); `harness/sshwindow.py`: `paste-picture-openssh` (the
+picture on the host, its bytes and mode 0600). Each case's sshd log has
+one `Accepted publickey` against five to seven sessions: every helper
+went through the tab's master. OpenSSH reads the user's own `~/.ssh`,
+not `$HOME`'s, so these cases put a wrapper `ssh` first on `PATH` that
+gives it a config of the case's; the first runs also met the socket
+path's limit, under the harness's deep folders, which is how the `/tmp`
+fallback came to be.
+

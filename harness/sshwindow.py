@@ -18,6 +18,7 @@ usage (from puritty's devbox, after app/build.sh and packages/ssh/tests/build.sh
 """
 
 import argparse
+import tempfile
 import getpass
 import os
 import shutil
@@ -114,6 +115,9 @@ CASES = [
     # (paste_images = "allow"). Then the picture with paste_images =
     # "deny" (FT16): nothing pasted, nothing written
     ("paste-picture", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
+    # the same in a tab of OpenSSH's ssh (docs/sftp.md FT31): the picture
+    # through the tab's connection by ControlMaster, no second login
+    ("paste-picture-openssh", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
     ("paste-text", "ed", "", "known", ["clip-text:hello there", "ctrl+shift+v", "sleep:2"], "python3 {check} {size} {picture}"),
     ("paste-picture-off", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:13"], "python3 {check} {size} {picture}"),
     # the folder chosen (FT15): the host's paste_folder over the settings',
@@ -137,6 +141,7 @@ CASES = [
 
 # settings a case's config.toml adds, and its host's
 EXTRA = {"paste-picture": "\n[clipboard]\npaste_images = \"allow\"\n",
+         "paste-picture-openssh": "\n[clipboard]\npaste_images = \"allow\"\n",
          "paste-text": "\n[clipboard]\npaste_images = \"allow\"\n",
          "paste-picture-off": "\n[clipboard]\npaste_images = \"deny\"\n",
          "paste-picture-folder": "\n[clipboard]\npaste_images = \"allow\"\npaste_folder = \"/nowhere/not-this-one\"\n",
@@ -206,11 +211,20 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
             (f'[hosts.test]\npaste_folder = {toml_text(str(folder))}\n' if folder
              else f'[hosts.test]\npaste_folder = {toml_text(str(home / KOREAN_FOLDER))}\ncharset = "euc-kr"\n' if korean else "[hosts.test]\n")
             + f'host = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
-            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=home / KOREAN_OUT if korean else size, check=CHECK, picture=PICTURE)}"\n' + jump
+            f'identity = "{keys[key]}"\nclient = "{"openssh" if name.endswith("-openssh") else "built-in"}"\ncommand = "{command.format(size=home / KOREAN_OUT if korean else size, check=CHECK, picture=PICTURE)}"\n' + jump
             # the diagnostic log, for a case that fails
             + "\n[debug]\nlog = true\n" + EXTRA.get(name, ""))
         env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser(),
                    PURITTY_SHOT=str(home / "shot.ppm"))
+        if name.endswith("-openssh"):
+            # OpenSSH reads the user's own ~/.ssh: a wrapper first on PATH
+            # gives it the case's known_hosts, for the tab and its helpers
+            (home / "bin").mkdir()
+            (home / "ssh_config").write_text(f"Host *\n    UserKnownHostsFile {kh}\n    StrictHostKeyChecking yes\n    IdentitiesOnly yes\n")
+            (home / "bin" / "ssh").write_text(f'#!/bin/sh\nexec {shutil.which("ssh")} -F {home / "ssh_config"} "$@"\n')
+            (home / "bin" / "ssh").chmod(0o755)
+            # a short folder for the master's socket (Linux's 108 bytes)
+            env = dict(env, PATH=f"{home / 'bin'}:{env['PATH']}", XDG_RUNTIME_DIR=tempfile.mkdtemp(prefix="pw-"))
         env.pop("SSH_AUTH_SOCK", None)
         p = subprocess.Popen([str(APP), "--host", "test"], env=env, stdout=subprocess.DEVNULL,
                              stderr=open(home / "stderr.txt", "w"))

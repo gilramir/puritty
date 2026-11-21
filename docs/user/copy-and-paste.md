@@ -182,8 +182,10 @@ Don't paste writes nothing).
   bracketed paste, as Windows Terminal does. Claude Code running in WSL
   takes that as the cue to read the Windows clipboard itself. Nothing is
   written, so nothing is asked.
-- **In a tab that runs OpenSSH's `ssh`** (`client = "openssh"`), puritty
-  has no way to send a file through that connection; a note says so.
+- **In a tab that runs OpenSSH's `ssh`** (`client = "openssh"`, the
+  default on Linux), the same, through the tab's connection by OpenSSH's
+  `ControlMaster` (see [Sending files to a host](file-transfer.md)). On
+  Windows, whose OpenSSH has no masters, a note says it can't.
 
 Any screenshot works on Windows: the Snipping Tool (Win+Shift+S or the
 Print Screen key) puts a PNG on the clipboard, which goes as it is;

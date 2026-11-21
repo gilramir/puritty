@@ -13,7 +13,7 @@ folder`. Where each sits in the file manager's window was read from a
 screenshot (probes/xdnd/drag-from-nemo.py); the pin of a case that moved
 would show it.
 """
-import argparse, os, shutil, subprocess, sys, time
+import argparse, os, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -115,7 +115,7 @@ def host_listing(there, files):
 
 
 def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), sftp=True, shell=False, before=None, big=False, size=4 << 30,
-                  wait=3, drop=None, osc7=None):
+                  wait=3, drop=None, osc7=None, client="built-in"):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     files = home / "files"
@@ -141,7 +141,7 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
     (home / "config" / "puritty").mkdir(parents=True)
     (home / "config" / "puritty" / "config.toml").write_text(
         f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\nidentity = "{keys["ed"]}"\n'
-        f'client = "built-in"\n' + (f'command = "sh {PANES} \'{there}\'"\n' if tmux else "")
+        f'client = "{client}"\n' + (f'command = "sh {PANES} \'{there}\'"\n' if tmux else "")
         + (f'command = {toml_text(osc7_command(there, osc7))}\n' if osc7 else "") + '\n[debug]\nlog = true\n'
         + ('\n[files]\n' if shell or drop else "") + ('upload_through_shell = true\n' if shell else "")
         + (f'drop_uploads = "{drop}"\n' if drop else ""))
@@ -156,11 +156,27 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
     if before:
         before(there)
     env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser())
+    if client == "openssh":
+        # OpenSSH reads the user's own ~/.ssh, not $HOME's: a wrapper first
+        # on PATH gives it a config of the case's, for the tab's ssh and the
+        # helpers alike (FT31); the master's socket in a folder of its own
+        bindir = home / "bin"
+        bindir.mkdir()
+        conf = home / "ssh_config"
+        conf.write_text(f"Host *\n    UserKnownHostsFile {kh}\n    StrictHostKeyChecking yes\n    IdentitiesOnly yes\n")
+        real = shutil.which("ssh")
+        (bindir / "ssh").write_text(f'#!/bin/sh\nexec {real} -F {conf} "$@"\n')
+        (bindir / "ssh").chmod(0o755)
+        (home / "run").mkdir(exist_ok=True)
+        env = dict(env, PATH=f"{bindir}:{env['PATH']}")
+    # the master's socket's folder, puritty's alone: the file manager's
+    # D-Bus session mounts its FUSE folders in XDG_RUNTIME_DIR
+    app_env = dict(env, XDG_RUNTIME_DIR=tempfile.mkdtemp(prefix="pd-")) if client == "openssh" else env
     procs = []
     try:
         procs.append(subprocess.Popen(["dbus-run-session", "--", "nemo", "--no-desktop", "--geometry=640x700+0+0", str(files)],
                                       env=dict(env, GTK_THEME="Adwaita"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        procs.append(subprocess.Popen([str(APP), "--host", "test"], env=env, stdout=subprocess.DEVNULL, stderr=open(home / "stderr.txt", "w")))
+        procs.append(subprocess.Popen([str(APP), "--host", "test"], env=app_env, stdout=subprocess.DEVNULL, stderr=open(home / "stderr.txt", "w")))
         time.sleep(7)
         for wid in xdo(env, "search", "--class", "nemo").split():
             xdo(env, "windowmove", wid, 0, 0)
@@ -364,6 +380,11 @@ def main():
          ("osc7-ask", lambda: run_tmux_case(env, "osc7-ask", (950, 300), keys, tmux=False, osc7="beta", after=["Return"])),
          ("osc7-another", lambda: run_tmux_case(env, "osc7-another", (950, 300), keys, tmux=False, osc7="beta", after=["c", "Return"])),
          ("osc7-nested", lambda: run_tmux_case(env, "osc7-nested", (950, 300), keys, tmux=False, osc7="nested", after=["Escape"])),
+         # a tab of OpenSSH's ssh (FT31): the chooser and the sending through
+         # its connection by ControlMaster, on a tab with no tmux and on a
+         # tmux -CC pane
+         ("openssh-chooser", lambda: run_tmux_case(env, "openssh-chooser", (950, 300), keys, after=TO_HOST, tmux=False, client="openssh")),
+         ("openssh-tmux", lambda: run_tmux_case(env, "openssh-tmux", (760, 250), keys, drop="allow", client="openssh")),
          # another tab shown while one sends (FT26; 2 GiB, which a shown tab
          # does not finish in the two seconds before the switch, FT27): the sending goes on in
          # its own session, its tab marked, and its end said with its name

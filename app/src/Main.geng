@@ -1045,17 +1045,8 @@ begin cp vars given problems locale config cell restoring =
 
                     Nothing ->
                         meant Reason.NotSet
-                            spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "FORCE_HYPERLINK" "1" (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty))) }
-                                |> Task.mapError Os.Error.toString
-                                |> Task.andThen
-                                    (\child ->
-                                        when Backend.pty child is
-                                            Nothing ->
-                                                Task.fail "the program has no terminal"
-
-                                            Just remote ->
-                                                Task.succeed { remote = remote, problems = [] }
-                                    )
+                            ptyBackend cp vars config commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "FORCE_HYPERLINK" "1" (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty))) }
+                                |> Task.map (\remote -> { remote = remote, problems = [] })
                 )
                     |> Task.andThen
                         (\started ->
@@ -1069,21 +1060,13 @@ begin cp vars given problems locale config cell restoring =
                                 starter =
                                     { local =
                                         \size ->
-                                            spawnFirst cp
+                                            ptyBackend cp
+                                                vars
+                                                config
                                                 commands
                                                 (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, widthInPixels = size.widthInPixels, heightInPixels = size.heightInPixels, utf8 = localCharset == Charset.Utf8 })
                                                     |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "FORCE_HYPERLINK" "1" (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty))) })
                                                 )
-                                                |> Task.mapError Os.Error.toString
-                                                |> Task.andThen
-                                                    (\child ->
-                                                        when Backend.pty child is
-                                                            Nothing ->
-                                                                Task.fail "the program has no terminal"
-
-                                                            Just remote ->
-                                                                Task.succeed remote
-                                                    )
                                     , ssh = \host -> sshBackend vars config cell charset host
                                     , charset = localCharset
                                     }
@@ -1185,6 +1168,126 @@ homeOf vars =
 
                     Nothing ->
                         meant Reason.FromOutside (Task.fail "neither HOME nor USERPROFILE is set, so ~/.ssh cannot be found")
+
+
+{-| A program on a terminal as its tab's backend; for a host of OpenSSH's
+`ssh` on Linux, with side channels through its connection (`controlled`,
+docs/sftp.md FT31). -}
+ptyBackend : Process.Permission -> Dict String String -> Config -> Array (Array String) -> Process.SpawnOptions -> Task String Backend
+ptyBackend cp vars config commands options =
+    controlled cp vars config commands
+        |> Task.mapError Os.Error.toString
+        |> Task.andThen
+            (\c ->
+                spawnFirst cp c.commands options
+                    |> Task.mapError Os.Error.toString
+                    |> Task.andThen
+                        (\child ->
+                            when Backend.pty child is
+                                Nothing ->
+                                    -- started with no terminal, which a spawn with one never is
+                                    meant Reason.FromOutside (Task.fail "the program has no terminal")
+
+                                Just remote ->
+                                    when c.via is
+                                        Just via ->
+                                            Backend.withSshHelpers cp via remote
+
+                                        Nothing ->
+                                            -- a program on this computer, or ssh on Windows
+                                            meant Reason.NotSet (Task.succeed remote)
+                        )
+            )
+
+
+{-| The command of a tab of a host that OpenSSH's `ssh` connects to (FT31),
+made a `ControlMaster` on a socket of puritty's, one a tab, so that files
+can go through its connection with no second login; and the options of
+the helpers that do. A host whose own `~/.ssh/config` sets a master up
+already (`ssh -G` says `controlmaster` is not `no`, and a `controlpath`)
+keeps it: the helpers go through the user's socket, and the tab is not
+changed, since another socket would be a second login, a second factor
+included. Not on Windows, whose OpenSSH has no `ControlMaster`; not for a
+program that is not a host's `ssh`. -}
+controlled : Process.Permission -> Dict String String -> Config -> Array (Array String) -> Task Os.Error.Error { commands : Array (Array String), via : Maybe { options : Array Bytes, host : Bytes } }
+controlled cp vars config commands =
+    let
+        host =
+            config.hostName |> Maybe.andThen (\n -> Array.findFirst (\h -> h.name == n) config.hosts |> Maybe.map .value)
+
+        none =
+            Task.succeed { commands = commands, via = Nothing }
+    in
+    when { host = host, first = Array.first commands } is
+        { host = Just h, first = Just command } ->
+            if Platform.pathSeparator == "\\" || Maybe.isJust config.remote || Array.first command /= Just "ssh" then
+                none
+
+            else
+                let
+                    options =
+                        Hosts.sshOptions config h
+
+                    shared =
+                        [ "-o", "ControlMaster=no", "-o", "BatchMode=yes" ]
+                in
+                Process.run cp "ssh" ([ "-G" ] ++ options ++ [ h.host ]) Process.defaultRunOptions
+                    |> Task.map (\r -> userMaster (Bytes.toStringLossy r.stdout))
+                    |> Task.onError (\_ -> Task.succeed False)
+                    |> Task.andThen
+                        (\own ->
+                            if own then
+                                Task.succeed { commands = commands, via = Just { options = Array.map Bytes.fromString (shared ++ options), host = Bytes.fromString h.host } }
+
+                            else
+                                Os.Random.bytes 5
+                                    |> Task.map
+                                        (\random ->
+                                            let
+                                                name =
+                                                    "/puritty-" ++ Bytes.toHexString { padding = False } random
+
+                                                -- OpenSSH adds 17 characters to the path while it
+                                                -- makes the socket, and Linux takes 108 in all
+                                                -- (FT11): a runtime folder too deep for that, /tmp
+                                                socket =
+                                                    when Dict.get "XDG_RUNTIME_DIR" vars is
+                                                        Just dir ->
+                                                            if String.count dir + String.count name > 88 then
+                                                                "/tmp" ++ name
+
+                                                            else
+                                                                dir ++ name
+
+                                                        Nothing ->
+                                                            meant Reason.NotSet ("/tmp" ++ name)
+                                            in
+                                            { commands = [ [ "ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=" ++ socket, "-o", "ControlPersist=no" ] ++ Array.dropFirst 1 command ]
+                                            , via = Just { options = Array.map Bytes.fromString ([ "-S", socket ] ++ shared ++ options), host = Bytes.fromString h.host }
+                                            }
+                                        )
+                        )
+
+        _ ->
+            none
+
+
+{-| Whether `ssh -G`'s answer has the user's own master: `controlmaster`
+not `no` or `false`, and a `controlpath` not `none`. -}
+userMaster : String -> Bool
+userMaster said =
+    let
+        value name =
+            String.lines said
+                |> Array.findFirst (\l -> String.startsWith (name ++ " ") l)
+                |> Maybe.map (\f -> String.trim (String.dropFirst (String.count name + 1) f.value))
+    in
+    when { master = value "controlmaster", path = value "controlpath" } is
+        { master = Just m, path = Just p } ->
+            m /= "no" && m /= "false" && p /= "none" && p /= ""
+
+        _ ->
+            False
 
 
 {-| The first of the commands that starts: one that is not found gives way
@@ -3847,7 +3950,7 @@ filesRead : (taken m : Model) -> Array String -> Task x { model : Model, said : 
 filesRead m said =
     when Vt.fileWanted m.term is
         Just want ->
-            (if m.tab.host == Nothing then
+            (if not (isRemoteTab m) then
                 ImageFile.read m.settings.given.fs want
 
              else
@@ -4162,8 +4265,8 @@ imagePasted png m =
                 -- a tab with no ssh session of puritty's: on this computer, or
                 -- OpenSSH's ssh
                 meant Reason.NotOpen
-                    if m.tab.host /= Nothing then
-                        Task.succeed (noteUp { text = "The picture can't be pasted: this tab's ssh is OpenSSH's, which puritty can't send a file through (set client = \"built-in\")", failed = True, kept = False } m)
+                    if isRemoteTab m then
+                        Task.succeed (noteUp { text = "The picture can't be pasted: this tab's ssh is OpenSSH's, which puritty can't send a file through here (set client = \"built-in\")", failed = True, kept = False } m)
 
                     else
                         Os.Env.getEnvironmentVariables
@@ -4250,7 +4353,9 @@ sideUp m =
             screen.started && screen.failed == Nothing && screen.exitStatus == Nothing
 
         Nothing ->
-            meant Reason.NotSet False
+            -- a tab of OpenSSH's ssh with helpers (FT31): up while its ssh
+            -- runs; a helper that finds no master fails, and says so
+            meant Reason.NotSet (Maybe.isJust m.remote.side)
 
 
 {-| A picture for an ssh session's host, under a name of puritty's
@@ -4395,7 +4500,7 @@ uploadDone u m =
                         )
                             ++ a.name
                     , to = ToHost a.name
-                    , on = "on " ++ Maybe.withDefault (meant Reason.NotSet "the host") (Maybe.map .host m.tab.host)
+                    , on = "on " ++ hostLabel m
                     , tab = m.tab.id
                     }
                     m
@@ -4959,7 +5064,7 @@ dropBox m a =
                 []
 
         host =
-            Maybe.withDefault (meant Reason.NotSet "the host") (Maybe.map .host m.tab.host)
+            hostLabel m
     in
     { title =
         if Array.length names == 1 then
@@ -5057,10 +5162,31 @@ dropAnswer yes a m0 =
         startPending { m | pendingSend = Just { folder = a.folder, files = a.files } }
 
 
+{-| Whether the tab's program runs on a host, by puritty's own ssh or
+OpenSSH's (a host of the settings started either way, docs/sftp.md FT31),
+not on this computer. -}
+isRemoteTab : Model -> Bool
+isRemoteTab m =
+    m.tab.host /= Nothing || m.tab.hostName /= Nothing
+
+
+{-| The tab's host as a question names it: its address, else its name in
+the settings. -}
+hostLabel : Model -> String
+hostLabel m =
+    when m.tab.host is
+        Just h ->
+            h.host
+
+        Nothing ->
+            -- a tab of OpenSSH's ssh: its host's name in the settings
+            meant Reason.NotSet (Maybe.withDefault (meant Reason.NotSet "the host") m.tab.hostName)
+
+
 {-| The tab's host, by the first OSC 7 it read (FT29), once one has come. -}
 shellHostSeen : (taken m : Model) -> Model
 shellHostSeen m =
-    if Maybe.isJust m.shellHost || m.tab.host == Nothing then
+    if Maybe.isJust m.shellHost || not (isRemoteTab m) then
         m
 
     else
@@ -5157,7 +5283,7 @@ droppedChecked others checked m =
             Nothing ->
                 -- every file there
                 meant Reason.NoMore
-                    (if m.tab.host /= Nothing then
+                    (if isRemoteTab m then
                         sshDropped (Array.map .path checked) m
 
                      else if Array.length readable < Array.length names || (Charset.encode m.charset (Bytes.fromString pasted)).replaced > 0 then
@@ -6742,7 +6868,7 @@ handleOne remote ms rest ev m =
             -- in an ssh tab under tmux -CC, the pane under the pointer is
             -- marked with the folder the files would go to (docs/sftp.md
             -- FT6, FT23)
-            if TmuxMode.isOn m.tmux && m.tab.host /= Nothing then
+            if TmuxMode.isOn m.tmux && isRemoteTab m then
                 let
                     r =
                         TmuxMode.dragOver { col = d.x // max 1 d.cellWidth, row = d.y // max 1 d.cellHeight, ms = ms } m.tmux

@@ -22,9 +22,13 @@ names.
 ## 2. An ssh tab
 
 The files are sent to the host over the tab's own connection, with no
-second login. This needs puritty's own ssh (`client = "built-in"` for the
-host; it is the default on Windows). A tab using OpenSSH's `ssh` can't send
-files yet, and says so.
+second login. With puritty's own ssh (`client = "built-in"`, the default
+on Windows) that is another channel on its connection. With OpenSSH's
+`ssh` (the default on Linux), puritty starts the tab's `ssh` as a
+`ControlMaster`, on a socket of its own, and sends through it; a host for
+which your `~/.ssh/config` already sets up a master keeps yours, and
+puritty sends through that. On Windows, whose OpenSSH has no masters, a
+tab using OpenSSH's `ssh` can't send files, and says so.
 
 ### Where they go
 
