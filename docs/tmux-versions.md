@@ -169,7 +169,27 @@ measured.
   outer tmux, a detached session, is now resized to its size after it is
   made.
 
-All six are fixed in later releases; nothing to report.
+- **3.8 gives a closed pane's space to the next pane, not the previous**
+  (2026-11-21, Gilbert's report: puritty on Windows over ssh, plain tmux
+  and `-CC` alike). Split a window left and right, split the left again,
+  close the new middle pane: in a 200-column window 2.7, 3.3a, 3.4, 3.6a
+  and 3.7c leave 100 | 99, the split pane back to half; 3.8 leaves 50 |
+  149, the right pane grown and the left at a quarter. Measured on each
+  build, detached, with no configuration and no terminal, so it is tmux's
+  own and puritty only draws what tmux lays out. 3.8 rewrote
+  `layout_destroy_cell` for floating panes: its `layout_cell_get_neighbour`
+  ("Prefers cells 'after'") takes the next sibling, where through 3.7c
+  the space went to the previous one, or the next for the first. Known:
+  tmux issue #5859, "Closing or floating a pane gives its space to the
+  wrong neighbour" (2026-11-06); fixed by Michael Grant's PR #5860, applied
+  2026-11-11 as commit `0a3b2a1a20`, "Prefer previous cell not next when
+  tiling/floating", on master and in no release yet (3.8, 2026-09-09, is
+  the latest). 3.8 built with that commit gives 100 | 99. Until a release
+  has it, `select-layout even-horizontal` or `resize-pane -x 50%` puts
+  the panes back. Fedora 43 ships 3.8.
+
+The first six are fixed in later releases; the seventh is fixed on tmux's
+master, not yet released. Nothing to report.
 
 ## TV7 · The distributions' packages against the releases
 
