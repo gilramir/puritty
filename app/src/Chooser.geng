@@ -38,7 +38,9 @@ type alias Chooser =
     , edit : TextEdit.Edit
     , waiting : Dict Int Want
     -- a folder being read: its path, its handle, and its folders so far
-    , reading : Maybe { path : Bytes, handle : Maybe Bytes, found : Array Bytes }
+    -- and the links in it whose `stat` is still to come, and whether its
+    -- end has (FT30: a link to a folder is listed too)
+    , reading : Maybe { path : Bytes, handle : Maybe Bytes, found : Array Bytes, links : Int, ended : Bool }
     , problem : Maybe String
     , files : Array Bytes
     }
@@ -48,6 +50,7 @@ type Want
     = Real
     | Opened Bytes
     | Listed
+    | LinkStat Bytes
     | Closed
 
 
@@ -164,7 +167,7 @@ answered want response acc =
         { want = Real, response = Names names } ->
             when Array.first names is
                 Just n ->
-                    ask (OpenDir n.name) (Opened n.name) { acc | chooser = { c | reading = Just { path = n.name, handle = Nothing, found = [] } } }
+                    ask (OpenDir n.name) (Opened n.name) { acc | chooser = { c | reading = Just { path = n.name, handle = Nothing, found = [], links = 0, ended = False } } }
 
                 Nothing ->
                     meant Reason.FromOutside { acc | chooser = { c | problem = Just "the host gave no path" } }
@@ -183,13 +186,56 @@ answered want response acc =
                     let
                         found =
                             Array.keepIf isFolder entries |> Array.map .name
+
+                        links =
+                            Array.keepIf isLink entries |> Array.map .name
+
+                        -- each link's `stat`, which follows it
+                        asked =
+                            Array.foldl (\name inner -> ask (Stat (under r.path name)) (LinkStat name) inner)
+                                { acc | chooser = { c | reading = Just { r | found = r.found ++ found, links = r.links + Array.length links } } }
+                                links
                     in
                     when r.handle is
                         Just h ->
-                            ask (ReadDir h) Listed { acc | chooser = { c | reading = Just { r | found = r.found ++ found } } }
+                            ask (ReadDir h) Listed asked
 
                         Nothing ->
                             meant Reason.NotOpen acc
+
+                Nothing ->
+                    meant Reason.NotOpen acc
+
+        { want = LinkStat name, response = _ } ->
+            -- a link's `stat`: listed when it leads to a folder; a link
+            -- that leads nowhere answers a status, and is not
+            when c.reading is
+                Just r ->
+                    let
+                        folder =
+                            when response is
+                                Attributes a ->
+                                    Maybe.map (\mode -> modBy 65536 mode // 4096 == 4) a.permissions == Just True
+
+                                _ ->
+                                    False
+
+                        next =
+                            { r
+                                | links = r.links - 1
+                                , found =
+                                    if folder then
+                                        Array.pushLast name r.found
+
+                                    else
+                                        r.found
+                            }
+                    in
+                    if next.ended && next.links <= 0 then
+                        { acc | chooser = listed next c }
+
+                    else
+                        { acc | chooser = { c | reading = Just next } }
 
                 Nothing ->
                     meant Reason.NotOpen acc
@@ -211,16 +257,12 @@ answered want response acc =
                             closed.chooser
                     in
                     if s.code == 1 then
-                        { closed
-                            | chooser =
-                                { cc
-                                    | reading = Nothing
-                                    , folder = Just r.path
-                                    , folders = Array.sortBy sortKey r.found
-                                    , selected = -1
-                                    , edit = { chars = [], caret = 0, anchor = 0 }
-                                }
-                        }
+                        if r.links <= 0 then
+                            { closed | chooser = listed r cc }
+
+                        else
+                            -- the links' answers still to come
+                            { closed | chooser = { cc | reading = Just { r | ended = True } } }
 
                     else
                         { closed | chooser = { cc | reading = Nothing, problem = Just (Bytes.toStringLossy r.path ++ ": " ++ s.message) } }
@@ -240,8 +282,26 @@ answered want response acc =
             { acc | chooser = { c | reading = Nothing, problem = Just "the host answered what was not asked" } }
 
 
-{-| A folder, as its attributes say: not `.` or `..`. A link to a folder
-is not one here, since its attributes are the link's. -}
+{-| A folder read to its end, its links' answers in: listed. -}
+listed : { path : Bytes, handle : Maybe Bytes, found : Array Bytes, links : Int, ended : Bool } -> Chooser -> Chooser
+listed r c =
+    { c
+        | reading = Nothing
+        , folder = Just r.path
+        , folders = Array.sortBy sortKey r.found
+        , selected = -1
+        , edit = { chars = [], caret = 0, anchor = 0 }
+    }
+
+
+{-| A link, as its attributes say (`S_IFLNK`): `stat` says where it leads. -}
+isLink : Sftp.Entry -> Bool
+isLink e =
+    Maybe.map (\mode -> modBy 65536 mode // 4096 == 10) e.attrs.permissions == Just True
+
+
+{-| A folder, as its attributes say: not `.` or `..`. A link to one is
+found by `isLink` and its `stat`. -}
 isFolder : Sftp.Entry -> Bool
 isFolder e =
     e.name /= Bytes.fromString "." && e.name /= Bytes.fromString ".." && Maybe.map (\mode -> modBy 65536 mode // 4096 == 4) e.attrs.permissions == Just True

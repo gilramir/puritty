@@ -1860,3 +1860,31 @@ OSC 7, a second later, names `elsewhere`: the chooser at home, Esc. The
 first run of that case printed both in the same moment and was asked about
 `elsewhere`'s folder, which is how the rule's limit above was found.
 
+## FT30 · Smaller gaps closed (2026-11-20)
+
+- **A pane's folder asked again while the drag stays** (FT6 asked for it
+  at the drop, not when the drag came): `TmuxMode.dragOver` takes the
+  time, and over the same pane a second after the last answer asks tmux
+  again, the folder shown kept until the new answer is in. The mark keeps
+  the answer's parts apart from the folder (`DropMark`), and asks no
+  second question while one is out. A drag that stops moving sends no
+  positions (XDND, OLE), so the folder is the one of the last second it
+  moved; with `drop_uploads = "ask"` the box shows it before anything goes.
+- **The progress, shorter**, so that a window of 80 columns holds it to
+  its end: `big.bin 3/12: 120/512 MB, 45 MB/s, 9 s · click to cancel`,
+  MB to a tenth under 10 and whole above.
+- **The chooser lists a link to a folder.** `readdir`'s attributes are a
+  link's own (`S_IFLNK`); each link in a folder is `stat`ed, which follows
+  it, and listed when it leads to a folder; the listing is shown once the
+  folder's end and every link's answer are in. A link to nothing, or to a
+  file, is not listed.
+
+`Chooser` and `Sending` are not in the application's unit suite: it runs
+on node too, and both use the ssh package, which is native only. The
+drop harness holds them.
+
+**Tested** (`harness/drop.py`): the chooser's host folder gains `link to
+alpha` and `dangling`; the chooser lists the first among the folders and
+not the second (`ssh-chooser`'s `after-2.png`), the six cases that list
+the folder re-pinned for the two links.
+

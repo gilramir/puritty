@@ -240,8 +240,16 @@ type alias State =
     , customizing : Maybe Customizing
     -- the pane a drag of files is over, marked with the folder they would
     -- go to on the host (docs/sftp.md FT6, FT23)
-    , dropMark : Maybe { pane : Int, folder : DropFolder }
+    , dropMark : Maybe DropMark
     }
+
+
+{-| The pane a drag is over: its folder as last read, the parts of tmux's
+answer to the question out, if one is, and when it was asked: asked again
+each second the drag stays, so that the folder a drop uses is the pane's
+then, not the one it had when the drag came (FT6, FT30). -}
+type alias DropMark =
+    { pane : Int, folder : DropFolder, parts : Array Bytes, inFlight : Bool, askedAt : Int }
 
 
 {-| The folder files dropped on a pane would go to: still being asked of
@@ -2650,27 +2658,22 @@ replied expect ok lines acc =
                     Array.first lines |> Maybe.withDefault (meant Reason.FromOutside Bytes.empty)
 
                 -- each part in turn, the folder read once the last has come
-                next folder =
-                    when folder is
-                        Asking parts ->
-                            if not ok then
-                                NoFolder ("tmux said: " ++ Bytes.toStringLossy line)
+                next d =
+                    if not ok then
+                        { d | folder = NoFolder ("tmux said: " ++ Bytes.toStringLossy line), parts = [], inFlight = False }
 
-                            else if asked.part == Array.length dropParts - 1 then
-                                dropFolderOf (Array.pushLast line parts)
+                    else if asked.part == Array.length dropParts - 1 then
+                        { d | folder = dropFolderOf (Array.pushLast line d.parts), parts = [], inFlight = False }
 
-                            else
-                                Asking (Array.pushLast line parts)
-
-                        _ ->
-                            folder
+                    else
+                        { d | parts = Array.pushLast line d.parts }
 
                 mark =
                     when st.dropMark is
                         Just d ->
                             -- the drag may have gone to another pane meanwhile
-                            if d.pane == asked.pane then
-                                Just { d | folder = next d.folder }
+                            if d.pane == asked.pane && d.inFlight then
+                                Just (next d)
 
                             else
                                 Just d
@@ -16755,7 +16758,7 @@ markedColor =
 {-| A drag of files over the window (docs/sftp.md FT23): the pane under
 the cell is marked, and when the drag comes to a pane it was not over,
 tmux is asked where its folder is. Off every pane, no mark. -}
-dragOver : { col : Int, row : Int } -> (taken s : State) -> { state : State, commands : Array String, changed : Bool }
+dragOver : { col : Int, row : Int, ms : Int } -> (taken s : State) -> { state : State, commands : Array String, changed : Bool }
 dragOver at s =
     let
         under =
@@ -16770,18 +16773,44 @@ dragOver at s =
 
         was =
             Maybe.map .pane s.dropMark
+
+        -- the same pane, asked over a second ago, its answer in
+        stale =
+            when s.dropMark is
+                Just d ->
+                    not d.inFlight && Clock.since d.askedAt at.ms >= 1000
+
+                Nothing ->
+                    meant Reason.NotOpen False
+
+        askFolder id mark st =
+            askLine
+                (Array.indexedMap (\i format -> { command = Command.displayAt ("%" ++ String.fromInt id) format, expect = ForDropFolder { pane = id, part = i } }) dropParts)
+                { state = { st | dropMark = Just mark }, outside = [], commands = [], trace = [], run = Nothing }
     in
     when under is
         Just id ->
             if was == Just id then
-                { state = s, commands = [], changed = False }
+                if stale then
+                    -- asked again, the folder shown kept till it is answered
+                    let
+                        r =
+                            when s.dropMark is
+                                Just d ->
+                                    askFolder id { d | parts = [], inFlight = True, askedAt = at.ms } s
+
+                                Nothing ->
+                                    askFolder id { pane = id, folder = Asking [], parts = [], inFlight = True, askedAt = at.ms } s
+                    in
+                    { state = r.state, commands = r.commands, changed = False }
+
+                else
+                    { state = s, commands = [], changed = False }
 
             else
                 let
                     r =
-                        askLine
-                            (Array.indexedMap (\i format -> { command = Command.displayAt ("%" ++ String.fromInt id) format, expect = ForDropFolder { pane = id, part = i } }) dropParts)
-                            { state = { s | dropMark = Just { pane = id, folder = Asking [] } }, outside = [], commands = [], trace = [], run = Nothing }
+                        askFolder id { pane = id, folder = Asking [], parts = [], inFlight = True, askedAt = at.ms } s
                 in
                 { state = r.state, commands = r.commands, changed = True }
 
@@ -16792,7 +16821,7 @@ dragOver at s =
 
 {-| The pane a drag is over marked (docs/sftp.md FT6, FT23): its first row
 a label saying where the files would go, the rest of it drawn inverse. -}
-dropMarked : Array Layout.Pane -> Maybe { pane : Int, folder : DropFolder } -> (taken t : Vt.Term) -> Vt.Term
+dropMarked : Array Layout.Pane -> Maybe DropMark -> (taken t : Vt.Term) -> Vt.Term
 dropMarked placed mark t =
     when mark |> Maybe.andThen (\d -> Array.findFirst (\p -> p.id == d.pane) placed |> Maybe.map (\f -> { folder = d.folder, at = f.value })) is
         Just m ->
@@ -16850,7 +16879,7 @@ dragLeft s =
 {-| Where a drop would go: the pane marked and its folder. -}
 dropTarget : State -> Maybe { pane : Int, folder : DropFolder }
 dropTarget s =
-    s.dropMark
+    Maybe.map (\d -> { pane = d.pane, folder = d.folder }) s.dropMark
 
 
 {-| What tmux is asked of a pane for a drop, a command each, since tmux's

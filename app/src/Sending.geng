@@ -522,23 +522,24 @@ progressText ms s =
                             0
                 in
                 Just
-                    ("Sending "
-                        ++ Bytes.toStringLossy p.name
+                    -- short, so that the note bar holds it to its end in a
+                    -- window of 80 columns (FT30)
+                    (Bytes.toStringLossy p.name
                         ++ (if p.files > 1 then
-                                " (" ++ String.fromInt p.file ++ " of " ++ String.fromInt p.files ++ ")"
+                                " " ++ String.fromInt p.file ++ "/" ++ String.fromInt p.files
 
                             else
                                 ""
                            )
                         ++ ": "
-                        ++ megabytes p.bytes
-                        ++ " of "
-                        ++ megabytes p.total
-                        ++ ", "
-                        ++ tenths (rate / 1000000)
+                        ++ figure (Int64.toFloat p.bytes / 1000000)
+                        ++ "/"
+                        ++ figure (Int64.toFloat p.total / 1000000)
+                        ++ " MB, "
+                        ++ figure (rate / 1000000)
                         ++ " MB/s, "
                         ++ String.fromInt (Math.round left)
-                        ++ " s left · click to cancel"
+                        ++ " s · click to cancel"
                     )
 
         Nothing ->
@@ -555,9 +556,14 @@ tenths x =
     String.fromInt (t // 10) ++ "." ++ String.fromInt (modBy 10 t)
 
 
-megabytes : Int64 -> String
-megabytes b =
-    tenths (Int64.toFloat b / 1000000) ++ " MB"
+{-| A number to a tenth under 10, else whole. -}
+figure : Float -> String
+figure x =
+    if x < 10 then
+        tenths x
+
+    else
+        String.fromInt (Math.round x)
 
 
 {-| The conflict question (FT4): the names there already, and the four

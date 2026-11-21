@@ -94,6 +94,9 @@ def host_listing(there, files):
     lines = []
     for p in sorted(there.rglob("*")):
         rel = p.relative_to(there)
+        if p.is_symlink():
+            lines.append(f"  {rel} -> {os.readlink(p)}")
+            continue
         if p.is_dir():
             lines.append(f"  {rel}/")
             continue
@@ -146,6 +149,10 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
         # the folders the chooser is taken to
         for d in ["alpha", "beta dir", ".hidden"]:
             (there / d).mkdir(parents=True)
+        # a link to a folder, which the chooser lists, and one to nothing,
+        # which it does not (FT30)
+        (there / "link to alpha").symlink_to("alpha")
+        (there / "dangling").symlink_to("nowhere")
     if before:
         before(there)
     env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser())
@@ -204,7 +211,7 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
             subprocess.run(shot + [str(home / "progress.png")], env=env)
             # the note bar, at the window's bottom right over the tab bar,
             # where progress.png shows it (the window at 660,60)
-            xdo(env, "mousemove", 1000, 434)
+            xdo(env, "mousemove", 1150, 434)
             xdo(env, "click", 1)
         # what is sent, given time to arrive
         time.sleep(wait)
