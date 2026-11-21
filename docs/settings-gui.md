@@ -405,7 +405,8 @@ Same window on Linux and Windows, so both get it.
 **Built (2026-11-14).** `Recent` (pure: the two kinds, the file's lines,
 `added`, `forgotten`) and `RecentFile` (the file, `recent.txt` in
 puritty's state folder beside `logs`, written whole and moved into
-place). The host list's rows are Quick connect, New connection, the recent
+place; `recent.toml`, an array `[[connections]]`, since `docs/sftp.md`
+FT33). The host list's rows are Quick connect, New connection, the recent
 connections, then the saved hosts; a recent row's second line says it is
 one ("a recent connection · Right saves it"), a quick one's value "by
 quick connect". Enter connects as it was made; Delete forgets it (the

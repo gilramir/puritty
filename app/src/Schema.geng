@@ -1293,7 +1293,7 @@ hostName name =
 
 hostKeys : Array String
 hostKeys =
-    [ "host", "user", "port", "identity", "jump", "command", "charset", "title", "client", "paste_folder", "colors", "font" ]
+    [ "host", "user", "port", "identity", "jump", "command", "charset", "title", "client", "paste_folder", "bookmarks", "colors", "font" ]
 
 
 hostKey : At -> Array String -> String -> String -> Toml.Table.Value -> { host : Config.Host, reports : Array Report } -> { host : Config.Host, reports : Array Report }
@@ -1369,6 +1369,20 @@ hostKey at here named key value r =
 
             Err why ->
                 meant Reason.FromOutside bad why
+
+    else if key == "bookmarks" then
+        -- the folder picker's, on this host (docs/sftp.md FT32)
+        when value is
+            Toml.Table.ArrayValue items ->
+                when Array.foldl (\item acc -> Result.map2 Array.pushLast (string item) acc) (Ok []) items is
+                    Ok paths ->
+                        { r | host = { h | bookmarks = paths } }
+
+                    Err why ->
+                        meant Reason.FromOutside bad why
+
+            _ ->
+                bad "not a list of folders, as [\"/srv/www\", \"~/notes\"]"
 
     else if key == "colors" || key == "font" then
         when value is

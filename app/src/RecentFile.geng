@@ -24,7 +24,9 @@ folder windows =
 
 
 {-| The recent connections in the state folder `dir`; none when there is no
-file yet, or it cannot be read. -}
+file yet, or it cannot be read. With no `recent.toml` yet, an old
+`recent.txt` is read and written as one (`docs/sftp.md` FT33); the old file
+is left as it was. -}
 load : File.Permission -> Path -> Task x (Array Recent)
 load fs dir =
     File.readFile fs (Path.append (Path.fromString fileName) dir)
@@ -37,7 +39,32 @@ load fs dir =
                     Nothing ->
                         meant Reason.FromOutside []
             )
+        |> Task.onError (\_ -> imported fs dir)
+
+
+{-| The old file's connections, written to the new file when there are
+any. To be removed with `Recent.fromOldText`. -}
+imported : File.Permission -> Path -> Task x (Array Recent)
+imported fs dir =
+    File.readFile fs (Path.append (Path.fromString Recent.oldFileName) dir)
+        |> Task.map
+            (\b ->
+                when Bytes.toString b is
+                    Just text ->
+                        Recent.fromOldText text
+
+                    Nothing ->
+                        meant Reason.FromOutside []
+            )
         |> Task.onError (\_ -> Task.succeed [])
+        |> Task.andThen
+            (\recents ->
+                if Array.isEmpty recents then
+                    Task.succeed recents
+
+                else
+                    write fs dir recents |> Task.map (\_ -> recents)
+            )
 
 
 {-| A connection made, kept first in the file, written whole and moved into

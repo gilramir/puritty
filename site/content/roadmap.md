@@ -56,5 +56,8 @@ Not in a fixed order:
 - **GPU drawing** for local use, with OpenGL ES; the X11 renderer stays
   for remote X11 and machines with no GPU.
 - **Tabs**: dragging to reorder them, and typing into several at once.
+- **Time zones' rules**, read from the system's time zone database, so
+  that a time from the other side of a change to or from summer time is
+  shown right; the folder picker's times are an hour off then today.
 - **1.0.0**, with the first alpha of [Geng](https://geng-lang.org), the
   language puritty is written in.

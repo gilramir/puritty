@@ -61,8 +61,10 @@ try:
     # another file manager by FM=…, Dolphin's from nix (FT21)
     fm = os.environ.get("FM")
     cmd = [fm, str(files)] if fm else ["nemo", "--no-desktop", "--geometry=640x700+0+0", str(files)]
+    # in a process group of its own, so that its D-Bus session's gvfs
+    # daemons are stopped with it (harness/drop.py's `ended`)
     nemo = subprocess.Popen(["dbus-run-session", "--", *cmd], env=dict(env, QT_QPA_PLATFORM="xcb"),
-                            stdout=open(out / "nemo.log", "w"), stderr=subprocess.STDOUT)
+                            stdout=open(out / "nemo.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
     procs.append(nemo)
     time.sleep(5)
     win = xdo("search", "--class", "dolphin" if fm else "nemo").split()
@@ -124,7 +126,7 @@ try:
         print(f"drag {n}:", (out / f"drag-{n}.jsonl").read_text())
         shot(out / f"after-{n}.png")
 finally:
-    for p in procs:
-        if p.poll() is None:
-            p.kill()
+    sys.path.insert(0, str(ROOT / "packages" / "ssh" / "tests"))
+    from drop import ended  # noqa: E402
+    ended(procs)
     xv.kill()

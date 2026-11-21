@@ -130,6 +130,7 @@ identity = "~/.ssh/id_ed25519"   # left out: ssh's own choice
 jump = "bastion"                 # another host, or user@host:port
 command = "tmux -CC new -A -s main"
 charset = "euc-kr"               # this host's, over the one above
+bookmarks = ["/srv/www", "~/notes"]   # the folder picker's, on this host
 
 [hosts."build-box".colors]
 background = "#2a1010"
@@ -138,6 +139,9 @@ tab = "#c62828"                  # its tabs' color in the bar
 
 A name the file doesn't have is looked up in `~/.ssh/config`, so your
 aliases work as they are.
+
+`bookmarks` are the folders the folder picker offers on the host, which it
+writes when you bookmark one there ([file-transfer.md](file-transfer.md)).
 
 **PuTTY's saved sessions** are in the host list too, marked "from PuTTY",
 after your own hosts and `~/.ssh/config`'s, so there is nothing to

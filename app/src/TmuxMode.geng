@@ -10,6 +10,7 @@ module TmuxMode exposing
     , diagnose
     , dragLeft
     , dragOver
+    , dropLabel
     , dropTarget
     , dueAt
     , encodeKey
@@ -16850,8 +16851,10 @@ dropMarked placed mark t =
             meant Reason.NotOpen t
 
 
-{-| The mark's label, in `width` cells: a folder too long for it keeps its
-end, the folder's own name, and loses its start. -}
+{-| The mark's label, in `width` cells: a folder too long for it keeps as
+many of its last names as fit after `/…/`, and a last name too long by
+itself loses its middle, as the folder picker's paths do (docs/sftp.md
+FT32). -}
 dropLabel : Int -> DropFolder -> String
 dropLabel width folder =
     when folder is
@@ -16870,20 +16873,59 @@ dropLabel width folder =
                 " Drop into " ++ whole ++ " "
 
             else
-                " Drop into …" ++ endFitting fits (String.toArray whole) ++ " "
+                " Drop into " ++ pathFitting fits whole ++ " "
 
         NoFolder why ->
             " Drop here: " ++ why ++ "; a folder will be asked "
 
 
-{-| The longest end of `chars` that `fits` after an ellipsis. -}
-endFitting : (String -> Bool) -> Array Char -> String
-endFitting fits chars =
-    if Array.isEmpty chars || fits ("…" ++ String.fromArray chars) then
-        String.fromArray chars
+{-| A path that does not fit, as `/…/` and the most of its last names
+that do; the last name's middle left out when it alone does not. -}
+pathFitting : (String -> Bool) -> String -> String
+pathFitting fits whole =
+    let
+        names =
+            String.split "/" whole |> Array.keepIf (\n -> n /= "")
+    in
+    namesFitting fits names (Array.length names - 1)
+
+
+namesFitting : (String -> Bool) -> Array String -> Int -> String
+namesFitting fits names n =
+    let
+        tried =
+            "/…/" ++ String.join "/" (Array.takeLast n names)
+    in
+    if n <= 1 then
+        if fits tried then
+            tried
+
+        else
+            middleFitting fits (String.join "" (Array.takeLast 1 names)) (String.count tried)
+
+    else if fits tried then
+        tried
 
     else
-        endFitting fits (Array.dropFirst 1 chars)
+        namesFitting fits names (n - 1)
+
+
+{-| A name too long, as `/…/`, its start, `…` and its end, the longest that
+fits; its end kept the longer, where dates and versions are. -}
+middleFitting : (String -> Bool) -> String -> Int -> String
+middleFitting fits name keep =
+    let
+        start =
+            keep // 5 * 2
+
+        tried =
+            "/…/" ++ String.takeFirst start name ++ "…" ++ String.takeLast (keep - start) name
+    in
+    if keep <= 2 || fits tried then
+        tried
+
+    else
+        middleFitting fits name (keep - 1)
 
 
 {-| The drag left the window, or was dropped: no mark. -}

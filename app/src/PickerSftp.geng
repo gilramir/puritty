@@ -1,0 +1,545 @@
+module PickerSftp exposing (Source, ask, received, start)
+
+{-| The folder picker's listings over SFTP (`docs/sftp.md` FT32): each of
+`Picker`'s requests made SFTP requests, on a channel of its own, and their
+answers made `Picker.Answer`s.
+
+A folder is read as the host answers: `REALPATH` for the path (`~` is the
+SFTP session's own folder, the home), `OPENDIR`, then a `READDIR` after
+each part, which is handed on at once, with the attributes `READDIR` gave
+and no `STAT` per entry (mc's 9 s for a folder `sftp` lists in 0.7 s,
+mc #5179, is a `STAT` per entry). A link is the one exception: its
+attributes are the link's own, so a `STAT` says whether it leads to a
+folder and a `REALPATH` where; it is handed on when both are in. A new
+folder is `MKDIR`.
+
+Pure, as `Ssh.Transfer` is: told the channel's bytes, it answers bytes to
+send and what the picker is told.
+-}
+
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Picker exposing (Answer(..), Ask(..), Entry, Kind(..))
+import Reason
+import Ssh.Sftp as Sftp exposing (Request(..), Response(..))
+
+
+type alias Source =
+    { client : Sftp.Client
+    , ready : Bool
+    -- the picker's requests made before the server said its version
+    , queued : Array Picker.Request
+    , waiting : Dict Int Want
+    -- the folders being read, by the picker's request
+    , readings : Dict Int Reading
+    }
+
+
+{-| A folder being read: its real path, its handle once open, whether its
+end has come, and its links whose `STAT` or `REALPATH` is still to come,
+by their names' bytes in hex. -}
+type alias Reading =
+    { path : Bytes
+    , handle : Maybe Bytes
+    , ended : Bool
+    , links : Dict String Link
+    }
+
+
+{-| A link in a folder being read: what `STAT` said (0 not yet, 1 a
+folder, 2 something else or nothing, as a link that leads nowhere), and
+where `REALPATH` said it leads, once it has answered. -}
+type alias Link =
+    { entry : Entry
+    , stat : Int
+    , real : Bool
+    , target : Maybe Bytes
+    }
+
+
+{-| What an SFTP request was for. -}
+type Want
+    = HomeReal
+    | Real Int
+    | Opened Int
+    | Listing Int
+    | LinkStat { id : Int, name : Bytes }
+    | LinkReal { id : Int, name : Bytes }
+    | Making { id : Int, path : Bytes }
+    | Closing
+
+
+type alias Acc =
+    { source : Source, send : Array Bytes, answers : Array Answer }
+
+
+{-| A source begun: its first bytes are SFTP's `INIT`, for the channel the
+caller opened. -}
+start : { source : Source, send : Bytes }
+start =
+    let
+        begun =
+            Sftp.start
+    in
+    { source = { client = begun.client, ready = False, queued = [], waiting = Dict.empty, readings = Dict.empty }
+    , send = begun.send
+    }
+
+
+finish : Acc -> { source : Source, send : Bytes, answers : Array Answer }
+finish acc =
+    { source = acc.source, send = Bytes.flatten acc.send, answers = acc.answers }
+
+
+sftp : Request -> Want -> Acc -> Acc
+sftp r want acc =
+    let
+        s =
+            acc.source
+
+        q =
+            Sftp.request r s.client
+    in
+    { acc | source = { s | client = q.client, waiting = Dict.set q.id want s.waiting }, send = Array.pushLast q.send acc.send }
+
+
+told : Answer -> Acc -> Acc
+told a acc =
+    { acc | answers = Array.pushLast a acc.answers }
+
+
+{-| A request of the picker's. -}
+ask : Picker.Request -> Source -> { source : Source, send : Bytes, answers : Array Answer }
+ask r s =
+    finish (askIn r { source = s, send = [], answers = [] })
+
+
+askIn : Picker.Request -> Acc -> Acc
+askIn r acc =
+    let
+        s =
+            acc.source
+    in
+    if not s.ready then
+        { acc | source = { s | queued = Array.pushLast r s.queued } }
+
+    else
+        when r.ask is
+            List path ->
+                sftp (RealPath (fromHome path)) (Real r.id) acc
+
+            MakeFolder path ->
+                sftp (MakeDir { path = fromHome path, attrs = noAttrs }) (Making { id = r.id, path = path }) acc
+
+
+noAttrs : Sftp.Attrs
+noAttrs =
+    { size = Nothing, uid = Nothing, gid = Nothing, permissions = Nothing, atime = Nothing, mtime = Nothing }
+
+
+{-| `~` as SFTP reads it: the session's own folder, the home, which a
+relative path starts from. -}
+fromHome : Bytes -> Bytes
+fromHome path =
+    if path == Bytes.fromString "~" then
+        Bytes.fromString "."
+
+    else if Bytes.slice 0 2 path == Bytes.fromString "~/" then
+        Bytes.slice 2 (Bytes.length path) path
+
+    else
+        path
+
+
+under : Bytes -> Bytes -> Bytes
+under parent name =
+    if Bytes.get (Bytes.length parent - 1) parent == Bytes.get 0 (Bytes.fromString "/") then
+        Bytes.flatten [ parent, name ]
+
+    else
+        Bytes.flatten [ parent, Bytes.fromString "/", name ]
+
+
+keyOf : Bytes -> String
+keyOf b =
+    Bytes.toHexString { padding = False } b
+
+
+{-| The file type in an entry's mode: 4 a folder, 8 a file, 10 a link. -}
+typeOf : Sftp.Attrs -> Int
+typeOf a =
+    when a.permissions is
+        Just mode ->
+            modBy 65536 mode // 4096
+
+        Nothing ->
+            meant Reason.FromOutside 0
+
+
+toEntry : Sftp.Entry -> Entry
+toEntry e =
+    { name = e.name
+    , kind =
+        if typeOf e.attrs == 4 then
+            Folder
+
+        else if typeOf e.attrs == 8 then
+            File
+
+        else
+            Other
+    , link = Nothing
+    , size = e.attrs.size
+    , mtime = e.attrs.mtime
+    }
+
+
+{-| The channel's bytes. -}
+received : Bytes -> Source -> { source : Source, send : Bytes, answers : Array Answer }
+received bytes s0 =
+    let
+        got =
+            Sftp.received bytes s0.client
+    in
+    Array.foldl onEvent { source = { s0 | client = got.client }, send = [], answers = [] } got.events
+        |> finish
+
+
+onEvent : Sftp.Event -> Acc -> Acc
+onEvent e acc =
+    let
+        s =
+            acc.source
+    in
+    when e is
+        Sftp.Ready _ ->
+            -- the home first, then what the picker asked meanwhile
+            Array.foldl askIn
+                (sftp (RealPath (Bytes.fromString ".")) HomeReal { acc | source = { s | ready = True, queued = [] } })
+                s.queued
+
+        Sftp.Broken why ->
+            -- every request of the picker's still waiting fails
+            Dict.foldl (\_ want inner -> failWant want ("the host's SFTP answered what is not SFTP: " ++ why) inner) { acc | source = { s | waiting = Dict.empty } } s.waiting
+
+        Sftp.Answer a ->
+            when Dict.get a.id s.waiting is
+                Just want ->
+                    answered want a.response { acc | source = { s | waiting = Dict.remove a.id s.waiting } }
+
+                Nothing ->
+                    meant Reason.NotKnown acc
+
+
+{-| The picker's request a want serves, told it failed. -}
+failWant : Want -> String -> Acc -> Acc
+failWant want why acc =
+    when want is
+        Real id ->
+            fail id why acc
+
+        Opened id ->
+            fail id why acc
+
+        Listing id ->
+            fail id why acc
+
+        Making m ->
+            fail m.id why acc
+
+        LinkStat l ->
+            fail l.id why acc
+
+        LinkReal l ->
+            fail l.id why acc
+
+        HomeReal ->
+            acc
+
+        Closing ->
+            acc
+
+
+{-| A request of the picker's failed: told so once, its folder's reading
+dropped and its handle closed. -}
+fail : Int -> String -> Acc -> Acc
+fail id why acc =
+    let
+        s =
+            acc.source
+    in
+    when Dict.get id s.readings is
+        Just r ->
+            let
+                dropped =
+                    { acc | source = { s | readings = Dict.remove id s.readings } }
+            in
+            told (Failed { id = id, why = why })
+                (when r.handle is
+                    Just h ->
+                        sftp (Close h) Closing dropped
+
+                    Nothing ->
+                        meant Reason.NotOpen dropped
+                )
+
+        Nothing ->
+            meant Reason.NotOpen (told (Failed { id = id, why = why }) acc)
+
+
+withReading : Int -> (Reading -> Reading) -> Acc -> Acc
+withReading id change acc =
+    let
+        s =
+            acc.source
+    in
+    { acc | source = { s | readings = Dict.update id (Maybe.map change) s.readings } }
+
+
+{-| A folder's reading at its end, and no link's answer still to come:
+the picker told the listing is complete. -}
+ended : Int -> Acc -> Acc
+ended id acc =
+    let
+        s =
+            acc.source
+    in
+    when Dict.get id s.readings is
+        Just r ->
+            if r.ended && Dict.isEmpty r.links then
+                told (Listed { id = id, path = r.path, entries = [], more = False }) { acc | source = { s | readings = Dict.remove id s.readings } }
+
+            else
+                acc
+
+        Nothing ->
+            meant Reason.NotOpen acc
+
+
+{-| A link's `STAT` or `REALPATH` in: handed on once both are. -}
+linkAnswered : Int -> Bytes -> (Link -> Link) -> Acc -> Acc
+linkAnswered id name change acc =
+    let
+        s =
+            acc.source
+    in
+    when Dict.get id s.readings is
+        Just r ->
+            when Dict.get (keyOf name) r.links is
+                Just l0 ->
+                    let
+                        l =
+                            change l0
+
+                        entry =
+                            l.entry
+                    in
+                    if l.stat /= 0 && l.real then
+                        { acc | source = { s | readings = Dict.set id { r | links = Dict.remove (keyOf name) r.links } s.readings } }
+                            |> told
+                                (Listed
+                                    { id = id
+                                    , path = r.path
+                                    , entries =
+                                        [ { entry
+                                            | kind =
+                                                if l.stat == 1 then
+                                                    Folder
+
+                                                else
+                                                    Other
+                                            , link = l.target
+                                            -- the link's own size is its
+                                            -- target's path's length
+                                            , size = Nothing
+                                          }
+                                        ]
+                                    , more = True
+                                    }
+                                )
+                            |> ended id
+
+                    else
+                        { acc | source = { s | readings = Dict.set id { r | links = Dict.set (keyOf name) l r.links } s.readings } }
+
+                Nothing ->
+                    meant Reason.NotKnown acc
+
+        Nothing ->
+            meant Reason.NotOpen acc
+
+
+answered : Want -> Response -> Acc -> Acc
+answered want response acc =
+    when { want = want, response = response } is
+        { want = HomeReal, response = Names names } ->
+            when Array.first names is
+                Just n ->
+                    told (Home n.name) acc
+
+                Nothing ->
+                    meant Reason.FromOutside acc
+
+        { want = Real id, response = Names names } ->
+            when Array.first names is
+                Just n ->
+                    let
+                        s =
+                            acc.source
+                    in
+                    sftp (OpenDir n.name) (Opened id) { acc | source = { s | readings = Dict.set id { path = n.name, handle = Nothing, ended = False, links = Dict.empty } s.readings } }
+
+                Nothing ->
+                    meant Reason.FromOutside (fail id "the host gave no path" acc)
+
+        { want = Opened id, response = Handle h } ->
+            sftp (ReadDir h) (Listing id) (withReading id (\r -> { r | handle = Just h }) acc)
+
+        { want = Listing id, response = Names entries } ->
+            when Dict.get id acc.source.readings is
+                Just r ->
+                    let
+                        named =
+                            Array.keepIf (\e -> e.name /= Bytes.fromString "." && e.name /= Bytes.fromString "..") entries
+
+                        links =
+                            Array.keepIf (\e -> typeOf e.attrs == 10) named
+
+                        plain =
+                            Array.keepIf (\e -> typeOf e.attrs /= 10) named |> Array.map toEntry
+
+                        -- each link's STAT and REALPATH asked, and the link kept
+                        -- until both are in
+                        asked =
+                            Array.foldl
+                                (\e inner ->
+                                    inner
+                                        |> withReading id (\rr -> { rr | links = Dict.set (keyOf e.name) { entry = toEntry e, stat = 0, real = False, target = Nothing } rr.links })
+                                        |> sftp (Stat (under r.path e.name)) (LinkStat { id = id, name = e.name })
+                                        |> sftp (RealPath (under r.path e.name)) (LinkReal { id = id, name = e.name })
+                                )
+                                acc
+                                links
+
+                        shown =
+                            if Array.isEmpty plain then
+                                asked
+
+                            else
+                                told (Listed { id = id, path = r.path, entries = plain, more = True }) asked
+                    in
+                    when r.handle is
+                        Just h ->
+                            sftp (ReadDir h) (Listing id) shown
+
+                        Nothing ->
+                            meant Reason.NotOpen shown
+
+                Nothing ->
+                    meant Reason.NotOpen acc
+
+        { want = Listing id, response = Status st } ->
+            -- the folder's end (EOF, 1), or a failure reading it
+            if st.code == 1 then
+                when Dict.get id acc.source.readings is
+                    Just r ->
+                        let
+                            closed =
+                                when r.handle is
+                                    Just h ->
+                                        sftp (Close h) Closing acc
+
+                                    Nothing ->
+                                        meant Reason.NotOpen acc
+                        in
+                        closed
+                            |> withReading id (\rr -> { rr | ended = True, handle = Nothing })
+                            |> ended id
+
+                    Nothing ->
+                        meant Reason.NotOpen acc
+
+            else
+                fail id (pathOf id acc ++ st.message) acc
+
+        { want = LinkStat l, response = Attributes a } ->
+            linkAnswered l.id
+                l.name
+                (\k ->
+                    { k
+                        | stat =
+                            if typeOf a == 4 then
+                                1
+
+                            else
+                                2
+                    }
+                )
+                acc
+
+        { want = LinkStat l, response = _ } ->
+            -- a link that leads nowhere
+            linkAnswered l.id l.name (\k -> { k | stat = 2 }) acc
+
+        { want = LinkReal l, response = Names names } ->
+            linkAnswered l.id l.name (\k -> { k | real = True, target = Maybe.map .name (Array.first names) }) acc
+
+        { want = LinkReal l, response = _ } ->
+            linkAnswered l.id l.name (\k -> { k | real = True }) acc
+
+        { want = Making m, response = Status st } ->
+            if st.code == 0 then
+                told (Made { id = m.id, path = m.path }) acc
+
+            else
+                fail m.id st.message acc
+
+        { want = Closing, response = _ } ->
+            acc
+
+        { want = _, response = Status st } ->
+            -- a path not there, not a folder, not readable: the server's words
+            failWant want (pathOf (idOf want) acc ++ st.message) acc
+
+        _ ->
+            failWant want "the host answered what was not asked" acc
+
+
+{-| The picker's request a want serves, -1 for none. -}
+idOf : Want -> Int
+idOf want =
+    when want is
+        Real id ->
+            id
+
+        Opened id ->
+            id
+
+        Listing id ->
+            id
+
+        Making m ->
+            m.id
+
+        LinkStat l ->
+            l.id
+
+        LinkReal l ->
+            l.id
+
+        HomeReal ->
+            -1
+
+        Closing ->
+            -1
+
+
+{-| The path a reading is of, with a colon, for the server's words. -}
+pathOf : Int -> Acc -> String
+pathOf id acc =
+    when Dict.get id acc.source.readings is
+        Just r ->
+            Bytes.toStringLossy r.path ++ ": "
+
+        Nothing ->
+            meant Reason.NotOpen ""

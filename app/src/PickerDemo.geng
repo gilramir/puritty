@@ -1,0 +1,324 @@
+module PickerDemo exposing (Demo, due, files, host, places, request, start, take)
+
+{-| A pretend host for the folder picker's working model (`docs/sftp.md`
+FT32): folders held in memory, each listing answered after a delay as a
+host's would be, a big folder in parts, a slow one, a folder that can't be
+read, links, long names and a deep path. `puritty --try-folder-picker`
+opens the picker on it; nothing is read from or written to a real host.
+-}
+
+import Bytes exposing (Bytes)
+import Clock
+import Dict exposing (Dict)
+import Int64
+import Picker exposing (Answer(..), Ask(..), Entry, Kind(..))
+import Reason
+
+
+type alias Demo =
+    { folders : Dict String (Array Entry)
+    , pending : Array { at : Int, answer : Answer }
+    }
+
+
+host : String
+host =
+    "me@demo-host"
+
+
+home : String
+home =
+    "/home/me"
+
+
+{-| The files the picker opens with when nothing was dropped. -}
+files : Array Bytes
+files =
+    [ Bytes.fromString "/home/me/Pictures/logo.png"
+    , Bytes.fromString "/home/me/report-2026-11.pdf"
+    , Bytes.fromString "/home/me/notes.txt"
+    ]
+
+
+{-| The places a real picker would be given: the shell's folder, the home,
+recent folders and bookmarks. -}
+places : Picker.Places
+places =
+    { shell = Just (Bytes.fromString "/srv/www/site")
+    , home = Just (Bytes.fromString home)
+    , recent = [ Bytes.fromString "/srv/www/site/assets", Bytes.fromString "/home/me/projects/website" ]
+    , bookmarks = [ Bytes.fromString "/var/log" ]
+    }
+
+
+folder : String -> Int -> Entry
+folder name i =
+    { name = Bytes.fromString name, kind = Folder, link = Nothing, size = Nothing, mtime = Just (Int64.fromInt (1763000000 + i * 86413)) }
+
+
+file : String -> Int -> Int -> Entry
+file name size i =
+    { name = Bytes.fromString name, kind = File, link = Nothing, size = Just (Int64.fromInt size), mtime = Just (Int64.fromInt (1763100000 + i * 7919)) }
+
+
+linkTo : String -> String -> Entry
+linkTo name target =
+    { name = Bytes.fromString name, kind = Folder, link = Just (Bytes.fromString target), size = Nothing, mtime = Just (Int64.fromInt 1763400000) }
+
+
+{-| The deep path's folders, each in the one before. -}
+deep : Array String
+deep =
+    [ "github.com", "gilramir", "puritty", "app", "src", "generated", "very", "deeply", "nested", "folders", "for", "trying", "long", "paths" ]
+
+
+tree : Dict String (Array Entry)
+tree =
+    let
+        -- /home/me/src, then each of the deep path's folders in the one
+        -- before, a README in each
+        deepFolders =
+            Array.indexedMap
+                (\i name ->
+                    { key = "/home/me/src/" ++ String.join "/" (Array.takeFirst (i + 1) deep)
+                    , value =
+                        (when Array.get (i + 1) deep is
+                            Just next ->
+                                [ folder next i ]
+
+                            Nothing ->
+                                meant Reason.NoMore []
+                        )
+                            ++ [ file ("README-" ++ name ++ ".md") (1200 + i) i ]
+                    }
+                )
+                deep
+
+        libs =
+            Array.initialize 2000
+                0
+                (\i ->
+                    if modBy 7 i == 0 then
+                        folder ("pkg-" ++ String.padLeft 4 '0' (String.fromInt i)) i
+
+                    else
+                        file ("libthing-" ++ String.padLeft 4 '0' (String.fromInt i) ++ ".so.1") (40000 + i * 37) i
+                )
+    in
+    Dict.fromStringPairs
+        ([ { key = "/", value = [ folder "bin" 1, folder "etc" 2, folder "home" 3, folder "opt" 4, folder "root" 5, folder "srv" 6, folder "tmp" 7, folder "usr" 8, folder "var" 9 ] }
+         , { key = "/home", value = [ folder "me" 1, folder "other" 2 ] }
+         , { key = "/home/other", value = [] }
+         , { key = "/home/me"
+           , value =
+                [ folder "Documents" 1
+                , folder "Downloads" 2
+                , folder "Pictures" 3
+                , folder "projects" 4
+                , folder "src" 5
+                , folder ".config" 6
+                , folder ".ssh" 7
+                , folder "customer-portal-deployment-artifacts-staging-and-production-2026-11-20-final" 8
+                , file "notes.txt" 812 1
+                , file "todo.md" 2048 2
+                , file ".bashrc" 3771 3
+                ]
+           }
+         , { key = "/home/me/Documents", value = [ file "taxes-2025.pdf" 381022 1, file "lease.pdf" 120111 2 ] }
+         , { key = "/home/me/Downloads", value = [ file "puritty-0.2.1.zip" 9810221 1, file "notes.txt" 99 2 ] }
+         , { key = "/home/me/Pictures", value = [ file "logo.png" 12688 1 ] }
+         , { key = "/home/me/projects", value = [ folder "website" 1, folder "geng-lang" 2, folder "puritty" 3 ] }
+         , { key = "/home/me/projects/website", value = [ folder "content" 1, folder "static" 2, file "config.toml" 900 1 ] }
+         , { key = "/home/me/projects/website/content", value = [] }
+         , { key = "/home/me/projects/website/static", value = [] }
+         , { key = "/home/me/projects/geng-lang", value = [ file "README.md" 4000 1 ] }
+         , { key = "/home/me/projects/puritty", value = [ file "README.md" 5000 1 ] }
+         , { key = "/home/me/.config", value = [ folder "puritty" 1 ] }
+         , { key = "/home/me/.config/puritty", value = [ file "config.toml" 1500 1 ] }
+         , { key = "/home/me/.ssh", value = [ file "config" 300 1, file "known_hosts" 4400 2 ] }
+         , { key = "/home/me/customer-portal-deployment-artifacts-staging-and-production-2026-11-20-final", value = [ file "build.tar.gz" 88000000 1 ] }
+         , { key = "/srv", value = [ folder "www" 1 ] }
+         , { key = "/srv/www", value = [ folder "site" 1, folder "old-site" 2 ] }
+         , { key = "/srv/www/old-site", value = [] }
+         , { key = "/srv/www/site"
+           , value =
+                [ folder "assets" 1
+                , folder "css" 2
+                , folder "img" 3
+                , linkTo "releases" "/var/releases"
+                , file "index.html" 4198 1
+                , file "robots.txt" 64 2
+                , file "logo.png" 12001 3
+                ]
+           }
+         , { key = "/srv/www/site/assets", value = [ folder "fonts" 1, folder "js" 2 ] }
+         , { key = "/srv/www/site/assets/fonts", value = [] }
+         , { key = "/srv/www/site/assets/js", value = [ file "app.js" 50211 1 ] }
+         , { key = "/srv/www/site/css", value = [ file "site.css" 8100 1 ] }
+         , { key = "/srv/www/site/img", value = [ file "logo.png" 12001 1, file "hero.jpg" 340221 2 ] }
+         , { key = "/var", value = [ folder "log" 1, folder "releases" 2, folder "tmp" 3 ] }
+         , { key = "/var/log", value = Array.initialize 40 0 (\i -> file ("syslog." ++ String.fromInt i) (100000 + i * 13) i) }
+         , { key = "/var/releases", value = [ folder "2026-11-01" 1, folder "2026-11-15" 2 ] }
+         , { key = "/var/releases/2026-11-01", value = [] }
+         , { key = "/var/releases/2026-11-15", value = [] }
+         , { key = "/var/tmp", value = [] }
+         , { key = "/bin", value = [ file "sh" 125000 1, file "ls" 140000 2 ] }
+         , { key = "/etc", value = [ folder "ssh" 1, file "hosts" 220 1, file "passwd" 2800 2 ] }
+         , { key = "/etc/ssh", value = [ file "sshd_config" 3200 1 ] }
+         , { key = "/opt", value = [] }
+         , { key = "/tmp", value = [] }
+         , { key = "/usr", value = [ folder "bin" 1, folder "lib" 2, folder "share" 3 ] }
+         , { key = "/usr/bin", value = [] }
+         , { key = "/usr/share", value = [] }
+         , { key = "/usr/lib", value = libs }
+         , { key = "/home/me/src", value = [ folder "github.com" 0 ] }
+         ]
+            ++ deepFolders
+        )
+
+
+start : Demo
+start =
+    { folders = tree, pending = [] }
+
+
+{-| A path read as the host would: `~` its home, `.` and `..` read away,
+and the link `releases` followed. -}
+real : String -> String
+real asked =
+    let
+        expanded =
+            if asked == "~" || asked == "." then
+                home
+
+            else if String.startsWith "~/" asked then
+                home ++ String.dropFirst 1 asked
+
+            else
+                asked
+
+        names =
+            String.split "/" expanded
+                |> Array.foldl
+                    (\name acc ->
+                        if name == "" || name == "." then
+                            acc
+
+                        else if name == ".." then
+                            Array.dropLast 1 acc
+
+                        else
+                            Array.pushLast name acc
+                    )
+                    []
+
+        path =
+            "/" ++ String.join "/" names
+    in
+    if String.startsWith "/srv/www/site/releases" path then
+        "/var/releases" ++ String.dropFirst (String.count "/srv/www/site/releases") path
+
+    else
+        path
+
+
+{-| A request, answered after the delay a host might take: a listing at
+once-ish, `/var/log` slowly, `/usr/lib` in parts. -}
+request : Int -> Picker.Request -> Demo -> Demo
+request ms r d =
+    when r.ask is
+        List asked ->
+            let
+                path =
+                    real (Bytes.toStringLossy asked)
+
+                answer at a =
+                    { at = Clock.after ms at, answer = a }
+            in
+            if path == "/root" then
+                { d | pending = Array.pushLast (answer 150 (Failed { id = r.id, why = "/root: Permission denied" })) d.pending }
+
+            else
+                when Dict.get path d.folders is
+                    Just entries ->
+                        if path == "/usr/lib" then
+                            -- in parts of 250, as READDIR answers
+                            let
+                                count =
+                                    Array.length entries
+
+                                partsOf =
+                                    Array.initialize ((count + 249) // 250)
+                                        0
+                                        (\i ->
+                                            answer (200 + i * 120)
+                                                (Listed
+                                                    { id = r.id
+                                                    , path = Bytes.fromString path
+                                                    , entries = Array.slice (i * 250) (i * 250 + 250) entries
+                                                    , more = (i + 1) * 250 < count
+                                                    }
+                                                )
+                                        )
+                            in
+                            { d | pending = d.pending ++ partsOf }
+
+                        else
+                            { d
+                                | pending =
+                                    Array.pushLast
+                                        (answer
+                                            (if path == "/var/log" then
+                                                1200
+
+                                             else
+                                                120
+                                            )
+                                            (Listed { id = r.id, path = Bytes.fromString path, entries = entries, more = False })
+                                        )
+                                        d.pending
+                            }
+
+                    Nothing ->
+                        meant Reason.NotKnown { d | pending = Array.pushLast (answer 150 (Failed { id = r.id, why = path ++ ": No such file or directory" })) d.pending }
+
+        MakeFolder asked ->
+            let
+                path =
+                    real (Bytes.toStringLossy asked)
+
+                parent =
+                    real (path ++ "/..")
+
+                name =
+                    String.split "/" path |> Array.last |> Maybe.withDefault path
+            in
+            when Dict.get parent d.folders is
+                Just entries ->
+                    if Dict.member path d.folders || Array.any (\e -> Bytes.toStringLossy e.name == name) entries then
+                        { d | pending = Array.pushLast { at = Clock.after ms 150, answer = Failed { id = r.id, why = name ++ ": File exists" } } d.pending }
+
+                    else
+                        { d
+                            | folders = Dict.set path [] (Dict.set parent (Array.pushLast (folder name 0) entries) d.folders)
+                            , pending = Array.pushLast { at = Clock.after ms 150, answer = Made { id = r.id, path = Bytes.fromString path } } d.pending
+                        }
+
+                Nothing ->
+                    meant Reason.NotKnown { d | pending = Array.pushLast { at = Clock.after ms 150, answer = Failed { id = r.id, why = parent ++ ": No such file or directory" } } d.pending }
+
+
+{-| When the next answer is due, -1 for none. -}
+due : Demo -> Int
+due d =
+    Array.foldl (\p acc -> Clock.soonest acc p.at) -1 d.pending
+
+
+{-| The answers due by `ms`, in the order asked. -}
+take : Int -> Demo -> { demo : Demo, answers : Array Answer }
+take ms d =
+    let
+        split =
+            Array.partition (\p -> Clock.reached p.at ms) d.pending
+    in
+    { demo = { d | pending = split.falses }, answers = Array.map .answer split.trues }

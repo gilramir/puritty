@@ -1,0 +1,156 @@
+module PickerTests exposing (picker)
+
+{-| The folder picker (`docs/sftp.md` FT32, FT33) told a listing and keys,
+and its memory's file read back. -}
+
+import Bytes exposing (Bytes)
+import Expect exposing (Expectation)
+import Folders
+import Picker exposing (Answer(..), Ask(..), Kind(..))
+import Recent
+import Task
+import Test.Runner.UnitNode as U
+import TmuxMode
+import UInt8
+
+
+with : Picker.With
+with =
+    { decode = Bytes.toStringLossy, encode = \s -> Just (Bytes.fromString s) }
+
+
+folderNamed : String -> Picker.Entry
+folderNamed name =
+    { name = Bytes.fromString name, kind = Folder, link = Nothing, size = Nothing, mtime = Nothing }
+
+
+opened : { picker : Picker.Picker, requests : Array Picker.Request }
+opened =
+    Picker.open { host = "h", files = [], at = Bytes.fromString "/x", places = { shell = Nothing, home = Nothing, recent = [], bookmarks = [] } }
+
+
+{-| The picker at `/x`, its listing come in two parts: `a`, then `b`. -}
+listedAt : Picker.Picker
+listedAt =
+    let
+        first =
+            Picker.answer (Listed { id = 1, path = Bytes.fromString "/x", entries = [ folderNamed "a" ], more = True }) opened.picker
+
+        second =
+            Picker.answer (Listed { id = 1, path = Bytes.fromString "/x", entries = [ folderNamed "b" ], more = False }) first.picker
+    in
+    second.picker
+
+
+press : Int -> Int -> Int -> Picker.Picker -> Picker.Step
+press sym unshifted mods p =
+    Picker.key with { sym = sym, unshifted = unshifted, mods = mods, text = "" } p
+
+
+asks : Array Picker.Request -> Array String
+asks requests =
+    Array.map
+        (\r ->
+            when r.ask is
+                List path ->
+                    "list " ++ Bytes.toStringLossy path
+
+                MakeFolder path ->
+                    "make " ++ Bytes.toStringLossy path
+        )
+        requests
+
+
+picker : U.Suite
+picker =
+    U.suite
+        { name = "picker"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests = Array.map (\c -> U.test c.name (\_ -> Task.succeed (c.test {}))) cases
+        }
+
+
+cases : Array { name : String, test : {} -> Expectation }
+cases =
+    [ { name = "it opens by listing the folder it starts at"
+      , test = \_ -> Expect.equal [ "list /x" ] (asks opened.requests)
+      }
+    , { name = "Enter with nothing highlighted goes nowhere, after a listing's second part (Array.get reads -1 from the end)"
+      , test = \_ -> Expect.equal [] (asks (press 0xFF0D 0 0 listedAt).requests)
+      }
+    , { name = "Down, Down and Enter go into the folder under `..`"
+      , test =
+            \_ ->
+                let
+                    down =
+                        (press 0xFF54 0 0 (press 0xFF54 0 0 listedAt).picker).picker
+                in
+                Expect.equal [ "list /x/a" ] (asks (press 0xFF0D 0 0 down).requests)
+      }
+    , { name = "Ctrl+Enter sends to the folder you are in, whatever is highlighted"
+      , test =
+            \_ ->
+                let
+                    down =
+                        (press 0xFF54 0 0 (press 0xFF54 0 0 listedAt).picker).picker
+                in
+                Expect.equal (Picker.Send (Bytes.fromString "/x")) (press 0xFF0D 0 2 down).outcome
+      }
+    , { name = "Ctrl+D bookmarks the folder you are in, and again takes it off"
+      , test =
+            \_ ->
+                let
+                    marked =
+                        (press 0x64 0x64 2 listedAt).picker
+                in
+                Expect.equal [ [ "/x" ], [] ] [ Array.map Bytes.toStringLossy (Picker.bookmarks marked), Array.map Bytes.toStringLossy (Picker.bookmarks (press 0x64 0x64 2 marked).picker) ]
+      }
+    , { name = "a tmux pane's drop label: a path that fits whole"
+      , test = \_ -> Expect.equal " Drop into /srv/www/site " (TmuxMode.dropLabel 40 (TmuxMode.Folder (Bytes.fromString "/srv/www/site")))
+      }
+    , { name = "a tmux pane's drop label: a long path keeps its last names whole"
+      , test = \_ -> Expect.equal " Drop into /…/assets/site " (TmuxMode.dropLabel 26 (TmuxMode.Folder (Bytes.fromString "/home/me/projects/assets/site")))
+      }
+    , { name = "a tmux pane's drop label: a last name too long by itself loses its middle"
+      , test = \_ -> Expect.equal " Drop into /…/customer…-11-20-final " (TmuxMode.dropLabel 36 (TmuxMode.Folder (Bytes.fromString "/srv/customer-portal-deployment-2026-11-20-final")))
+      }
+    , { name = "the folders' file read back: a path not UTF-8 as bytes, a host of a later kind passed over"
+      , test =
+            \_ ->
+                let
+                    folders =
+                        [ { host = Folders.Saved "web1", recent = [ Bytes.fromString "/srv/www" ], bookmarks = [] }
+                        , { host = Folders.Ssh "me@h:22", recent = [], bookmarks = [ Bytes.fromString "/var/log", Bytes.fromUInt8s (Array.map UInt8.fromIntWrap [ 0x2F, 0xB0, 0xA1 ]) ] }
+                        ]
+                in
+                Expect.equal folders (Folders.fromText (Folders.toText folders ++ "\n[[hosts]]\nlater = \"x\"\nrecent = [\"/y\"]\n"))
+      }
+    , { name = "the folders' file as TOML"
+      , test =
+            \_ ->
+                Expect.equal "[[hosts]]\nhost = \"web1\"\nrecent = [\"/srv/www\"]\n\n[[hosts]]\nssh = \"me@h:22\"\nbookmarks = [{ bytes = \"2fb0a1\" }]\n"
+                    (Folders.toText
+                        [ { host = Folders.Saved "web1", recent = [ Bytes.fromString "/srv/www" ], bookmarks = [] }
+                        , { host = Folders.Ssh "me@h:22", recent = [], bookmarks = [ Bytes.fromUInt8s (Array.map UInt8.fromIntWrap [ 0x2F, 0xB0, 0xA1 ]) ] }
+                        ]
+                    )
+      }
+    , { name = "the recent connections' file read back, a connection of another kind passed over"
+      , test =
+            \_ ->
+                let
+                    recents =
+                        [ Recent.Quick "me@h tmux -CC attach", Recent.Saved "build-box" ]
+                in
+                Expect.equal recents (Recent.fromText (Recent.toText recents ++ "\n[[connections]]\nlater = \"x\"\n"))
+      }
+    , { name = "the old recent.txt read for its one import into recent.toml"
+      , test =
+            \_ ->
+                Expect.equal [ Recent.Quick "me@h tmux -CC attach", Recent.Saved "build-box" ]
+                    (Recent.fromOldText "quick me@h tmux -CC attach\nhost build-box\nlater x\nhost \n")
+      }
+    ]

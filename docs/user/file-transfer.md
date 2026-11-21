@@ -1,7 +1,7 @@
 # Sending files to a host
 
 *Status: this guide describes what is built as of 2026-11-20
-([`../sftp.md`](../sftp.md) FT22 to FT26): dropping files on a tab.
+([`../sftp.md`](../sftp.md) FT22 to FT33): dropping files on a tab.
 Downloading, a file tab, and `get` and `put` typed in the shell are still
 to come.*
 
@@ -40,20 +40,68 @@ tab using OpenSSH's `ssh` can't send files, and says so.
   can't see its folder, and the label says a folder will be asked for.
 - **In a tab without tmux whose shell says where it is** (by OSC 7, see
   below), they go to the shell's folder.
-- **Otherwise** a box asks which folder, starting at your home on the
-  host:
-
-  | key | what it does |
-  |---|---|
-  | Up, Down | choose a folder; `..` is the one above |
-  | Enter | go into the folder in the box's field |
-  | Enter again | send the files there |
-  | typing | a path of your own, `/srv/www` or `projects/site`, then Enter |
-  | Esc | cancel |
-
-  "Send here" sends them to the folder shown; "Cancel" cancels.
+- **Otherwise** the folder picker opens, at your home on the host (see
+  below).
 
 Folders are sent with everything in them.
+
+### The folder picker
+
+```
+ Send report.pdf and 2 more to web1
+ ~ › projects › site                                          ☆
+ Shell's folder │ Name                       Size  Modified
+ Home           │ ▸ ..
+ /              │ ▸ assets/                        2026-11-14 02:13
+ RECENT         │ ▸ css/                           2026-11-15 02:13
+ /srv/www/site  │   index.html            4.1 KB   2026-11-14 08:11
+ BOOKMARKS      │   logo.png  ◆ same name  12 KB   2026-11-14 12:35
+ /var/log       │
+ New folder                      Cancel   Send to ~/projects/site/  Ctrl+Enter
+```
+
+The files go to **the folder you are in**, the one at the end of the path
+at the top, and the button says which. Moving the highlight up and down
+doesn't change it; going into a folder does.
+
+| to | with the mouse | with the keys |
+|---|---|---|
+| go into a folder | double-click it | Enter, or Right |
+| go up | click a name in the path, or `..` | Backspace, or Left |
+| go to a place | click it at the left | Tab to the places, then Enter; or Alt+1 to Alt+9 |
+| type a path | click the path's empty end | `/`, `~` or Ctrl+L; Tab completes; Enter goes there |
+| find a name | | type it: the list keeps only names with it in them; Esc clears it |
+| make a folder | New folder | Ctrl+N, a name, Enter (and you are in it) |
+| bookmark this folder | the ☆ at the path's end | Ctrl+D (again to remove it) |
+| read the folder again | | Ctrl+R |
+| send | Send to … | Ctrl+Enter |
+| cancel | Cancel | Esc |
+
+- **Dragging files onto a folder in the list** sends them there, while the
+  picker is open; the row says "Drop into …" as you drag over it.
+- **Dragging a folder from the list onto the places** bookmarks it. A
+  bookmark's ✕, as the pointer is over it, removes it; so does Delete in
+  the places.
+- Files are listed dimmed, so you can see what is there; one with the name
+  of a file you are sending is marked **◆ same name**.
+- A long path keeps its start and its end, `~ › … › long › paths`; click the
+  `…` for the folders left out.
+- **Recent** lists the folders files were last sent to on this host.
+  **Bookmarks** are a host's own. For a host in your settings they are kept
+  in its table:
+
+  ```toml
+  [hosts.web1]
+  host = "web1.example.com"
+  bookmarks = ["/srv/www/site", "/var/log"]
+  ```
+
+  For a host you reached with `puritty ssh user@host`, they are kept with
+  the recent folders in `folders.toml` in puritty's state folder.
+- **Modified** times are in your computer's time zone, but with the offset
+  it has today: a file changed on the other side of a change to or from
+  summer time shows an hour off. puritty doesn't read the time zone's
+  rules yet.
 
 ### Asked first
 
@@ -61,8 +109,8 @@ Sending writes your files on the host, so puritty asks first. When it
 found the folder itself (the `tmux -CC` pane you dropped on, or the
 shell's), a box names the files and the folder, and nothing is sent until
 you say yes (Enter, or Send; Esc, or Don't send, sends nothing). "Another
-folder…" (C) opens the folder box there, to choose another. When it asked
-you for the folder, choosing one is your yes, and there is no second
+folder…" (C) opens the folder picker there, to choose another. When the picker
+asked you for the folder, choosing one is your yes, and there is no second
 question.
 
 ```toml
@@ -135,8 +183,8 @@ upload_through_shell = true
 ```
 
 With it off, a drop on such a host sends nothing, and the note says which
-setting would allow it. The folder box needs SFTP, so on such a host drop
-on a `tmux -CC` pane whose folder is known.
+setting would allow it. The folder picker needs SFTP, so on such a host
+drop on a `tmux -CC` pane whose folder is known.
 
 ## 4. Korean file names on an EUC-KR host
 
@@ -153,5 +201,4 @@ and puritty says the file isn't there.
 
 - A file dragged out of a zip in Explorer, or an attachment from a mail
   program: it isn't a file on disk yet. Save it first, then drag it.
-- Folders that are links don't show in the folder box (type their path).
 - Downloading from the host.

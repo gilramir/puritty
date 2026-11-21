@@ -1,0 +1,225 @@
+module Folders exposing (Folders, Host(..), bookmarksOn, fromText, marked, none, recentOn, sentTo, toText)
+
+{-| The folder picker's memory (`docs/sftp.md` FT32, FT33): the folders
+files were last sent to on each host, and the bookmarks of a host the
+settings have no table for (one `puritty ssh` reached); a saved host's
+bookmarks are in its table of `config.toml`. `FolderFile` keeps them in
+puritty's state folder as TOML, a table for each host, its folders
+newest first; a saved host is `host = NAME`, as in `recent.toml`, and
+another `ssh = "user@host:port"`:
+
+    [[hosts]]
+    host = "build-box"
+    recent = ["/srv/www/site/assets", "/home/me/projects/website"]
+
+    [[hosts]]
+    ssh = "gilbert@build:22"
+    recent = ["/home/gilbert"]
+    bookmarks = ["/var/log", { bytes = "2f686f6d652fb1e8" }]
+
+A path is the host's bytes: a string when they are UTF-8, else
+`{ bytes = HEX }`, as a host in EUC-KR's would be.
+-}
+
+import Bytes exposing (Bytes)
+import Reason
+import Toml.Decode as Decode exposing (Decoder)
+import Toml.Encode as Encode
+import UInt8
+
+
+{-| A host as its folders are kept: a saved host by its name, another by
+`user@host:port`. -}
+type Host
+    = Saved String
+    | Ssh String
+
+
+type alias Folders =
+    Array { host : Host, recent : Array Bytes, bookmarks : Array Bytes }
+
+
+none : Folders
+none =
+    []
+
+
+{-| How many recent folders are kept for a host. -}
+keep : Int
+keep =
+    5
+
+
+recentOn : Host -> Folders -> Array Bytes
+recentOn host folders =
+    Array.findFirst (\f -> f.host == host) folders |> Maybe.map (\f -> f.value.recent) |> Maybe.withDefault (meant Reason.NotYet [])
+
+
+bookmarksOn : Host -> Folders -> Array Bytes
+bookmarksOn host folders =
+    Array.findFirst (\f -> f.host == host) folders |> Maybe.map (\f -> f.value.bookmarks) |> Maybe.withDefault (meant Reason.NotYet [])
+
+
+{-| Files sent to `path` on `host`: it first among the host's recent
+folders, the oldest past `keep` gone. -}
+sentTo : Host -> Bytes -> Folders -> Folders
+sentTo host path folders =
+    changed host
+        (\f -> { f | recent = Array.pushFirst path (Array.keepIf (\p -> p /= path) f.recent) |> Array.takeFirst keep })
+        folders
+
+
+{-| A host's bookmarks as they are now. -}
+marked : Host -> Array Bytes -> Folders -> Folders
+marked host paths folders =
+    changed host (\f -> { f | bookmarks = paths }) folders
+
+
+{-| A host's folders changed, the host added when it has none yet, and
+taken out when it is left with none. -}
+changed : Host -> ({ host : Host, recent : Array Bytes, bookmarks : Array Bytes } -> { host : Host, recent : Array Bytes, bookmarks : Array Bytes }) -> Folders -> Folders
+changed host edit folders =
+    let
+        was =
+            Array.findFirst (\f -> f.host == host) folders
+                |> Maybe.map .value
+                |> Maybe.withDefault (meant Reason.NotYet { host = host, recent = [], bookmarks = [] })
+
+        now =
+            edit was
+
+        others =
+            Array.keepIf (\f -> f.host /= host) folders
+    in
+    if Array.isEmpty now.recent && Array.isEmpty now.bookmarks then
+        others
+
+    else
+        Array.pushLast now others
+
+
+-- THE FILE
+
+
+toText : Folders -> String
+toText folders =
+    let
+        named host =
+            when host is
+                Saved n ->
+                    Encode.field "host" (Encode.string n)
+
+                Ssh n ->
+                    Encode.field "ssh" (Encode.string n)
+
+        listed key paths =
+            if Array.isEmpty paths then
+                []
+
+            else
+                [ Encode.field key (Encode.array (Array.map pathValue paths)) ]
+    in
+    Encode.toString
+        [ Encode.field "hosts"
+            (Encode.tableArray (Array.map (\f -> [ named f.host ] ++ listed "recent" f.recent ++ listed "bookmarks" f.bookmarks) folders))
+        ]
+
+
+pathValue : Bytes -> Encode.Value
+pathValue path =
+    when Bytes.toString path is
+        Just text ->
+            Encode.string text
+
+        Nothing ->
+            -- not UTF-8: a host in EUC-KR's bytes
+            meant Reason.FromOutside (Encode.inlineTable [ Encode.field "bytes" (Encode.string (Bytes.toHexString { padding = False } path)) ])
+
+
+{-| The file's folders read. A host that is neither `host` nor `ssh`, or
+a path that is neither a string nor `{ bytes = HEX }`, is passed over, as a
+later puritty's might be; a file that is not TOML is none. -}
+fromText : String -> Folders
+fromText text =
+    Decode.fromString file text |> Result.withDefault (meant Reason.FromOutside [])
+
+
+file : Decoder Folders
+file =
+    Decode.optionalField "hosts" (Decode.array (Decode.maybe hostFolders))
+        |> Decode.map
+            (\found ->
+                when found is
+                    Just hs ->
+                        Array.mapAndKeepJust identity hs
+
+                    Nothing ->
+                        meant Reason.NotSet []
+            )
+
+
+hostFolders : Decoder { host : Host, recent : Array Bytes, bookmarks : Array Bytes }
+hostFolders =
+    Decode.map3 (\host recent bookmarks -> { host = host, recent = recent, bookmarks = bookmarks })
+        (Decode.oneOf
+            [ Decode.field "host" Decode.string |> Decode.map Saved
+            , Decode.field "ssh" Decode.string |> Decode.map Ssh
+            ]
+        )
+        (pathList "recent")
+        (pathList "bookmarks")
+
+
+pathList : String -> Decoder (Array Bytes)
+pathList key =
+    Decode.optionalField key (Decode.array (Decode.maybe onePath))
+        |> Decode.map
+            (\found ->
+                when found is
+                    Just ps ->
+                        Array.mapAndKeepJust identity ps
+
+                    Nothing ->
+                        meant Reason.NotSet []
+            )
+
+
+onePath : Decoder Bytes
+onePath =
+    Decode.oneOf
+        [ Decode.string |> Decode.map Bytes.fromString
+        , Decode.field "bytes" Decode.string
+            |> Decode.andThen
+                (\hex ->
+                    when fromHex (String.toArray hex) [] is
+                        Just b ->
+                            Decode.succeed b
+
+                        Nothing ->
+                            meant Reason.FromOutside (Decode.fail "not hex digits")
+                )
+        ]
+
+
+fromHex : Array Char -> Array Int -> Maybe Bytes
+fromHex digits acc =
+    when { hi = Array.get 0 digits, lo = Array.get 1 digits } is
+        { hi = Just h, lo = Just l } ->
+            when { a = digitOf h, b = digitOf l } is
+                { a = Just a, b = Just b } ->
+                    fromHex (Array.dropFirst 2 digits) (Array.pushLast (a * 16 + b) acc)
+
+                _ ->
+                    Nothing
+
+        { hi = Nothing, lo = _ } ->
+            Just (Bytes.fromUInt8s (Array.map UInt8.fromIntWrap acc))
+
+        _ ->
+            -- an odd number of digits
+            Nothing
+
+
+digitOf : Char -> Maybe Int
+digitOf c =
+    String.firstIndexOf (String.toLower (String.fromChar c)) "0123456789abcdef"

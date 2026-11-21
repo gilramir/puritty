@@ -44,7 +44,6 @@ import Array.Builder as Builder exposing (Builder)
 import Backend exposing (Backend, Incoming(..))
 import Bitwise
 import Bytes exposing (Bytes)
-import Chooser
 import Chord
 import Clock
 import Config exposing (Config)
@@ -53,6 +52,8 @@ import Diag
 import Dialog
 import Dict exposing (Dict)
 import Drop
+import FolderFile
+import Folders
 import Hosts
 import ImageFile
 import Int64
@@ -70,6 +71,9 @@ import Os.Path as Path
 import Os.Process as Process exposing (Connection(..))
 import Os.Random
 import Outbox exposing (Outbox)
+import Picker
+import PickerDemo
+import PickerSftp
 import Platform
 import Process as Sleep
 import Reason
@@ -83,6 +87,7 @@ import Search
 import SecretStore
 import Sending
 import SessionFile
+import SettingsFile
 import SettingsGui
 import SettingsProgram
 import SettingsSource exposing (Given, Read(..), Settings, overridden, readSettings, reloadDelayMs, settingsFile, watchSettings)
@@ -96,6 +101,7 @@ import Task exposing (Task)
 import Text
 import Time
 import TmuxMode
+import Toml.Edit
 import UInt8
 import Vt
 import Vt.Base64 as Base64
@@ -196,6 +202,11 @@ type alias Model =
     -- the recent connections the menus offer, read again when the window
     -- gains the focus (docs/settings-gui.md SG19)
     , recents : Array Recent
+    -- the folder picker's recent folders, and bookmarks of hosts the
+    -- settings have no table for (docs/sftp.md FT32)
+    , folders : Folders.Folders
+    -- the computer's time zone, for the folder picker's times
+    , zone : Time.Zone
     -- the built-in ssh client's session (docs/ssh-client.md SC18): what
     -- puritty's own screen shows until the session runs, a question it
     -- asks, how the session ended
@@ -234,6 +245,10 @@ type alias Model =
     , pasteAsk : Maybe PasteAsk
     , dropAsk : Maybe { folder : Bytes, files : Array Bytes, tab : Int }
     , choosing : Maybe Choosing
+    -- the folder picker's working model, on a pretend host (docs/sftp.md
+    -- FT32), and the places it keeps between openings
+    , picking : Maybe Picking
+    , pickerPlaces : Picker.Places
     , shellHost : Maybe Bytes
     , sending : Maybe Sending.Sending
     , pendingSend : Maybe { folder : Bytes, files : Array Bytes }
@@ -328,11 +343,38 @@ type alias PasteAsk =
     { png : Bytes, path : String, to : PasteTo, on : String, tab : Int }
 
 
+{-| The folder picker's working model (docs/sftp.md FT32): the picker, its
+pretend host, the requests not yet given to that host, and how many files
+it was opened for. -}
+type alias Picking =
+    { picker : Picker.Picker, demo : PickerDemo.Demo, queued : Array Picker.Request, count : Int }
+
+
 {-| The folder chooser for files dropped on an ssh tab (docs/sftp.md
 FT24): its SFTP channel's reference, the tab it is for, whether the
 channel is opened yet, and the bytes it waits to send. -}
 type alias Choosing =
-    { ref : Int, tab : Int, chooser : Chooser.Chooser, opened : Bool, toSend : Bytes }
+    { ref : Int
+    , tab : Int
+    , picker : Picker.Picker
+    , source : PickerSftp.Source
+    , files : Array Bytes
+    , opened : Bool
+    , toSend : Bytes
+    -- a drop on it chose the folder: its channel is closed by `chooserIo`
+    , ending : Bool
+    -- the host its places are kept for, and its bookmarks when it opened
+    , host : FolderHost
+    , marks : Array Bytes
+    }
+
+
+{-| A host as the folder picker keeps its folders (docs/sftp.md FT32): a
+saved host by its name, whose bookmarks are in its table of the settings;
+another, one `puritty ssh` reached, by `user@host:port`, whose are in the
+state folder. `key` is how that folder's file names it. -}
+type alias FolderHost =
+    { key : Folders.Host, saved : Maybe String }
 
 
 {-| Where an asked-about picture goes: to the ssh host's paste folder,
@@ -464,7 +506,7 @@ clockNow =
 
 
 type Command
-    = Run { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String }
+    = Run { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String, tryPicker : Bool }
 
 
 {-| What the first word asked for (`docs/settings.md` ST11, V64): nothing
@@ -477,7 +519,7 @@ type Mode
     | RestoreOne
 
 
-cli : Argparse.Parser.Command (Array String) { config : Maybe Path.Path, title : Maybe String, host : Maybe String } Command
+cli : Argparse.Parser.Command (Array String) { config : Maybe Path.Path, title : Maybe String, host : Maybe String, tryPicker : Bool } Command
 cli =
     { word = ""
     , arguments =
@@ -486,14 +528,15 @@ cli =
             , help = "The program to run, and its arguments; $SHELL (on Windows PowerShell) when none is given"
             }
     , flags =
-        Argparse.Parser.initFlags (\config title host -> { config = config, title = title, host = host })
+        Argparse.Parser.initFlags (\config title host tryPicker -> { config = config, title = title, host = host, tryPicker = tryPicker })
             |> Argparse.Parser.flag (Argparse.Parser.LongOnly "config") (Argparse.Parser.pathParser Path.fromString) "The settings file, instead of ~/.config/puritty/config.toml (on Windows %APPDATA%\\puritty\\config.toml)"
             |> Argparse.Parser.flag (Argparse.Parser.LongOnly "title") Argparse.Parser.stringParser "The window's title while the program has set none"
             |> Argparse.Parser.flag (Argparse.Parser.LongOnly "host") Argparse.Parser.stringParser "A host of the settings, connected to with ssh; a name they do not have is ssh's own (an alias of ~/.ssh/config)"
+            |> Argparse.Parser.toggle (Argparse.Parser.LongOnly "try-folder-picker") "The folder picker's working model, on a pretend host: drop files on the window to open it again"
     , commonDescription = Nothing
     , summary = "Runs a program on a terminal in an X window:"
     , example = PP.words "puritty --title notes -- vim -O a.txt b.txt"
-    , builder = \program flags -> Run { config = flags.config, title = flags.title, host = flags.host, program = program }
+    , builder = \program flags -> Run { config = flags.config, title = flags.title, host = flags.host, program = program, tryPicker = flags.tryPicker }
     }
 
 
@@ -610,6 +653,7 @@ terminalMain mode env =
                         , fs = ctx.fs
                         , title = asked.title
                         , program = asked.program
+                        , tryPicker = asked.tryPicker
                         }
                 in
                 readSettings given
@@ -722,7 +766,7 @@ restoredConfig state config =
 {-| The connection a window starts as, kept among the recent ones the host
 list offers (`docs/settings-gui.md` SG14): what `puritty ssh` was given, a
 host `--host` or `start` names; none for a shell or a program. -}
-recentOf : Mode -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String } -> Config -> Maybe Recent
+recentOf : Mode -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String, tryPicker : Bool } -> Config -> Maybe Recent
 recentOf mode asked config =
     if not (Array.isEmpty asked.program) then
         Nothing
@@ -764,7 +808,7 @@ rememberStart fs dir config recent =
 command line, else what the first word or `--host` asked, else what
 `start` says. A host's session takes its look and title (`Hosts.session`),
 under `--title` when one is given. -}
-choose : Mode -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String } -> Config -> { config : Result String Config, problems : Array String }
+choose : Mode -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String, tryPicker : Bool } -> Config -> { config : Result String Config, problems : Array String }
 choose mode asked config =
     let
         titled c =
@@ -812,7 +856,7 @@ choose mode asked config =
 
 {-| The host list (V64, V65): the settings window on its Hosts page, whose
 Connect makes the same window the host's session, its font the host's. -}
-hostList : Process.Permission -> File.Permission -> Dict String String -> Given -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String } -> { config : Config, problems : Array String } -> Task String {}
+hostList : Process.Permission -> File.Permission -> Dict String String -> Given -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String, tryPicker : Bool } -> { config : Config, problems : Array String } -> Task String {}
 hostList cp fs vars given asked got =
     SettingsProgram.run { fs = fs, vars = vars, config = asked.config, launcher = True, opener = Nothing }
         |> Task.andThen
@@ -833,7 +877,7 @@ hostList cp fs vars given asked got =
 {-| The host list's window becoming the session chosen in it, a host's or
 the local shell: its font, the session's size or the last window's,
 maximized as it was (WP8), and the session begun. -}
-becomeSession : Process.Permission -> File.Permission -> Dict String String -> Given -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String } -> { config : Config, problems : Array String } -> Config -> Task String {}
+becomeSession : Process.Permission -> File.Permission -> Dict String String -> Given -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String, tryPicker : Bool } -> { config : Config, problems : Array String } -> Config -> Task String {}
 becomeSession cp fs vars given asked got chosen =
     let
         config =
@@ -1325,7 +1369,21 @@ run imeLog shotPath startAt charset config cell remote starter settings problems
         |> Task.andThen
             (\recents ->
                 RecentFile.jumpList recents
-                    |> Task.andThen (\jumped -> runWith { recents = recents, jumped = jumped } imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir)
+                    -- the folder picker's recent folders and bookmarks
+                    -- (docs/sftp.md FT32)
+                    |> Task.andThen
+                        (\jumped ->
+                            (when stateFolder logDir is
+                                Just dir ->
+                                    FolderFile.load settings.given.fs dir
+
+                                Nothing ->
+                                    meant Reason.NotSet (Task.succeed Folders.none)
+                            )
+                                -- the folder picker's times in the computer's zone
+                                |> Task.andThen (\folders -> Time.here |> Task.map (\zone -> { folders = folders, zone = zone }))
+                                |> Task.andThen (\got -> runWith { recents = recents, jumped = jumped, folders = got.folders, zone = got.zone } imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir)
+                        )
             )
 
 
@@ -1369,7 +1427,7 @@ hex8 n =
         |> String.join ""
 
 
-runWith : { recents : Array Recent, jumped : Int } -> Bool -> Maybe String -> Int -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
+runWith : { recents : Array Recent, jumped : Int, folders : Folders.Folders, zone : Time.Zone } -> Bool -> Maybe String -> Int -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
 runWith started imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir =
     -- puritty's own text (its questions, the search bar, the tab
     -- bar) in the interface font, as the settings window's is, apart
@@ -1476,6 +1534,13 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , pasteAsk = Nothing
                      , dropAsk = Nothing
                      , choosing = Nothing
+                     , picking =
+                        if settings.given.tryPicker then
+                            Just (demoOpen PickerDemo.files PickerDemo.places)
+
+                        else
+                            Nothing
+                     , pickerPlaces = PickerDemo.places
                      , shellHost = Nothing
                      , sending = Nothing
                      , pendingSend = Nothing
@@ -1493,6 +1558,8 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , maximized = False
                      , normalSize = { columns = config.columns, rows = config.rows }
                      , recents = started.recents
+                     , folders = started.folders
+                     , zone = started.zone
                      }
                         |> noteJumpList started.jumped
                     )
@@ -1651,7 +1718,7 @@ nextAt m =
             else
                 -1
     in
-    Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)) (noteDue m)
+    Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)) (Clock.soonest (noteDue m) (pickerDue m))
 
 
 {-| What the program is sent, queued: keys, replies, focus reports, a
@@ -2011,7 +2078,7 @@ loop remote m00 =
         -- (mode 1003, docs/phase3-select.md §4), or while there is
         -- something the pointer's shape tells of (`hoverShapes`)
         all =
-            (Vt.mouseModes m00.term).tracking == Mouse.any || hoverShapes m00
+            (Vt.mouseModes m00.term).tracking == Mouse.any || hoverShapes m00 || Maybe.isJust m00.picking || Maybe.isJust m00.choosing
     in
     (if all == m00.allMotion then
         Task.succeed m00
@@ -2479,7 +2546,7 @@ race remote m0 =
                                                         |> Task.andThen (\next -> step remote ms next)
 
                                             Due ->
-                                                reloadIfDue ms (expireNote ms (expireClosed ms (blink ms (tmuxTick ms m)))) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
+                                                reloadIfDue ms (expireNote ms (expireClosed ms (blink ms (pickerTick ms (tmuxTick ms m))))) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
 
                                             Writable ->
                                                 step remote ms m
@@ -4612,6 +4679,11 @@ note says where they would have gone. -}
 sshDropped : Array Bytes -> (taken m : Model) -> Model
 sshDropped files m0 =
     let
+        -- files dropped on the folder picker: the folder under them, the
+        -- user's choice (docs/sftp.md FT32)
+        picked =
+            Maybe.andThen (\c -> Picker.dropTarget (overlaySize m0) (hostWith m0) (Picker.dragPoint c.picker) c.picker) m0.choosing
+
         known =
             when TmuxMode.dropTarget m0.tmux |> Maybe.map .folder is
                 Just (TmuxMode.Folder path) ->
@@ -4636,6 +4708,9 @@ sshDropped files m0 =
     in
     if m.config.dropUploads == "deny" then
         noteUp { text = "Dropped files are not sent to the host: [files] drop_uploads is \"deny\"", failed = True, kept = False } m
+
+    else if Maybe.isJust picked then
+        { m | pendingSend = Maybe.map (\folder -> { folder = folder, files = files }) picked, choosing = Maybe.map (\c -> { c | ending = True }) m.choosing }
 
     else
         when known is
@@ -4735,10 +4810,27 @@ sendingStep taken m =
                 -- of a hidden one's (FT27)
                 (Task.succeed { m | sending = Just taken.sending, urgent = m.urgent || Sending.isAsking taken.sending })
                 taken.out
+                |> Task.andThen sentRecent
                 |> Task.map sendingShown
 
         Nothing ->
             meant Reason.Gone (Task.succeed (sendingShown { m | sending = Just taken.sending }))
+
+
+{-| A batch over with anything sent: its folder first among the host's
+recent ones (docs/sftp.md FT33); one that sent nothing is not. -}
+sentRecent : (taken m : Model) -> Task Error Model
+sentRecent m =
+    when m.sending is
+        Just s ->
+            if Maybe.isJust s.over && s.done > 0 then
+                folderSent s.folder m
+
+            else
+                Task.succeed m
+
+        Nothing ->
+            meant Reason.NotOpen (Task.succeed m)
 
 
 sendingOut : (Session.Input -> Task Error {}) -> Sending.Out -> (taken m : Model) -> Task Error Model
@@ -4906,39 +4998,225 @@ sendingAsks m =
     Maybe.map Sending.isAsking m.sending == Just True
 
 
-{-| The folder chooser for `files`, at `at` (the host's home when empty);
-its channel is opened by `chooserIo`. -}
+{-| The folder picker for `files`, at `at` (the host's home when empty),
+listing over an SFTP channel of its own (docs/sftp.md FT32); its channel
+is opened by `chooserIo`. -}
 chooserOpened : Array Bytes -> Bytes -> (taken m : Model) -> Model
 chooserOpened files at m =
     let
+        host =
+            folderHost m
+
+        marks =
+            hostMarks host m
+
+        opened =
+            Picker.open
+                { host = hostLabel m
+                , files = files
+                , at =
+                    if Bytes.isEmpty at then
+                        Bytes.fromString "~"
+
+                    else
+                        at
+                , places = { shell = shellFolder m, home = Nothing, recent = Folders.recentOn host.key m.folders, bookmarks = marks }
+                }
+
         begun =
-            Chooser.start { files = files, at = at }
+            PickerSftp.start
+
+        asked =
+            askAll opened.requests begun.source
     in
     logLine "drop"
         ("the folder chooser opened for " ++ String.fromInt (Array.length files) ++ " files")
-        { m | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, chooser = begun.chooser, opened = False, toSend = begun.send }, uploads = m.uploads + 1 }
+        { m
+            | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, picker = opened.picker, source = asked.source, files = files, opened = False, toSend = Bytes.flatten [ begun.send, asked.send ], ending = False, host = host, marks = marks }
+            , uploads = m.uploads + 1
+        }
 
 
-{-| The chooser's channel opened and its bytes sent, when it has any. -}
+{-| The picker's requests made SFTP requests. -}
+askAll : Array Picker.Request -> PickerSftp.Source -> { source : PickerSftp.Source, send : Bytes }
+askAll requests source =
+    let
+        asked =
+            Array.foldl
+                (\q acc ->
+                    let
+                        a =
+                            PickerSftp.ask q acc.source
+                    in
+                    { source = a.source, send = Array.pushLast a.send acc.send }
+                )
+                { source = source, send = [] }
+                requests
+    in
+    { source = asked.source, send = Bytes.flatten asked.send }
+
+
+{-| The tab's host as the folder picker keeps its folders. -}
+folderHost : Model -> FolderHost
+folderHost m =
+    let
+        name =
+            when m.tab.host is
+                Just h ->
+                    Just h.name
+
+                Nothing ->
+                    meant Reason.NotSet m.tab.hostName
+
+        saved =
+            Maybe.andThen
+                (\n ->
+                    if Array.any (\h -> h.name == n) m.config.hosts then
+                        Just n
+
+                    else
+                        Nothing
+                )
+                name
+    in
+    when saved is
+        Just n ->
+            { key = Folders.Saved n, saved = Just n }
+
+        Nothing ->
+            meant Reason.NotKnown
+                { key =
+                    when m.tab.host is
+                        Just h ->
+                            Folders.Ssh (Maybe.withDefault (meant Reason.NotSet "") (Maybe.map (\u -> u ++ "@") h.user) ++ h.host ++ ":" ++ String.fromInt (Maybe.withDefault (meant Reason.NotSet 22) h.port))
+
+                        Nothing ->
+                            meant Reason.NotSet (Folders.Ssh (hostLabel m))
+                , saved = Nothing
+                }
+
+
+{-| A host's bookmarks: a saved host's from its table, in the host's
+character set; another's from the state folder. -}
+hostMarks : FolderHost -> Model -> Array Bytes
+hostMarks host m =
+    when host.saved is
+        Just name ->
+            Array.findFirst (\h -> h.name == name) m.config.hosts
+                |> Maybe.map (\saved -> Array.mapAndKeepJust (inHostCharset m.charset) saved.value.bookmarks)
+                |> Maybe.withDefault (meant Reason.NotKnown [])
+
+        Nothing ->
+            meant Reason.NotSet (Folders.bookmarksOn host.key m.folders)
+
+
+{-| The picker's bookmarks kept, when they changed while it was up: a
+saved host's in its table of the settings (`SettingsFile.change`, an edit
+in place), another's in the state folder. -}
+marksKept : Choosing -> Picker.Picker -> (taken m : Model) -> Task Error Model
+marksKept c picker m =
+    let
+        now =
+            Picker.bookmarks picker
+    in
+    if now == c.marks then
+        Task.succeed m
+
+    else
+        when c.host.saved is
+            Just name ->
+                when m.settings.given.file is
+                    Just f ->
+                        let
+                            tomlKey =
+                                [ "hosts", name, "bookmarks" ]
+
+                            edit doc =
+                                if Array.isEmpty now then
+                                    Toml.Edit.remove tomlKey doc
+
+                                else
+                                    Toml.Edit.set tomlKey (Toml.Edit.array (Array.map (\b -> Toml.Edit.string (fromHost m.charset b)) now)) doc
+                        in
+                        SettingsFile.change edit (SettingsFile.store m.settings.given.fs f.path)
+                            |> Task.map (\_ -> Ok {})
+                            |> Task.onError (\why -> Task.succeed (Err why))
+                            |> Task.map
+                                (\written ->
+                                    when written is
+                                        Ok _ ->
+                                            logLine "drop" "the bookmarks kept in the settings" m
+
+                                        Err why ->
+                                            meant Reason.Refused (noteUp { text = "The bookmarks were not kept: " ++ why, failed = True, kept = False } m)
+                                )
+
+                    Nothing ->
+                        meant Reason.NotSet (Task.succeed m)
+
+            Nothing ->
+                -- a host the settings have no table for
+                meant Reason.NotKnown
+                    (when stateFolder m.logDir is
+                        Just dir ->
+                            FolderFile.marked m.settings.given.fs dir c.host.key now |> Task.map (\folders -> { m | folders = folders })
+
+                        Nothing ->
+                            meant Reason.NotSet (Task.succeed m)
+                    )
+
+
+{-| Files sent to a folder on the tab's host: it first among the host's
+recent folders. -}
+folderSent : Bytes -> (taken m : Model) -> Task Error Model
+folderSent folder m =
+    when stateFolder m.logDir is
+        Just dir ->
+            FolderFile.sentTo m.settings.given.fs dir (folderHost m).key folder |> Task.map (\folders -> { m | folders = folders })
+
+        Nothing ->
+            meant Reason.NotSet (Task.succeed m)
+
+
+{-| How the host's names read and a typed path is written: in the tab's
+character set (FT20). -}
+hostWith : Model -> Picker.With
+hostWith m =
+    { decode = fromHost m.charset, encode = inHostCharset m.charset }
+
+
+{-| The picker's channel opened and its bytes sent, when it has any; or,
+a drop on it having chosen, closed. -}
 chooserIo : (taken m : Model) -> Task Error Model
 chooserIo m =
     when { c = m.choosing, side = m.remote.side } is
         { c = Just c, side = Just side } ->
-            (if c.opened then
-                Task.succeed {}
+            if c.ending then
+                (if c.opened then
+                    side (Session.SideClose c.ref)
 
-             else
-                side (Session.OpenSubsystem { ref = c.ref, name = "sftp" })
-            )
-                |> Task.andThen
-                    (\_ ->
-                        if Bytes.isEmpty c.toSend then
-                            Task.succeed {}
+                 else
+                    Task.succeed {}
+                )
+                    |> Task.map (\_ -> { m | choosing = Nothing, urgent = True })
+                    |> Task.andThen (marksKept c c.picker)
 
-                        else
-                            side (Session.SideWrite { ref = c.ref, bytes = c.toSend })
-                    )
-                |> Task.map (\_ -> { m | choosing = Just { c | opened = True, toSend = Bytes.empty } })
+            else
+                (if c.opened then
+                    Task.succeed {}
+
+                 else
+                    side (Session.OpenSubsystem { ref = c.ref, name = "sftp" })
+                )
+                    |> Task.andThen
+                        (\_ ->
+                            if Bytes.isEmpty c.toSend then
+                                Task.succeed {}
+
+                            else
+                                side (Session.SideWrite { ref = c.ref, bytes = c.toSend })
+                        )
+                    |> Task.map (\_ -> { m | choosing = Just { c | opened = True, toSend = Bytes.empty } })
 
         _ ->
             Task.succeed m
@@ -4971,15 +5249,27 @@ chooserEvent side m =
                     Connection.Output b ->
                         let
                             r =
-                                Chooser.received b c.chooser
+                                PickerSftp.received b c.source
+
+                            applied =
+                                Array.foldl
+                                    (\a acc ->
+                                        let
+                                            st =
+                                                Picker.answer a acc.picker
+                                        in
+                                        { picker = st.picker, requests = acc.requests ++ st.requests }
+                                    )
+                                    { picker = c.picker, requests = [] }
+                                    r.answers
                         in
-                        chooserIo { m | choosing = Just { c | chooser = r.chooser, toSend = Bytes.flatten [ c.toSend, r.send ] }, urgent = True }
+                        chooserStep { picker = applied.picker, requests = applied.requests, outcome = Picker.Stay } { c | source = r.source, toSend = Bytes.flatten [ c.toSend, r.send ] } m
 
                     Connection.Refused why ->
-                        Task.succeed { m | choosing = Just { c | chooser = Chooser.refused why c.chooser }, urgent = True }
+                        Task.succeed { m | choosing = Just { c | picker = Picker.trouble ("SFTP is turned off on this host, and the folders are read with it: " ++ why) c.picker }, urgent = True }
 
                     Connection.Ended ->
-                        Task.succeed { m | choosing = Just { c | chooser = Chooser.refused "the channel closed" c.chooser }, urgent = True }
+                        Task.succeed { m | choosing = Just { c | picker = Picker.trouble "The channel the folders are read on closed" c.picker }, urgent = True }
 
                     _ ->
                         Task.succeed m
@@ -4988,26 +5278,43 @@ chooserEvent side m =
             meant Reason.NotOpen (Task.succeed (uploaded side m))
 
 
-{-| A key in the folder chooser: the chooser's, and what came of it. -}
-chooserKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Choosing -> (taken m : Model) -> Task Error Model
-chooserKey k c m =
-    let
-        r =
-            Chooser.key { sym = k.sym, mods = k.mods, text = Bytes.toStringLossy k.text } { decode = fromHost m.charset, encode = inHostCharset m.charset } c.chooser
-    in
-    when r.outcome is
-        Chooser.Stay ->
-            chooserIo { m | choosing = Just { c | chooser = r.chooser, toSend = Bytes.flatten [ c.toSend, r.send ] }, urgent = True }
+{-| What a key, the pointer or the host's answers came to: the picker's
+requests sent; or its folder chosen, and the files sent there; or it
+cancelled. -}
+chooserStep : Picker.Step -> Choosing -> (taken m : Model) -> Task Error Model
+chooserStep s c m =
+    when s.outcome is
+        Picker.Stay ->
+            let
+                asked =
+                    askAll s.requests c.source
+            in
+            chooserIo { m | choosing = Just { c | picker = s.picker, source = asked.source, toSend = Bytes.flatten [ c.toSend, asked.send ] }, urgent = True }
 
-        Chooser.Chosen folder ->
-            chooserClosed c { m | pendingSend = Just { folder = folder, files = c.chooser.files } }
+        Picker.Send folder ->
+            chooserClosed c { m | pendingSend = Just { folder = folder, files = c.files } }
+                |> Task.andThen (marksKept c s.picker)
                 |> Task.andThen startPending
 
-        Chooser.Cancelled ->
+        Picker.Cancelled ->
             chooserClosed c (logLine "drop" "the folder chooser cancelled" m)
+                |> Task.andThen (marksKept c s.picker)
 
 
-{-| The chooser gone, its channel closed. -}
+{-| A key in the folder picker. -}
+chooserKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Choosing -> (taken m : Model) -> Task Error Model
+chooserKey k c m =
+    chooserStep (Picker.key (hostWith m) { sym = k.sym, unshifted = k.unshifted, mods = k.mods, text = Bytes.toStringLossy k.text } c.picker) c m
+
+
+{-| The pointer over the folder picker: its presses, releases and motion;
+nothing reaches the terminal under it. -}
+chooserPointer : Window.PointerEvent -> Int -> Choosing -> (taken m : Model) -> Task Error Model
+chooserPointer p ms c m =
+    chooserStep (Picker.pointer (overlaySize m) (hostWith m) { action = p.action, button = p.button, x = p.x, y = p.y, ms = ms } c.picker) c m
+
+
+{-| The picker gone, its channel closed. -}
 chooserClosed : Choosing -> (taken m : Model) -> Task Error Model
 chooserClosed c m =
     (when m.remote.side is
@@ -5018,30 +5325,6 @@ chooserClosed c m =
             meant Reason.Gone (Task.succeed {})
     )
         |> Task.map (\_ -> { m | choosing = Nothing, urgent = True })
-
-
-{-| A press while the chooser is up: Send here chooses the folder listed,
-Cancel cancels; nothing reaches the terminal under it. -}
-chooserPress : Window.PointerEvent -> Choosing -> (taken m : Model) -> Task Error Model
-chooserPress p c m =
-    let
-        hit =
-            if p.button == 1 then
-                Dialog.buttonAt (overlaySize m) (Chooser.dialog (fromHost m.charset) c.chooser) { x = p.x, y = p.y }
-
-            else
-                Nothing
-    in
-    when hit is
-        Just 0 ->
-            -- Enter's answer
-            chooserKey { action = 1, keycode = 0, mods = 0, consumed = 0, unshifted = 0, sym = 0xFF0D, text = Bytes.empty } c m
-
-        Just _ ->
-            chooserClosed c (logLine "drop" "the folder chooser cancelled" m)
-
-        Nothing ->
-            meant Reason.OutOfRange Task.succeed m
 
 
 {-| The question before dropped files are sent to a folder puritty chose
@@ -6323,6 +6606,21 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if Maybe.isJust m.picking then
+                -- the folder picker's working model takes the keys (docs/sftp.md FT32)
+                (if k.action /= 0 then
+                    when m.picking is
+                        Just pk ->
+                            pickerStep (Picker.key demoWith { sym = k.sym, unshifted = k.unshifted, mods = k.mods, text = Bytes.toStringLossy k.text } pk.picker) pk m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if Maybe.isJust m.choosing then
                 -- the folder chooser takes the keys (docs/sftp.md FT24)
                 (if k.action /= 0 then
@@ -6648,13 +6946,13 @@ handleOne remote ms rest ev m =
 
         Window.Pointer p ->
             if
-                p.action == 2 && m.held == 0 && not
-                                                    (if TmuxMode.isOn m.tmux then
-                                                        TmuxMode.anyMotion m.tmux
+                p.action == 2 && m.held == 0 && not (Maybe.isJust m.picking || Maybe.isJust m.choosing) && not
+                                                                                                            (if TmuxMode.isOn m.tmux then
+                                                                                                                TmuxMode.anyMotion m.tmux
 
-                                                     else
-                                                        (Vt.mouseModes m.term).tracking == Mouse.any
-                                                    )
+                                                                                                             else
+                                                                                                                (Vt.mouseModes m.term).tracking == Mouse.any
+                                                                                                            )
             then
                 -- a motion with no button held that nothing asked for,
                 -- sent for the pointer's shape alone (TM38); under tmux
@@ -6718,18 +7016,27 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if Maybe.isJust m.picking then
+                -- the folder picker's working model takes the pointer, its
+                -- motion too, for what is under it
+                (when m.picking is
+                    Just pk ->
+                        pickerStep (Picker.pointer (overlaySize m) demoWith { action = p.action, button = p.button, x = p.x, y = p.y, ms = ms } pk.picker) pk m
+
+                    Nothing ->
+                        Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if Maybe.isJust m.choosing then
-                -- the folder chooser takes the pointer
-                (if p.action == 0 then
-                    when m.choosing is
-                        Just c ->
-                            chooserPress p c m
+                -- the folder picker takes the pointer, its motion too, for
+                -- what is under it (docs/sftp.md FT32)
+                (when m.choosing is
+                    Just c ->
+                        chooserPointer p ms c m
 
-                        Nothing ->
-                            Task.succeed m
-
-                 else
-                    Task.succeed m
+                    Nothing ->
+                        Task.succeed m
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
@@ -6865,10 +7172,13 @@ handleOne remote ms rest ev m =
                     )
 
         Window.DragOver d ->
-            -- in an ssh tab under tmux -CC, the pane under the pointer is
-            -- marked with the folder the files would go to (docs/sftp.md
-            -- FT6, FT23)
-            if TmuxMode.isOn m.tmux && isRemoteTab m then
+            if Maybe.isJust m.picking || Maybe.isJust m.choosing then
+                handle remote ms rest (pickerDragOver { x = d.x, y = d.y } m)
+
+            else if TmuxMode.isOn m.tmux && isRemoteTab m then
+                -- in an ssh tab under tmux -CC, the pane under the pointer is
+                -- marked with the folder the files would go to (docs/sftp.md
+                -- FT6, FT23)
                 let
                     r =
                         TmuxMode.dragOver { col = d.x // max 1 d.cellWidth, row = d.y // max 1 d.cellHeight, ms = ms } m.tmux
@@ -6879,7 +7189,10 @@ handleOne remote ms rest ev m =
                 handle remote ms rest m
 
         Window.DragLeft ->
-            if TmuxMode.dropTarget m.tmux /= Nothing then
+            if Maybe.isJust m.picking || Maybe.isJust m.choosing then
+                handle remote ms rest (pickerDragLeft m)
+
+            else if TmuxMode.dropTarget m.tmux /= Nothing then
                 handle remote ms rest { m | tmux = TmuxMode.dragLeft m.tmux, urgent = True }
 
             else
@@ -6893,9 +7206,16 @@ handleOne remote ms rest ev m =
                             handle remote ms rest { m | dropGather = Array.pushLast bytes m.dropGather }
 
                         else
-                            filesDropped (Bytes.flatten (Array.pushLast bytes m.dropGather)) { m | dropGather = [], turnMs = ms }
-                                |> Task.andThen chooserIo
-                                |> Task.andThen startPending
+                            (if m.settings.given.tryPicker then
+                                -- the working model's: the picker, opened
+                                -- or answered (docs/sftp.md FT32)
+                                Task.succeed (pickerDropped (Bytes.flatten (Array.pushLast bytes m.dropGather)) { m | dropGather = [], turnMs = ms })
+
+                             else
+                                filesDropped (Bytes.flatten (Array.pushLast bytes m.dropGather)) { m | dropGather = [], turnMs = ms }
+                                    |> Task.andThen chooserIo
+                                    |> Task.andThen startPending
+                            )
                                 |> Task.andThen (handle remote ms rest)
                     )
 
@@ -7991,6 +8311,33 @@ imeLine on line =
         Task.succeed {}
 
 
+{-| Where the input method's window goes: at the top layer that has a
+caret, the folder picker's, a dialog's box's or the search field's, else
+the terminal's cursor. -}
+spotOver : { picker : Maybe { a | spot : s }, box : Maybe { b | spot : s }, search : Maybe { c | spot : s } } -> s -> s
+spotOver layers cursor =
+    when layers.picker is
+        Just pd ->
+            pd.spot
+
+        Nothing ->
+            meant Reason.NotOpen
+                (when layers.box is
+                    Just bd ->
+                        bd.spot
+
+                    Nothing ->
+                        meant Reason.NotOpen
+                            (when layers.search is
+                                Just sd ->
+                                    sd.spot
+
+                                Nothing ->
+                                    meant Reason.NotOpen cursor
+                            )
+                )
+
+
 {-| A frame drawn, and the window's title made the program's. -}
 draw : Int -> (taken m : Model) -> Task x Model
 draw ms m =
@@ -8030,7 +8377,8 @@ draw ms m =
                 Maybe.andThen (\s -> Maybe.map (Sending.conflictBox (fromHost m.charset)) s.asking) m.sending
 
             else if Maybe.isJust m.choosing then
-                Maybe.map (\c -> Chooser.dialog (fromHost m.charset) c.chooser) m.choosing
+                -- the folder picker, drawn by `Picker.draw` below
+                Nothing
 
             else if m.pasteAsk /= Nothing then
                 Maybe.map pasteBox m.pasteAsk
@@ -8068,7 +8416,7 @@ draw ms m =
                 Nothing
 
         boxed =
-            dialog /= Nothing
+            dialog /= Nothing || Maybe.isJust m.picking || Maybe.isJust m.choosing
 
         own =
             if ownUp then
@@ -8132,6 +8480,22 @@ draw ms m =
 
         boxDrawn =
             Maybe.map (Dialog.draw overlay) dialog
+
+        -- the folder picker, the working model's or a tab's (docs/sftp.md
+        -- FT32)
+        pickerDrawn =
+            when m.picking is
+                Just pk ->
+                    Just (Picker.draw overlay demoWith Picker.utcText pk.picker)
+
+                Nothing ->
+                    meant Reason.NotOpen
+                        (if dialog == Nothing then
+                            Maybe.map (\c -> Picker.draw overlay { decode = fromHost m.charset, encode = inHostCharset m.charset } (Picker.zonedText m.zone) c.picker) m.choosing
+
+                         else
+                            Nothing
+                        )
 
         tmuxOn =
             TmuxMode.isOn m.tmux
@@ -8215,8 +8579,9 @@ draw ms m =
                         else
                             View.frameWith m.look m.focus preedit highlight m.term shadow0
     in
-    Window.draw (Bytes.flatten [ f.list, tabsDrawn, bar, noteDrawn, Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list searchDrawn), Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list boxDrawn) ])
-        |> Task.andThen (\up -> Window.spot (Maybe.withDefault (meant Reason.NotOpen Maybe.withDefault (meant Reason.NotOpen spot) (Maybe.map .spot searchDrawn)) (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
+    -- the layers over the terminal that are up, in the order they are drawn
+    Window.draw (Bytes.flatten ([ f.list, tabsDrawn, bar, noteDrawn ] ++ Array.mapAndKeepJust identity [ Maybe.map .list searchDrawn, Maybe.map .list boxDrawn, Maybe.map .list pickerDrawn ]))
+        |> Task.andThen (\up -> Window.spot (spotOver { picker = pickerDrawn, box = boxDrawn, search = searchDrawn } spot) |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
                 (if title /= m.title then
@@ -10307,3 +10672,191 @@ lostMark lost label =
 
     else
         label
+
+
+-- THE FOLDER PICKER'S WORKING MODEL (docs/sftp.md FT32)
+
+
+{-| The pretend host's names are UTF-8. -}
+demoWith : Picker.With
+demoWith =
+    { decode = Bytes.toStringLossy, encode = \s -> Just (Bytes.fromString s) }
+
+
+demoOpen : Array Bytes -> Picker.Places -> Picking
+demoOpen files places =
+    let
+        opened =
+            Picker.open { host = PickerDemo.host, files = files, at = Maybe.withDefault (meant Reason.NotSet (Bytes.fromString "/")) places.shell, places = places }
+    in
+    { picker = opened.picker, demo = PickerDemo.start, queued = opened.requests, count = Array.length files }
+
+
+{-| What a key or the pointer came to: the picker kept, its requests
+queued for the pretend host; or closed, saying what would have been sent. -}
+pickerStep : Picker.Step -> Picking -> (taken m : Model) -> Task Error Model
+pickerStep s pk m =
+    let
+        next =
+            { pk | picker = s.picker, queued = pk.queued ++ s.requests }
+
+        places =
+            m.pickerPlaces
+
+        placesKept =
+            { places | bookmarks = Picker.bookmarks s.picker }
+
+        files =
+            if pk.count == 1 then
+                "1 file"
+
+            else
+                String.fromInt pk.count ++ " files"
+    in
+    when s.outcome is
+        Picker.Stay ->
+            Task.succeed { m | picking = Just next, urgent = True }
+
+        Picker.Send folder ->
+            Task.succeed
+                (noteUp
+                    { text = "Would send " ++ files ++ " to " ++ PickerDemo.host ++ ":" ++ Bytes.toStringLossy folder ++ " (the working model)"
+                    , failed = False
+                    , kept = False
+                    }
+                    { m
+                        | picking = Nothing
+                        , urgent = True
+                        , pickerPlaces = { placesKept | recent = Array.takeFirst 5 (Array.pushFirst folder (Array.keepIf (\r -> r /= folder) placesKept.recent)) }
+                    }
+                )
+
+        Picker.Cancelled ->
+            Task.succeed
+                (noteUp
+                    { text = "Cancelled: nothing would be sent (the working model)"
+                    , failed = False
+                    , kept = False
+                    }
+                    { m | picking = Nothing, urgent = True, pickerPlaces = placesKept }
+                )
+
+
+{-| When the pretend host next answers: at once while requests wait to be
+given to it. -}
+pickerDue : Model -> Int
+pickerDue m =
+    when m.picking is
+        Just pk ->
+            if Array.isEmpty pk.queued then
+                PickerDemo.due pk.demo
+
+            else
+                m.last
+
+        Nothing ->
+            meant Reason.NotOpen -1
+
+
+{-| The requests given to the pretend host, and its answers due by `ms`
+given to the picker. -}
+pickerTick : Int -> (taken m : Model) -> Model
+pickerTick ms m =
+    when m.picking is
+        Just pk ->
+            let
+                asked =
+                    Array.foldl (\r d -> PickerDemo.request ms r d) pk.demo pk.queued
+
+                got =
+                    PickerDemo.take ms asked
+
+                applied =
+                    Array.foldl pickerAnswer { picker = pk.picker, queued = [] } got.answers
+            in
+            { m
+                | picking = Just { pk | demo = got.demo, picker = applied.picker, queued = applied.queued }
+                , urgent = m.urgent || not (Array.isEmpty got.answers)
+            }
+
+        Nothing ->
+            meant Reason.NotOpen m
+
+
+pickerAnswer : Picker.Answer -> { picker : Picker.Picker, queued : Array Picker.Request } -> { picker : Picker.Picker, queued : Array Picker.Request }
+pickerAnswer a acc =
+    let
+        s =
+            Picker.answer a acc.picker
+    in
+    { picker = s.picker, queued = acc.queued ++ s.requests }
+
+
+{-| A drag over the window while a picker is up: the working model's or
+the folder picker's. -}
+pickerDragOver : { x : Int, y : Int } -> (taken m : Model) -> Model
+pickerDragOver at m =
+    when m.picking is
+        Just pk ->
+            { m | picking = Just { pk | picker = Picker.dragOver at pk.picker }, urgent = True }
+
+        Nothing ->
+            meant Reason.NotOpen { m | choosing = Maybe.map (\c -> { c | picker = Picker.dragOver at c.picker }) m.choosing, urgent = True }
+
+
+{-| A drag gone from the window, or ended elsewhere. -}
+pickerDragLeft : (taken m : Model) -> Model
+pickerDragLeft m =
+    when m.picking is
+        Just pk ->
+            { m | picking = Just { pk | picker = Picker.dragLeft pk.picker }, urgent = True }
+
+        Nothing ->
+            meant Reason.NotOpen { m | choosing = Maybe.map (\c -> { c | picker = Picker.dragLeft c.picker }) m.choosing, urgent = True }
+
+
+{-| Files dropped while the working model runs: on the picker, sent (in
+the note) to the folder under them; else the picker opened for them. -}
+pickerDropped : Bytes -> (taken m : Model) -> Model
+pickerDropped bytes m =
+    let
+        dropped =
+            (Drop.paths bytes).paths
+    in
+    when m.picking is
+        Just pk ->
+            let
+                folder =
+                    Picker.dropTarget (overlaySize m) demoWith (Picker.dragPoint pk.picker) pk.picker
+
+                names =
+                    if Array.length dropped == 1 then
+                        "1 dropped file"
+
+                    else
+                        String.fromInt (Array.length dropped) ++ " dropped files"
+
+                placesNow =
+                    m.pickerPlaces
+            in
+            noteUp
+                { text =
+                    when folder is
+                        Just f ->
+                            "Would send " ++ names ++ " to " ++ PickerDemo.host ++ ":" ++ Bytes.toStringLossy f ++ " (the working model)"
+
+                        Nothing ->
+                            meant Reason.NotYet ("No folder listed yet: " ++ names ++ " would not be sent (the working model)")
+                , failed = False
+                , kept = False
+                }
+                { m | picking = Nothing, urgent = True, pickerPlaces = { placesNow | bookmarks = Picker.bookmarks pk.picker } }
+
+        Nothing ->
+            meant Reason.NotOpen
+                (if Array.isEmpty dropped then
+                    m
+
+                 else
+                    { m | picking = Just (demoOpen dropped m.pickerPlaces), urgent = True }
+                )

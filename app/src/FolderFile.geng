@@ -1,0 +1,74 @@
+module FolderFile exposing (load, marked, sentTo)
+
+{-| The folder picker's memory (`Folders`) in puritty's state folder,
+`folders.toml` beside the recent connections' file (`docs/sftp.md` FT33).
+Like those (`RecentFile`), a convenience: a file that cannot be read is
+none, and one that cannot be written is left as it was. Each change reads
+the file first, so another window's changes since are kept.
+-}
+
+import Bytes exposing (Bytes)
+import Folders exposing (Folders)
+import Os.Directory as Directory
+import Os.File as File
+import Os.Path as Path exposing (Path)
+import Reason
+import Task exposing (Task)
+
+
+fileName : String
+fileName =
+    "folders.toml"
+
+
+load : File.Permission -> Path -> Task x Folders
+load fs dir =
+    File.readFile fs (Path.append (Path.fromString fileName) dir)
+        |> Task.map
+            (\b ->
+                when Bytes.toString b is
+                    Just text ->
+                        Folders.fromText text
+
+                    Nothing ->
+                        meant Reason.FromOutside []
+            )
+        |> Task.onError (\_ -> Task.succeed [])
+
+
+{-| Files sent to `path` on `host`. Answers the folders as written. -}
+sentTo : File.Permission -> Path -> Folders.Host -> Bytes -> Task x Folders
+sentTo fs dir host path =
+    change fs dir (Folders.sentTo host path)
+
+
+{-| A host's bookmarks as they are now. Answers the folders as written. -}
+marked : File.Permission -> Path -> Folders.Host -> Array Bytes -> Task x Folders
+marked fs dir host paths =
+    change fs dir (Folders.marked host paths)
+
+
+change : File.Permission -> Path -> (Folders -> Folders) -> Task x Folders
+change fs dir edit =
+    load fs dir
+        |> Task.andThen
+            (\folders ->
+                let
+                    next =
+                        edit folders
+                in
+                write fs dir next |> Task.map (\_ -> next)
+            )
+
+
+write : File.Permission -> Path -> Folders -> Task x {}
+write fs dir folders =
+    let
+        fresh =
+            Path.append (Path.fromString (fileName ++ ".new")) dir
+    in
+    Directory.createAll fs dir
+        |> Task.andThen (\_ -> File.writeFile fs (Bytes.fromString (Folders.toText folders)) fresh)
+        |> Task.andThen (\_ -> File.move fs { from = fresh, to = Path.append (Path.fromString fileName) dir })
+        |> Task.map (\_ -> {})
+        |> Task.onError (\_ -> Task.succeed {})

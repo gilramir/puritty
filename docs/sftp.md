@@ -2096,3 +2096,129 @@ it with the dropped ones; Send and Cancel say in the note what would have
 happened. Bookmarks and recent folders live in memory only. Hooking it to
 SFTP (replacing FT24's box), keeping bookmarks and recent folders, and the
 long-path rules elsewhere come after Gilbert has used it.
+
+## FT33 · The folder picker over SFTP, its places kept (2026-11-20)
+
+FT32's picker replaces FT24's box: a drop on an ssh tab whose folder
+puritty doesn't know, and "Another folder…" (FT28), open it over an SFTP
+channel of its own, as the box did. `Chooser.geng` is gone.
+
+**`PickerSftp`**, pure, makes each of `Picker`'s requests SFTP:
+- a listing is `REALPATH` (`~` is the session's own folder, so `~/x` is
+  sent as `x`), `OPENDIR`, then `READDIR` again after each part, every part
+  handed to the picker as it comes, with the attributes `READDIR` gave;
+- a link is the one entry with more: its attributes are its own, so a
+  `STAT` says whether it leads to a folder and a `REALPATH` where (the
+  client has no `READLINK`), and it is handed on when both are in. A link
+  that leads nowhere is listed, not as a folder (FT30 left it out);
+- a new folder is `MKDIR`, then gone into;
+- the home is a `REALPATH` of `.` once the server is ready, for `~` in the
+  breadcrumb and the places;
+- what fails is told to the request it serves, in the server's words with
+  the path; a channel refused or closed is said in the status line.
+
+**Kept**, as FT32 decided:
+- **Bookmarks** of a host of the settings are its table's `bookmarks`,
+  written with `SettingsFile.change` (an edit in place, `config.toml.bak`
+  first) when the picker closes having changed them, in the host's
+  character set's text (`Schema` reads the key; a list of strings).
+- A host `puritty ssh` reached has no table, and making one would put it
+  in the host list. Its bookmarks are kept in the state folder instead,
+  in `folders.toml` beside `recent.toml`, in a `[[hosts]]` table with
+  `ssh = "user@host:port"`; a saved host's table there, for its recent
+  folders, has `host = NAME`.
+- **Recent folders** are the folders files were sent to on the host, five,
+  newest first, whichever way the folder was found, in the same file: a
+  folder is kept when its batch ends having sent anything (`sentRecent`),
+  so a batch that sent nothing (SFTP off, the shell fallback off) leaves
+  none. A path is a string when it is UTF-8, else `{ bytes = HEX }`.
+- The file is read at start with the recent connections and each change
+  reads it again first, so another window's are kept.
+
+**Times** are in the computer's zone, by `Time.here`: its offset from UTC
+now, so a time on the other side of a change to or from summer time is an
+hour off. Geng's `Time` has no zone rules to do better. Accepted for now
+(the user guide says so); reading the system's zone database is on the
+roadmap.
+
+**The state files are TOML.** `folders.toml` was first a file of
+tab-separated lines and `recent.txt` (SG14) one of `host NAME` and `quick
+TEXT` lines, each a format of puritty's own. puritty has a TOML package and
+writes TOML already (`config.toml`, the saved windows' `RestoreFile`), so
+both are TOML now: `Folders` an array `[[hosts]]`, each `host = NAME` or
+`ssh = "user@host:port"` with arrays `recent` and `bookmarks`, `Recent` an array of tables
+`[[connections]]`, each `host = NAME` or `quick = TEXT`. What a later
+puritty might add (a table, a connection of another kind, a path of
+another form) is passed over. Not `[saved.NAME]` tables: `Toml.Encode`
+writes an empty `[saved]` header above them, which its own suite pins, and
+an array of tables has none. With no `recent.toml` yet, an old `recent.txt` is read
+once and written as one (`RecentFile.imported`, `Recent.fromOldText`); the
+old file is left as it was, and a later start does not read it again. The
+import is to be removed once the machines that had a `recent.txt` have
+been through it. Tried on the built binary: a home with only `recent.txt`
+(a quick connection, then a saved host) started with `recent.toml` holding
+both, in order; `recent.txt` changed and puritty started again left
+`recent.toml` as it was.
+
+**Long paths elsewhere** (FT32's last rule). The tmux pane's label kept the
+end of a long path a character at a time (`…ojects/site`); it now keeps
+whole names after `/…/`, and a last name too long by itself loses its
+middle, as the picker does. The drop question already wraps the whole path
+over its lines, and the upload's note names no folder.
+
+**Found while hooking it up.** `Array.get` reads a negative index from the
+end: with nothing highlighted (-1), a later part of a listing highlighted
+the last row, and Enter would have opened it. A row is now looked up by
+`rowAt`, which answers nothing for -1. A link's target, a whole path,
+took the name's room; a tag is now at most half the name's column, its
+middle left out, and the link's own size (its target's length) is not
+shown.
+
+**Tested.**
+- `harness/drop.py`, 26 cases, all passing. The chooser cases drive the
+  picker by its keys now: Ctrl+L, Ctrl+A and the case's folder typed,
+  Enter, a second for the listing, then Ctrl+Enter (`ssh-chooser` goes
+  down to `beta dir` with Down and Enter first). Each file landed where it
+  did with FT24's box; the pins differ only in the keys.
+- Each case's report now ends with what was kept: the `bookmarks` line of
+  the host's table and the lines of `folders.toml`. Every case that sent
+  files has its folder as the host's recent one; `tmux-no-sftp`, which
+  sends nothing, and `tmux-cancel`, cancelled, have none.
+- `ssh-bookmark`, new: the folder typed, Ctrl+D, Esc. Nothing is sent, the
+  log says "the bookmarks kept in the settings", and the host's table has
+  `bookmarks = ["HOST"]`.
+- `ssh-drop-on-row`, new (a `redrag:` step drags the case's file again):
+  the picker open at the folder typed, the file dragged onto its `beta
+  dir` row, which says "Drop into beta dir/" and the status line the whole
+  path; it lands in `beta dir`, with no question, and that folder is the
+  host's recent one.
+- The pictures after each key showed the listing over the local sshd,
+  `link to alpha/ → …/alpha` among the folders and `dangling → …/nowhere`
+  dimmed.
+- The unit gate's app suites, 446 (nine new, `picker`): Enter with
+  nothing highlighted after a listing's second part goes nowhere; Down,
+  Down and Enter go into the first folder; Ctrl+Enter sends the folder
+  you are in; Ctrl+D bookmarks it and takes it off; `folders.toml` read
+  back, a path not UTF-8 among them; the tmux label's three lengths. Two
+  more (448) with the TOML files: `folders.toml` as written, and
+  `recent.toml` read back with a connection of a later kind; one more
+  (449), the old `recent.txt`'s lines read for the import. The
+  picker's layout needs text widths, so the tests on node have a
+  stand-in `Text` (`app/tests/stub/Text.geng`: half an em a character), as
+  they have one for `Window`; and `FolderFile` is split as `RecentFile`
+  is, the file's text in `Folders`, which the tests read.
+- The Windows build (`app/build-windows.sh`) builds.
+
+**The checks list holds** (2026-11-21), with geng-lang's newer checker
+(fork `cce34a5c`). Two `meant` defaults in `Main.draw` were left undecided
+when the picker's layer was added beside the dialogs': the input method's
+spot, three `Maybe.withDefault`s each in the default of the next, and the
+frame's layers, a `Maybe.withDefault` of an empty list for each. The
+newer checker left them undecided too, so they are written away: the
+spot is `spotOver`, a `when` over the picker's, a dialog's box's and the
+search field's spots, and the layers that are up are kept by
+`Array.mapAndKeepJust`, with no default to decide. The newer checker
+found two more in the picker: `tailLabel` added 1 to `n` before testing
+`n` against the path's names (the test now comes first), and the filter's
+width summed `Text.width`, which it cannot bound, with a pixel size (each
+now through `little`). `scripts/checks.sh`: 0 new, 0 gone.

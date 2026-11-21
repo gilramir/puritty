@@ -150,8 +150,11 @@ SUITES = [
         # since CL8: desktop notifications' setting; 427 since CL9: which
         # links are opened; 428 since KG9: the setting for pictures from
         # files; 437 since FT22: a drop's list read and its paths quoted,
-        # nine
-        437,
+        # nine; 446 since FT33: the folder picker's keys, its memory's
+        # file and a tmux pane's drop label, nine; 448 since FT33's
+        # TOML state files: the folders' file written, the recent
+        # connections' read back, the old recent.txt imported
+        449,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

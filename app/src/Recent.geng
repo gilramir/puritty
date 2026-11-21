@@ -1,12 +1,22 @@
-module Recent exposing (Recent(..), added, arguments, commandLine, fileName, forgotten, fromText, keep, name, toText)
+module Recent exposing (Recent(..), added, arguments, commandLine, fileName, forgotten, fromOldText, fromText, keep, name, oldFileName, toText)
 
 {-| The connections made last (`docs/settings-gui.md` SG14, Dnene59), newest
 first, which the host list offers before the saved ones: a saved host by its
 name, so that a change to it applies, or what quick connect was given, as it
-was typed, `gilbert@build tmux -CC attach`. Kept in a file of their own in
-puritty's state folder, a line each, `host NAME` or `quick TEXT`; never in the
-settings file, and never a password.
+was typed, `gilbert@build tmux -CC attach`. Kept in a TOML file of their own
+in puritty's state folder, never in the settings file, and never a password:
+
+    [[connections]]
+    host = "build-box"
+
+    [[connections]]
+    quick = "gilbert@build tmux -CC attach"
+
 -}
+
+import Reason
+import Toml.Decode as Decode exposing (Decoder)
+import Toml.Encode as Encode
 
 
 type Recent
@@ -17,7 +27,7 @@ type Recent
 {-| The file's name in the state folder. -}
 fileName : String
 fileName =
-    "recent.txt"
+    "recent.toml"
 
 
 {-| How many are kept unless the settings say otherwise (`recent`). -}
@@ -26,10 +36,53 @@ keep =
     8
 
 
-{-| The file's lines read: one that is neither `host` nor `quick` is passed
-over, as a file from a later puritty might have. -}
+{-| The file's connections read: one that is neither `host` nor `quick` is
+passed over, as a file from a later puritty might have; a file that is not
+TOML is none. -}
 fromText : String -> Array Recent
 fromText text =
+    Decode.fromString connections text |> Result.withDefault (meant Reason.FromOutside [])
+
+
+connections : Decoder (Array Recent)
+connections =
+    Decode.optionalField "connections" (Decode.array (Decode.maybe connection))
+        |> Decode.map (Maybe.withDefault [] >> Array.mapAndKeepJust identity)
+
+
+connection : Decoder Recent
+connection =
+    Decode.oneOf
+        [ Decode.field "host" nonEmpty |> Decode.map Saved
+        , Decode.field "quick" nonEmpty |> Decode.map Quick
+        ]
+
+
+nonEmpty : Decoder String
+nonEmpty =
+    Decode.string
+        |> Decode.andThen
+            (\t ->
+                if t == "" then
+                    Decode.fail "empty"
+
+                else
+                    Decode.succeed t
+            )
+
+
+{-| The file before it was TOML (`docs/sftp.md` FT33), read once into the
+new one. The import goes when the machines that had it have been through
+it. -}
+oldFileName : String
+oldFileName =
+    "recent.txt"
+
+
+{-| The old file's lines, `host NAME` or `quick TEXT`; another is passed
+over. -}
+fromOldText : String -> Array Recent
+fromOldText text =
     String.lines text
         |> Array.mapAndKeepJust
             (\line ->
@@ -46,18 +99,22 @@ fromText text =
 
 toText : Array Recent -> String
 toText recents =
-    recents
-        |> Array.map
-            (\r ->
-                when r is
-                    Saved host ->
-                        "host " ++ host
+    Encode.toString
+        [ Encode.field "connections"
+            (Encode.tableArray
+                (Array.map
+                    (\r ->
+                        when r is
+                            Saved host ->
+                                [ Encode.field "host" (Encode.string host) ]
 
-                    Quick text ->
-                        "quick " ++ text
+                            Quick text ->
+                                [ Encode.field "quick" (Encode.string text) ]
+                    )
+                    recents
+                )
             )
-        |> String.join "\n"
-        |> (\t -> t ++ "\n")
+        ]
 
 
 {-| A connection made: first, the same one further down gone, and no more

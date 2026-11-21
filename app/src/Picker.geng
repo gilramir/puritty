@@ -1,0 +1,3170 @@
+module Picker exposing
+    ( Answer(..)
+    , Ask(..)
+    , Entry
+    , Kind(..)
+    , Outcome(..)
+    , Picker
+    , Places
+    , Request
+    , Size
+    , Step
+    , With
+    , answer
+    , bookmarks
+    , dragLeft
+    , dragOver
+    , dragPoint
+    , draw
+    , dropTarget
+    , failed
+    , folderOf
+    , key
+    , listed
+    , made
+    , open
+    , pointer
+    , trouble
+    , utcText
+    , zonedText
+    )
+
+{-| The folder on a host that files go to, chosen in a box over the
+terminal (`docs/sftp.md` FT32): one list of the folder you are in, places
+at its left (the shell's folder, home, `/`, recent folders and bookmarks
+on this host), a breadcrumb path you can click or type, and a button that
+names where the files go: the folder you are in, never the highlighted
+row. A drag over a folder row drops into that row's folder.
+
+Pure, as FT24's chooser was: told keys, pointer events and listings, it
+answers what to list or make and what came of it. Where the listings
+come from is the caller's: an SFTP channel, or `PickerDemo`'s pretend
+host. Names are the host's bytes; the caller says how its character set
+reads and writes them (`With`).
+-}
+
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Math
+import Reason
+import SettingsGui exposing (box, clip, framed, look, noClip, text)
+import Text
+import TextEdit
+import Time
+
+
+-- WHAT IT HOLDS
+
+
+{-| A folder, a file, or something else (a device, a socket). A link
+shows what it leads to, and where when known. -}
+type Kind
+    = Folder
+    | File
+    | Other
+
+
+type alias Entry =
+    { name : Bytes
+    , kind : Kind
+    , link : Maybe Bytes
+    , size : Maybe Int64
+    , mtime : Maybe Int64
+    }
+
+
+{-| The places column's folders, as real paths. -}
+type alias Places =
+    { shell : Maybe Bytes
+    , home : Maybe Bytes
+    , recent : Array Bytes
+    , bookmarks : Array Bytes
+    }
+
+
+{-| What the caller is asked to do: list a folder (an absolute path, `~`,
+`~/…`, or one relative to the folder you are in, which the host reads),
+or make one. Answered by `listed`, `failed` and `made` with the same id. -}
+type alias Request =
+    { id : Int, ask : Ask }
+
+
+type Ask
+    = List Bytes
+    | MakeFolder Bytes
+
+
+{-| What the host answered a request: a part of a listing, `more` while
+more is to come; a failure in its words; a folder made. `Home` says where
+the host's home is, for `~` and the places, unasked. -}
+type Answer
+    = Listed { id : Int, path : Bytes, entries : Array Entry, more : Bool }
+    | Failed { id : Int, why : String }
+    | Made { id : Int, path : Bytes }
+    | Home Bytes
+
+
+type Outcome
+    = Stay
+    | Send Bytes
+    | Cancelled
+
+
+type alias Step =
+    { picker : Picker, requests : Array Request, outcome : Outcome }
+
+
+{-| How the host's names read (`decode`) and how a typed path is written
+in its character set (`encode`, `Nothing` for a character it has not). -}
+type alias With =
+    { decode : Bytes -> String, encode : String -> Maybe Bytes }
+
+
+type alias Size =
+    { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int }
+
+
+{-| Why a listing was asked: to go there, to complete a typed path, or a
+folder just made, to go into. -}
+type Purpose
+    = Go { select : Maybe Bytes }
+    | Peek Bytes
+    | Make Bytes
+
+
+type Focus
+    = InList
+    | InPlaces
+
+
+type alias Listing =
+    { entries : Array Entry, complete : Bool }
+
+
+type alias Picker =
+    { host : String
+    , files : Array Bytes
+    , folder : Maybe Bytes
+    , entries : Array Entry
+    , complete : Bool
+    -- the listing being gone to: its request, and whether a part of it
+    -- has come, and the row to highlight when it has
+    , going : Maybe { id : Int, started : Bool, select : Maybe Bytes }
+    , waiting : Dict Int Purpose
+    , nextId : Int
+    -- every folder listed, by its path's bytes in hex
+    , cache : Dict String Listing
+    , highlight : Int
+    , top : Int
+    , filter : String
+    , typing : Maybe { edit : TextEdit.Edit, chosen : Int }
+    , naming : Maybe TextEdit.Edit
+    , focus : Focus
+    , placeAt : Int
+    , places : Places
+    , problem : Maybe String
+    , mouse : { x : Int, y : Int }
+    , dragAt : Maybe { x : Int, y : Int }
+    , crumbMenu : Bool
+    , lastClick : { target : Target, ms : Int }
+    -- a row pressed, and dragged once it moves far enough: to the places,
+    -- a bookmark
+    , pressed : Maybe { row : Int, x : Int, y : Int, moved : Bool }
+    }
+
+
+{-| The box at `at` (the shell's folder, the last one used, or the home),
+for `files`, their names' bytes, sent to `host` (`user@host` as shown). -}
+open : { host : String, files : Array Bytes, at : Bytes, places : Places } -> { picker : Picker, requests : Array Request }
+open o =
+    let
+        p0 =
+            { host = o.host
+            , files = Array.map lastPart o.files
+            , folder = Nothing
+            , entries = []
+            , complete = False
+            , going = Nothing
+            , waiting = Dict.empty
+            , nextId = 1
+            , cache = Dict.empty
+            , highlight = -1
+            , top = 0
+            , filter = ""
+            , typing = Nothing
+            , naming = Nothing
+            , focus = InList
+            , placeAt = 0
+            , places = o.places
+            , problem = Nothing
+            , mouse = { x = -1, y = -1 }
+            , dragAt = Nothing
+            , crumbMenu = False
+            , lastClick = { target = Nowhere, ms = 0 }
+            , pressed = Nothing
+            }
+
+        s =
+            goTo o.at Nothing { picker = p0, requests = [], outcome = Stay }
+    in
+    { picker = s.picker, requests = s.requests }
+
+
+{-| The bookmarks as they are now, for the caller to keep. -}
+bookmarks : Picker -> Array Bytes
+bookmarks p =
+    p.places.bookmarks
+
+
+{-| The folder you are in, once one is listed. -}
+folderOf : Picker -> Maybe Bytes
+folderOf p =
+    p.folder
+
+
+{-| Where a drag is over the box, or the pointer was last. -}
+dragPoint : Picker -> { x : Int, y : Int }
+dragPoint p =
+    when p.dragAt is
+        Just at ->
+            at
+
+        Nothing ->
+            meant Reason.NotOpen p.mouse
+
+
+-- PATHS
+
+
+slash : Bytes
+slash =
+    Bytes.fromString "/"
+
+
+keyOf : Bytes -> String
+keyOf b =
+    Bytes.toHexString { padding = False } b
+
+
+{-| A path's names, the empty ones between slashes left out. -}
+parts : Bytes -> Array Bytes
+parts path =
+    partsFrom path 0 0 []
+
+
+partsFrom : Bytes -> Int -> Int -> Array Bytes -> Array Bytes
+partsFrom path start i acc =
+    if i >= Bytes.length path then
+        if i > start then
+            Array.pushLast (Bytes.slice start i path) acc
+
+        else
+            acc
+
+    else if Bytes.get i path == Bytes.get 0 slash then
+        partsFrom path
+            (i + 1)
+            (i + 1)
+            (if i > start then
+                Array.pushLast (Bytes.slice start i path) acc
+
+             else
+                acc
+            )
+
+    else
+        partsFrom path start (i + 1) acc
+
+
+{-| Names joined into an absolute path. -}
+joined : Array Bytes -> Bytes
+joined names =
+    if Array.isEmpty names then
+        slash
+
+    else
+        Bytes.flatten (Array.foldl (\name acc -> acc ++ [ slash, name ]) [] names)
+
+
+under : Bytes -> Bytes -> Bytes
+under parent name =
+    joined (parts parent ++ [ name ])
+
+
+parentOf : Bytes -> Bytes
+parentOf path =
+    joined (Array.dropLast 1 (parts path))
+
+
+lastPart : Bytes -> Bytes
+lastPart path =
+    when Array.last (parts path) is
+        Just name ->
+            name
+
+        Nothing ->
+            meant Reason.NoMore path
+
+
+{-| Whether `path` is `home` or in it. -}
+isUnder : Bytes -> Bytes -> Bool
+isUnder home path =
+    let
+        h =
+            parts home
+
+        p =
+            parts path
+    in
+    Array.length h <= Array.length p && Array.takeFirst (Array.length h) p == h
+
+
+{-| A path as a person reads it, `~` for the home. -}
+shown : With -> Maybe Bytes -> Bytes -> String
+shown with home path =
+    when home is
+        Just h ->
+            if isUnder h path && not (Array.isEmpty (parts h)) then
+                Array.foldl (\name acc -> acc ++ "/" ++ with.decode name) "~" (Array.dropFirst (Array.length (parts h)) (parts path))
+
+            else
+                plain with path
+
+        Nothing ->
+            meant Reason.NotYet (plain with path)
+
+
+plain : With -> Bytes -> String
+plain with path =
+    if Array.isEmpty (parts path) then
+        "/"
+
+    else
+        Array.foldl (\name acc -> acc ++ "/" ++ with.decode name) "" (parts path)
+
+
+-- LISTINGS
+
+
+{-| Folders first, then files; each by name with case not counted, hidden
+ones (`.name`) last. -}
+sorted : Array Entry -> Array Entry
+sorted entries =
+    Array.sortBy sortKey entries
+
+
+sortKey : Entry -> String
+sortKey e =
+    let
+        name =
+            String.toLower (Bytes.toStringLossy e.name)
+
+        hidden =
+            if String.startsWith "." name then
+                "1"
+
+            else
+                "0"
+
+        kind =
+            when e.kind is
+                Folder ->
+                    "0"
+
+                _ ->
+                    "1"
+    in
+    kind ++ hidden ++ name
+
+
+ask : Ask -> Purpose -> Step -> { step : Step, id : Int }
+ask a purpose s =
+    let
+        p =
+            s.picker
+    in
+    { step =
+        { s
+            | picker = { p | nextId = p.nextId + 1, waiting = Dict.set p.nextId purpose p.waiting }
+            , requests = Array.pushLast { id = p.nextId, ask = a } s.requests
+        }
+    , id = p.nextId
+    }
+
+
+{-| Into a folder: at once from what was listed before, else asked for. -}
+goTo : Bytes -> Maybe Bytes -> Step -> Step
+goTo path select s =
+    let
+        p =
+            s.picker
+
+        reset =
+            { p | problem = Nothing, filter = "", typing = Nothing, crumbMenu = False, naming = Nothing }
+    in
+    when Dict.get (keyOf path) p.cache is
+        Just l ->
+            if l.complete then
+                { s | picker = entered path l select { reset | going = Nothing } }
+
+            else
+                fetch path select { s | picker = reset }
+
+        Nothing ->
+            meant Reason.NotYet (fetch path select { s | picker = reset })
+
+
+fetch : Bytes -> Maybe Bytes -> Step -> Step
+fetch path select s =
+    let
+        r =
+            ask (List path) (Go { select = select }) s
+
+        p =
+            r.step.picker
+    in
+    { s | requests = r.step.requests, picker = { p | going = Just { id = r.id, started = False, select = select } } }
+
+
+entered : Bytes -> Listing -> Maybe Bytes -> Picker -> Picker
+entered path l select p =
+    let
+        p1 =
+            { p | folder = Just path, entries = l.entries, complete = l.complete, top = 0, highlight = -1, focus = InList }
+    in
+    when select is
+        Just name ->
+            highlightName name p1
+
+        Nothing ->
+            meant Reason.NotSet p1
+
+
+highlightName : Bytes -> Picker -> Picker
+highlightName name p =
+    when Array.findFirst (\r -> rowName r == Just name) (rows p) is
+        Just found ->
+            shownRow found.index { p | highlight = found.index }
+
+        Nothing ->
+            meant Reason.NotKnown p
+
+
+{-| An answer of the host's. -}
+answer : Answer -> Picker -> Step
+answer a p =
+    when a is
+        Listed l ->
+            { picker = listed l p, requests = [], outcome = Stay }
+
+        Failed f ->
+            { picker = failed f p, requests = [], outcome = Stay }
+
+        Made m ->
+            made m p
+
+        Home h ->
+            let
+                places =
+                    p.places
+            in
+            { picker = { p | places = { places | home = Just h } }, requests = [], outcome = Stay }
+
+
+{-| What went wrong with the host's listings as a whole (SFTP refused, the
+channel closed), said in the box; nothing more is answered. -}
+trouble : String -> Picker -> Picker
+trouble why p =
+    { p | problem = Just why, going = Nothing, waiting = Dict.empty }
+
+
+{-| A part of a listing, `more` while more is to come. -}
+listed : { id : Int, path : Bytes, entries : Array Entry, more : Bool } -> Picker -> Picker
+listed l p =
+    when Dict.get l.id p.waiting is
+        Just purpose ->
+            let
+                key0 =
+                    keyOf l.path
+
+                before =
+                    when Dict.get key0 p.cache is
+                        Just c ->
+                            if c.complete then
+                                []
+
+                            else
+                                c.entries
+
+                        Nothing ->
+                            meant Reason.NotYet []
+
+                all =
+                    sorted (before ++ l.entries)
+
+                cached =
+                    { p
+                        | cache = Dict.set key0 { entries = all, complete = not l.more } p.cache
+                        , waiting =
+                            if l.more then
+                                p.waiting
+
+                            else
+                                Dict.remove l.id p.waiting
+                    }
+            in
+            when purpose is
+                Go _ ->
+                    when p.going is
+                        Just g ->
+                            if g.id /= l.id then
+                                cached
+
+                            else if g.started then
+                                -- a later part: the highlighted row kept
+                                let
+                                    name =
+                                        rowAt cached.highlight cached |> Maybe.andThen rowName
+
+                                    grown =
+                                        { cached
+                                            | entries = all
+                                            , complete = not l.more
+                                            , going =
+                                                if l.more then
+                                                    cached.going
+
+                                                else
+                                                    Nothing
+                                        }
+                                in
+                                when name is
+                                    Just n ->
+                                        highlightName n grown
+
+                                    Nothing ->
+                                        meant Reason.NotSet grown
+
+                            else
+                                let
+                                    first =
+                                        entered l.path { entries = all, complete = not l.more } g.select cached
+                                in
+                                { first
+                                    | going =
+                                        if l.more then
+                                            Just { g | started = True }
+
+                                        else
+                                            Nothing
+                                }
+
+                        Nothing ->
+                            meant Reason.NotOpen cached
+
+                Peek _ ->
+                    cached
+
+                Make _ ->
+                    cached
+
+        Nothing ->
+            meant Reason.NotKnown p
+
+
+{-| A request that failed, in the host's words. -}
+failed : { id : Int, why : String } -> Picker -> Picker
+failed f p =
+    when Dict.get f.id p.waiting is
+        Just purpose ->
+            let
+                p1 =
+                    { p | waiting = Dict.remove f.id p.waiting }
+            in
+            when purpose is
+                Go _ ->
+                    when p1.going is
+                        Just g ->
+                            if g.id == f.id then
+                                { p1 | going = Nothing, problem = Just f.why }
+
+                            else
+                                p1
+
+                        Nothing ->
+                            meant Reason.NotOpen p1
+
+                Peek _ ->
+                    p1
+
+                Make _ ->
+                    { p1 | problem = Just f.why }
+
+        Nothing ->
+            meant Reason.NotKnown p
+
+
+{-| A folder made: gone into, and the folder it is in read again. -}
+made : { id : Int, path : Bytes } -> Picker -> Step
+made m p =
+    let
+        p1 =
+            { p | waiting = Dict.remove m.id p.waiting, cache = Dict.remove (keyOf (parentOf m.path)) p.cache }
+    in
+    goTo m.path Nothing { picker = p1, requests = [], outcome = Stay }
+
+
+-- ROWS
+
+
+type Row
+    = Up
+    | Item Entry
+
+
+rowName : Row -> Maybe Bytes
+rowName r =
+    when r is
+        Up ->
+            Nothing
+
+        Item e ->
+            Just e.name
+
+
+{-| `..` (except at `/` and while filtering), then the entries the filter
+keeps. -}
+rows : Picker -> Array Row
+rows p =
+    let
+        atRoot =
+            when p.folder is
+                Just f ->
+                    Array.isEmpty (parts f)
+
+                Nothing ->
+                    meant Reason.NotYet True
+
+        needle =
+            String.toLower p.filter
+
+        kept =
+            if p.filter == "" then
+                p.entries
+
+            else
+                Array.keepIf (\e -> String.contains needle (String.toLower (Bytes.toStringLossy e.name))) p.entries
+    in
+    (if atRoot || p.filter /= "" then
+        []
+
+     else
+        [ Up ]
+    )
+        ++ Array.map Item kept
+
+
+{-| The row at `i`; none for -1, nothing highlighted (`Array.get` reads a
+negative index from the end). -}
+rowAt : Int -> Picker -> Maybe Row
+rowAt i p =
+    if i < 0 then
+        Nothing
+
+    else
+        Array.get i (rows p)
+
+
+{-| The folder a row leads to, when it leads to one. -}
+rowFolder : Picker -> Row -> Maybe Bytes
+rowFolder p r =
+    when p.folder is
+        Just f ->
+            when r is
+                Up ->
+                    Just (parentOf f)
+
+                Item e ->
+                    when e.kind is
+                        Folder ->
+                            Just (under f e.name)
+
+                        _ ->
+                            Nothing
+
+        Nothing ->
+            meant Reason.NotYet Nothing
+
+
+-- THE LAYOUT
+
+
+{-| Where the box's parts are, in pixels. -}
+type alias Layout =
+    { px : Int -> Int
+    , body : Int
+    , small : Int
+    , bx : Int
+    , by : Int
+    , bw : Int
+    , bh : Int
+    , pad : Int
+    , barX : Int
+    , barY : Int
+    , barW : Int
+    , barH : Int
+    , placesX : Int
+    , placesW : Int
+    , bodyY : Int
+    , bodyBottom : Int
+    , listX : Int
+    , listW : Int
+    , headerH : Int
+    , rowsY : Int
+    , rowH : Int
+    , shownRows : Int
+    , statusY : Int
+    , footY : Int
+    , footH : Int
+    }
+
+
+layout : Size -> Layout
+layout size =
+    let
+        w =
+            size.cols * size.cellWidth
+
+        h =
+            size.rows * size.cellHeight
+
+        k =
+            toFloat size.cellHeight / 17
+
+        px n =
+            max 1 (Math.round (toFloat n * k))
+
+        bw =
+            min (w - px 24) (px 980)
+
+        bh =
+            min (h - px 24) (px 640)
+
+        bx =
+            (w - bw) // 2
+
+        by =
+            max 0 ((h - bh) // 2)
+
+        pad =
+            px 16
+
+        barY =
+            by + pad + px 28
+
+        barH =
+            px 32
+
+        bodyY =
+            barY + barH + px 10
+
+        footH =
+            px 32
+
+        footY =
+            by + bh - pad - footH
+
+        statusY =
+            footY - px 10 - px 18
+
+        bodyBottom =
+            statusY - px 6
+
+        placesW =
+            min (px 200) ((bw - 2 * pad) // 4)
+
+        listX =
+            bx + pad + placesW + px 10
+
+        headerH =
+            px 22
+
+        rowH =
+            px 24
+    in
+    { px = px
+    , body = px 14
+    , small = px 12
+    , bx = bx
+    , by = by
+    , bw = bw
+    , bh = bh
+    , pad = pad
+    , barX = bx + pad
+    , barY = barY
+    , barW = bw - 2 * pad
+    , barH = barH
+    , placesX = bx + pad
+    , placesW = placesW
+    , bodyY = bodyY
+    , bodyBottom = bodyBottom
+    , listX = listX
+    , listW = bx + bw - pad - listX
+    , headerH = headerH
+    , rowsY = bodyY + headerH
+    , rowH = rowH
+    , shownRows = max 1 ((bodyBottom - bodyY - headerH) // rowH)
+    , statusY = statusY
+    , footY = footY
+    , footH = footH
+    }
+
+
+{-| The highlighted row brought into view. -}
+shownRow : Int -> Picker -> Picker
+shownRow i p =
+    -- the box's rows are known only when drawn; 12 is the fewest any
+    -- window shows, and `draw` keeps the highlight in view past that
+    if i < p.top then
+        { p | top = max 0 i }
+
+    else
+        p
+
+
+-- WHAT IS UNDER A POINT
+
+
+type Target
+    = Nowhere
+    | Inside
+    | Crumb Bytes
+    | CrumbEnd
+    | Ellipsis
+    | MenuItem Bytes
+    | Star
+    | ClearFilter
+    | Place Bytes
+    | Unmark Bytes
+    | RowAt Int
+    | Completion Int
+    | NewFolder
+    | CancelButton
+    | SendButton
+
+
+type alias Hit =
+    { x : Int, y : Int, w : Int, h : Int, target : Target }
+
+
+hitAt : Array Hit -> { x : Int, y : Int } -> Target
+hitAt hits at =
+    when Array.findLast (\h -> at.x >= h.x && at.x < h.x + h.w && at.y >= h.y && at.y < h.y + h.h) hits is
+        Just found ->
+            found.value.target
+
+        Nothing ->
+            meant Reason.OutOfRange Nowhere
+
+
+{-| What a target's full path is, for the status line. -}
+targetPath : With -> Picker -> Target -> Maybe String
+targetPath with p t =
+    let
+        named path =
+            Just (shown with p.places.home path)
+    in
+    when t is
+        Crumb path ->
+            named path
+
+        MenuItem path ->
+            named path
+
+        Place path ->
+            named path
+
+        Unmark path ->
+            Just ("Remove the bookmark " ++ shown with p.places.home path)
+
+        Star ->
+            Just
+                (if isMarked p then
+                    "Remove this folder's bookmark (Ctrl+D)"
+
+                 else
+                    "Bookmark this folder (Ctrl+D)"
+                )
+
+        RowAt i ->
+            rowAt i p |> Maybe.andThen (rowFolder p) |> Maybe.andThen named
+
+        SendButton ->
+            Maybe.map (\f -> "Send to " ++ shown with p.places.home f) p.folder
+
+        CrumbEnd ->
+            Just "Type a path (/, ~ or Ctrl+L)"
+
+        _ ->
+            Nothing
+
+
+isMarked : Picker -> Bool
+isMarked p =
+    when p.folder is
+        Just f ->
+            Array.member f p.places.bookmarks
+
+        Nothing ->
+            meant Reason.NotYet False
+
+
+-- KEYS
+
+
+ctrlOf : Int -> Bool
+ctrlOf mods =
+    modBy 4 mods >= 2
+
+
+altOf : Int -> Bool
+altOf mods =
+    modBy 8 mods >= 4
+
+
+{-| A key, `unshifted` the key's own symbol (a letter's small one). -}
+key : With -> { sym : Int, unshifted : Int, mods : Int, text : String } -> Picker -> Step
+key with k p =
+    let
+        s0 =
+            { picker = p, requests = [], outcome = Stay }
+
+        enter =
+            k.sym == 0xFF0D || k.sym == 0xFF8D
+
+        ctrl =
+            ctrlOf k.mods
+
+        letter =
+            if k.unshifted > 0 then
+                k.unshifted
+
+            else
+                k.sym
+    in
+    when p.naming is
+        Just edit ->
+            nameKey with k edit s0
+
+        Nothing ->
+            meant Reason.NotOpen (unnamedKey with k s0 { enter = enter, ctrl = ctrl, letter = letter })
+
+
+{-| A key while no new folder's name is typed. -}
+unnamedKey : With -> { sym : Int, unshifted : Int, mods : Int, text : String } -> Step -> { enter : Bool, ctrl : Bool, letter : Int } -> Step
+unnamedKey with k s0 how =
+    when s0.picker.typing is
+        Just t ->
+            pathKey with k t s0
+
+        Nothing ->
+            meant Reason.NotOpen (freeKey with k s0 how)
+
+
+{-| A key in the list or the places, nothing being typed. -}
+freeKey : With -> { sym : Int, unshifted : Int, mods : Int, text : String } -> Step -> { enter : Bool, ctrl : Bool, letter : Int } -> Step
+freeKey with k s0 how =
+    let
+        p =
+            s0.picker
+
+        enter =
+            how.enter
+
+        ctrl =
+            how.ctrl
+
+        letter =
+            how.letter
+    in
+    if k.sym == 0xFF1B then
+        if p.crumbMenu then
+            { s0 | picker = { p | crumbMenu = False } }
+
+        else if p.filter /= "" then
+            { s0 | picker = { p | filter = "", highlight = -1, top = 0 } }
+
+        else
+            { s0 | outcome = Cancelled }
+
+    else if enter && ctrl then
+        sendHere s0
+
+    else if ctrl && letter == 0x64 then
+        { s0 | picker = toggleMark p }
+
+    else if ctrl && letter == 0x6E then
+        startNaming s0
+
+    else if ctrl && letter == 0x72 then
+        refresh s0
+
+    else if ctrl && letter == 0x6C then
+        startTyping (Maybe.map (shown with p.places.home) p.folder |> Maybe.withDefault (meant Reason.NotYet "/")) s0
+
+    else if altOf k.mods && k.sym >= 0x31 && k.sym <= 0x39 then
+        when Array.get (k.sym - 0x31) (placeRows with p |> Array.keepIf (\r -> Maybe.isJust r.path)) is
+            Just r ->
+                when r.path is
+                    Just path ->
+                        goTo path Nothing s0
+
+                    Nothing ->
+                        meant Reason.NotSet s0
+
+            Nothing ->
+                meant Reason.OutOfRange s0
+
+    else
+        when p.focus is
+            InPlaces ->
+                placesKey with k s0
+
+            InList ->
+                listKey with k s0
+
+
+sendHere : Step -> Step
+sendHere s =
+    when s.picker.folder is
+        Just f ->
+            if s.picker.going == Nothing then
+                { s | outcome = Send f }
+
+            else
+                -- still going somewhere else: the folder named may not be
+                -- the one shown
+                s
+
+        Nothing ->
+            meant Reason.NotYet s
+
+
+toggleMark : Picker -> Picker
+toggleMark p =
+    when p.folder is
+        Just f ->
+            let
+                places =
+                    p.places
+            in
+            { p
+                | places =
+                    { places
+                        | bookmarks =
+                            if Array.member f places.bookmarks then
+                                Array.keepIf (\b -> b /= f) places.bookmarks
+
+                            else
+                                Array.pushLast f places.bookmarks
+                    }
+            }
+
+        Nothing ->
+            meant Reason.NotYet p
+
+
+unmark : Bytes -> Picker -> Picker
+unmark path p =
+    let
+        places =
+            p.places
+    in
+    { p | places = { places | bookmarks = Array.keepIf (\b -> b /= path) places.bookmarks } }
+
+
+mark : Bytes -> Picker -> Picker
+mark path p =
+    let
+        places =
+            p.places
+    in
+    if Array.member path places.bookmarks then
+        p
+
+    else
+        { p | places = { places | bookmarks = Array.pushLast path places.bookmarks } }
+
+
+startNaming : Step -> Step
+startNaming s =
+    let
+        p =
+            s.picker
+    in
+    if p.folder == Nothing then
+        s
+
+    else
+        { s | picker = { p | naming = Just { chars = [], caret = 0, anchor = 0 }, typing = Nothing, crumbMenu = False } }
+
+
+startTyping : String -> Step -> Step
+startTyping start s =
+    let
+        p =
+            s.picker
+
+        n =
+            String.count start
+    in
+    { s | picker = { p | typing = Just { edit = { chars = String.toArray start, caret = n, anchor = n }, chosen = -1 }, naming = Nothing, crumbMenu = False } }
+
+
+refresh : Step -> Step
+refresh s =
+    let
+        p =
+            s.picker
+    in
+    when p.folder is
+        Just f ->
+            fetch f
+                (rowAt p.highlight p |> Maybe.andThen rowName)
+                { s | picker = { p | cache = Dict.remove (keyOf f) p.cache, problem = Nothing } }
+
+        Nothing ->
+            meant Reason.NotYet s
+
+
+{-| A key while the new folder's name is typed. -}
+nameKey : With -> { sym : Int, unshifted : Int, mods : Int, text : String } -> TextEdit.Edit -> Step -> Step
+nameKey with k edit s =
+    let
+        p =
+            s.picker
+
+        name =
+            String.fromArray edit.chars
+    in
+    if k.sym == 0xFF1B then
+        { s | picker = { p | naming = Nothing } }
+
+    else if k.sym == 0xFF0D || k.sym == 0xFF8D then
+        if String.trim name == "" || String.contains "/" name then
+            { s | picker = { p | problem = Just "A folder's name can't be empty or have a / in it" } }
+
+        else
+            when { folder = p.folder, bytes = with.encode name } is
+                { folder = Just f, bytes = Just b } ->
+                    let
+                        r =
+                            ask (MakeFolder (under f b)) (Make (under f b)) { s | picker = { p | naming = Nothing, problem = Nothing } }
+                    in
+                    r.step
+
+                { folder = Just _, bytes = Nothing } ->
+                    { s | picker = { p | problem = Just "The name has characters the host's character set can't write" } }
+
+                _ ->
+                    -- no folder listed yet: nothing to make it in
+                    s
+
+    else
+        when TextEdit.key { sym = k.sym, mods = k.mods, text = k.text } edit is
+            TextEdit.Edited e ->
+                { s | picker = { p | naming = Just e } }
+
+            TextEdit.Copied c ->
+                { s | picker = { p | naming = Just c.edit } }
+
+            TextEdit.PasteAsked ->
+                s
+
+            TextEdit.NotMine ->
+                s
+
+
+{-| The folder a typed path names, read here when it can be: absolute,
+or under the folder you are in. `~` is left to the host. -}
+typedPath : With -> Picker -> String -> Maybe Bytes
+typedPath with p typed =
+    let
+        home =
+            p.places.home
+    in
+    if typed == "~" || String.startsWith "~/" typed then
+        when home is
+            Just h ->
+                with.encode (String.dropFirst 1 typed) |> Maybe.map (\rest -> normal (Bytes.flatten [ h, slash, rest ]))
+
+            Nothing ->
+                meant Reason.NotYet (with.encode typed)
+
+    else if String.startsWith "/" typed then
+        with.encode typed |> Maybe.map normal
+
+    else
+        when p.folder is
+            Just f ->
+                with.encode typed |> Maybe.map (\rest -> normal (Bytes.flatten [ f, slash, rest ]))
+
+            Nothing ->
+                meant Reason.NotYet (with.encode typed)
+
+
+{-| `.` and `..` read away. -}
+normal : Bytes -> Bytes
+normal path =
+    joined
+        (Array.foldl
+            (\name acc ->
+                if name == Bytes.fromString "." then
+                    acc
+
+                else if name == Bytes.fromString ".." then
+                    Array.dropLast 1 acc
+
+                else
+                    Array.pushLast name acc
+            )
+            []
+            (parts path)
+        )
+
+
+{-| The folders a typed path could go on to: those named in the folder
+its last slash ends, as far as it was listed, that start with what
+follows. -}
+completions : With -> Picker -> String -> { dir : Maybe Bytes, prefix : String, found : Array Bytes }
+completions with p typed =
+    let
+        cut =
+            when String.lastIndexOf "/" typed is
+                Just i ->
+                    { dirText = String.takeFirst (i + 1) typed, prefix = String.dropFirst (i + 1) typed }
+
+                Nothing ->
+                    meant Reason.NotKnown { dirText = "", prefix = typed }
+
+        dir =
+            if cut.dirText == "" then
+                p.folder
+
+            else
+                typedPath with p cut.dirText
+
+        names =
+            when dir is
+                Just d ->
+                    when Dict.get (keyOf d) p.cache is
+                        Just l ->
+                            Array.keepIf (\e -> e.kind == Folder && String.startsWith (String.toLower cut.prefix) (String.toLower (with.decode e.name))) l.entries |> Array.map .name
+
+                        Nothing ->
+                            meant Reason.NotYet []
+
+                Nothing ->
+                    meant Reason.NotYet []
+    in
+    { dir = dir, prefix = cut.prefix, found = Array.takeFirst 8 names }
+
+
+{-| A key while a path is typed. -}
+pathKey : With -> { sym : Int, unshifted : Int, mods : Int, text : String } -> { edit : TextEdit.Edit, chosen : Int } -> Step -> Step
+pathKey with k t s =
+    let
+        p =
+            s.picker
+
+        typed =
+            String.fromArray t.edit.chars
+
+        c =
+            completions with p typed
+
+        dirText =
+            String.dropLast (String.count c.prefix) typed
+
+        setText text =
+            let
+                n =
+                    String.count text
+            in
+            { t | edit = { chars = String.toArray text, caret = n, anchor = n }, chosen = -1 }
+    in
+    if k.sym == 0xFF1B then
+        { s | picker = { p | typing = Nothing } }
+
+    else if k.sym == 0xFF0D || k.sym == 0xFF8D then
+        -- Enter goes there, never sends (GTK #268)
+        let
+            target =
+                if t.chosen >= 0 then
+                    Array.get t.chosen c.found |> Maybe.map (\name -> dirText ++ with.decode name)
+
+                else
+                    Just typed
+        in
+        when target |> Maybe.andThen (typedPath with p) is
+            Just path ->
+                goTo path Nothing s
+
+            Nothing ->
+                meant Reason.FromOutside { s | picker = { p | problem = Just "The path has characters the host's character set can't write" } }
+
+    else if k.sym == 0xFF09 then
+        -- Tab: as far as the folders it could be agree, a slash after one
+        if Array.length c.found == 1 then
+            when Array.first c.found is
+                Just only ->
+                    peekTyped with (dirText ++ with.decode only ++ "/") { s | picker = { p | typing = Just (setText (dirText ++ with.decode only ++ "/")) } }
+
+                Nothing ->
+                    s
+
+        else
+            let
+                common =
+                    commonPrefix (Array.map with.decode c.found)
+            in
+            if String.count common > String.count c.prefix then
+                { s | picker = { p | typing = Just (setText (dirText ++ common)) } }
+
+            else
+                s
+
+    else if k.sym == 0xFF54 then
+        { s | picker = { p | typing = Just { t | chosen = min (Array.length c.found - 1) (t.chosen + 1) } } }
+
+    else if k.sym == 0xFF52 then
+        { s | picker = { p | typing = Just { t | chosen = max -1 (t.chosen - 1) } } }
+
+    else
+        when TextEdit.key { sym = k.sym, mods = k.mods, text = k.text } t.edit is
+            TextEdit.Edited e ->
+                peekTyped with (String.fromArray e.chars) { s | picker = { p | typing = Just { edit = e, chosen = -1 } } }
+
+            TextEdit.Copied x ->
+                { s | picker = { p | typing = Just { t | edit = x.edit } } }
+
+            TextEdit.PasteAsked ->
+                s
+
+            TextEdit.NotMine ->
+                s
+
+
+{-| The folder a typed path's last slash ends, listed for completion when
+it has not been. -}
+peekTyped : With -> String -> Step -> Step
+peekTyped with typed s =
+    let
+        p =
+            s.picker
+
+        dirText =
+            when String.lastIndexOf "/" typed is
+                Just i ->
+                    String.takeFirst (i + 1) typed
+
+                Nothing ->
+                    meant Reason.NotKnown ""
+    in
+    if dirText == "" then
+        s
+
+    else
+        when typedPath with p dirText is
+            Just dir ->
+                if Dict.member (keyOf dir) p.cache || Dict.any (\_ purpose -> purpose == Peek dir) p.waiting then
+                    s
+
+                else
+                    (ask (List dir) (Peek dir) s).step
+
+            Nothing ->
+                meant Reason.FromOutside s
+
+
+commonPrefix : Array String -> String
+commonPrefix names =
+    when Array.first names is
+        Just first ->
+            Array.foldl
+                (\name acc ->
+                    commonOf (String.toArray acc) (String.toArray name) 0
+                )
+                first
+                names
+
+        Nothing ->
+            meant Reason.NoMore ""
+
+
+commonOf : Array Char -> Array Char -> Int -> String
+commonOf a b i =
+    when { x = Array.get i a, y = Array.get i b } is
+        { x = Just ca, y = Just cb } ->
+            if String.toLower (String.fromChar ca) == String.toLower (String.fromChar cb) then
+                commonOf a b (i + 1)
+
+            else
+                String.fromArray (Array.takeFirst i a)
+
+        _ ->
+            String.fromArray (Array.takeFirst i a)
+
+
+{-| A key in the list. -}
+listKey : With -> { sym : Int, unshifted : Int, mods : Int, text : String } -> Step -> Step
+listKey with k s =
+    let
+        p =
+            s.picker
+
+        count =
+            Array.length (rows p)
+
+        page =
+            12
+
+        moveTo i =
+            if count == 0 then
+                s
+
+            else
+                { s | picker = shownRow (clamp 0 (count - 1) i) { p | highlight = clamp 0 (count - 1) i } }
+
+        printable =
+            not (ctrlOf k.mods) && not (altOf k.mods) && k.text /= "" && String.all (\ch -> Char.toCode ch >= 32 && Char.toCode ch /= 127) k.text
+    in
+    if k.sym == 0xFF54 then
+        moveTo (p.highlight + 1)
+
+    else if k.sym == 0xFF52 then
+        moveTo (max 0 (p.highlight - 1))
+
+    else if k.sym == 0xFF56 then
+        moveTo (p.highlight + page)
+
+    else if k.sym == 0xFF55 then
+        moveTo (max 0 (p.highlight - page))
+
+    else if k.sym == 0xFF50 then
+        moveTo 0
+
+    else if k.sym == 0xFF57 then
+        moveTo (count - 1)
+
+    else if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0xFF53 then
+        openRow p.highlight s
+
+    else if k.sym == 0xFF51 then
+        goUp s
+
+    else if k.sym == 0xFF08 then
+        if p.filter /= "" then
+            { s | picker = { p | filter = String.dropLast 1 p.filter, highlight = 0, top = 0 } }
+
+        else
+            goUp s
+
+    else if k.sym == 0xFF09 || k.sym == 0xFE20 then
+        { s | picker = { p | focus = InPlaces, placeAt = max 0 p.placeAt } }
+
+    else if printable then
+        if p.filter == "" && (k.text == "/" || k.text == "~") then
+            startTyping k.text s
+
+        else
+            { s | picker = { p | filter = p.filter ++ k.text, highlight = 0, top = 0 } }
+
+    else
+        s
+
+
+goUp : Step -> Step
+goUp s =
+    when s.picker.folder is
+        Just f ->
+            if Array.isEmpty (parts f) then
+                s
+
+            else
+                goTo (parentOf f) (Just (lastPart f)) s
+
+        Nothing ->
+            meant Reason.NotYet s
+
+
+openRow : Int -> Step -> Step
+openRow i s =
+    let
+        p =
+            s.picker
+    in
+    when rowAt i p is
+        Just Up ->
+            goUp s
+
+        Just (Item e) ->
+            -- a file has nothing to go into
+            if e.kind == Folder then
+                when p.folder is
+                    Just f ->
+                        goTo (under f e.name) Nothing s
+
+                    Nothing ->
+                        meant Reason.NotYet s
+
+            else
+                s
+
+        Nothing ->
+            meant Reason.OutOfRange s
+
+
+{-| A key in the places. -}
+placesKey : With -> { sym : Int, unshifted : Int, mods : Int, text : String } -> Step -> Step
+placesKey with k s =
+    let
+        p =
+            s.picker
+
+        choices =
+            placeRows with p |> Array.keepIf (\r -> Maybe.isJust r.path)
+
+        count =
+            Array.length choices
+
+        at =
+            clamp 0 (max 0 (count - 1)) p.placeAt
+
+        chosen =
+            Array.get at choices |> Maybe.andThen .path
+    in
+    if k.sym == 0xFF54 then
+        { s | picker = { p | placeAt = min (count - 1) (at + 1) } }
+
+    else if k.sym == 0xFF52 then
+        { s | picker = { p | placeAt = max 0 (at - 1) } }
+
+    else if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0xFF53 then
+        when chosen is
+            Just path ->
+                goTo path Nothing s
+
+            Nothing ->
+                meant Reason.OutOfRange s
+
+    else if k.sym == 0xFFFF then
+        when chosen is
+            Just path ->
+                if Array.member path p.places.bookmarks then
+                    { s | picker = unmark path p }
+
+                else
+                    s
+
+            Nothing ->
+                meant Reason.OutOfRange s
+
+    else if k.sym == 0xFF09 || k.sym == 0xFE20 || k.sym == 0xFF51 then
+        { s | picker = { p | focus = InList } }
+
+    else
+        listKey with k { s | picker = { p | focus = InList } }
+
+
+-- THE PLACES COLUMN
+
+
+{-| A row of the places: a heading (no path) or a place. -}
+type alias PlaceRow =
+    { label : String, path : Maybe Bytes, removable : Bool }
+
+
+placeRows : With -> Picker -> Array PlaceRow
+placeRows with p =
+    let
+        home =
+            p.places.home
+
+        fixed =
+            (when p.places.shell is
+                Just f ->
+                    [ { label = "Shell's folder", path = Just f, removable = False } ]
+
+                Nothing ->
+                    meant Reason.NotSet []
+            )
+                ++ (when home is
+                        Just h ->
+                            [ { label = "Home", path = Just h, removable = False } ]
+
+                        Nothing ->
+                            meant Reason.NotYet []
+                   )
+                ++ [ { label = "/", path = Just slash, removable = False } ]
+
+        recent =
+            if Array.isEmpty p.places.recent then
+                []
+
+            else
+                Array.pushFirst { label = "Recent", path = Nothing, removable = False }
+                    (Array.map (\r -> { label = shown with home r, path = Just r, removable = False }) p.places.recent)
+
+        marks =
+            Array.pushFirst { label = "Bookmarks", path = Nothing, removable = False }
+                (if Array.isEmpty p.places.bookmarks then
+                    [ { label = "Ctrl+D adds this folder", path = Nothing, removable = False } ]
+
+                 else
+                    Array.map (\b -> { label = shown with home b, path = Just b, removable = True }) p.places.bookmarks
+                )
+    in
+    fixed ++ recent ++ marks
+
+
+-- THE POINTER
+
+
+{-| A press, release or motion (`action` 0, 1, 2; `button` 1 the left,
+4 and 5 the wheel), at `ms`. -}
+pointer : Size -> With -> { action : Int, button : Int, x : Int, y : Int, ms : Int } -> Picker -> Step
+pointer size with e p =
+    let
+        hits =
+            (scene size with p).hits
+
+        target =
+            hitAt hits { x = e.x, y = e.y }
+
+        p1 =
+            { p | mouse = { x = e.x, y = e.y } }
+
+        s0 =
+            { picker = p1, requests = [], outcome = Stay }
+
+        l =
+            layout size
+
+        rowCount =
+            Array.length (rows p)
+    in
+    if e.action == 2 then
+        -- a row pressed and moved far enough is dragged
+        when p1.pressed is
+            Just pr ->
+                { s0 | picker = { p1 | pressed = Just { pr | moved = pr.moved || Math.abs (e.x - pr.x) + Math.abs (e.y - pr.y) > l.px 6 } } }
+
+            Nothing ->
+                meant Reason.NotOpen s0
+
+    else if e.action == 1 then
+        when p1.pressed is
+            Just pr ->
+                let
+                    released =
+                        { p1 | pressed = Nothing }
+                in
+                if pr.moved && e.x >= l.placesX && e.x < l.placesX + l.placesW && e.y >= l.bodyY && e.y < l.bodyBottom then
+                    -- a row dropped on the places: a bookmark
+                    when rowAt pr.row p1 |> Maybe.andThen (rowFolder p1) is
+                        Just path ->
+                            { s0 | picker = mark path released }
+
+                        Nothing ->
+                            meant Reason.OutOfRange { s0 | picker = released }
+
+                else
+                    { s0 | picker = released }
+
+            Nothing ->
+                meant Reason.NotOpen s0
+
+    else if e.button == 4 || e.button == 5 then
+        let
+            step =
+                if e.button == 4 then
+                    -3
+
+                else
+                    3
+        in
+        { s0 | picker = { p1 | top = clamp 0 (max 0 (rowCount - l.shownRows)) (p1.top + step) } }
+
+    else if e.button /= 1 then
+        s0
+
+    else
+        let
+            closed =
+                { p1
+                    | crumbMenu =
+                        when target is
+                            Ellipsis ->
+                                not p1.crumbMenu
+
+                            _ ->
+                                False
+                    , lastClick = { target = target, ms = e.ms }
+                }
+
+            s1 =
+                { s0 | picker = closed }
+
+            double =
+                p1.lastClick.target == target && e.ms - p1.lastClick.ms < 400
+        in
+        when target is
+            RowAt i ->
+                if double then
+                    openRow i { s1 | picker = { closed | lastClick = { target = Nowhere, ms = 0 } } }
+
+                else
+                    { s1 | picker = { closed | highlight = i, focus = InList, pressed = Just { row = i, x = e.x, y = e.y, moved = False } } }
+
+            Crumb path ->
+                goTo path Nothing s1
+
+            MenuItem path ->
+                goTo path Nothing s1
+
+            CrumbEnd ->
+                startTyping (Maybe.map (shown with p.places.home) p.folder |> Maybe.withDefault (meant Reason.NotYet "/")) s1
+
+            Star ->
+                { s1 | picker = toggleMark closed }
+
+            ClearFilter ->
+                { s1 | picker = { closed | filter = "", highlight = -1 } }
+
+            Place path ->
+                goTo path Nothing s1
+
+            Unmark path ->
+                { s1 | picker = unmark path closed }
+
+            Completion i ->
+                when closed.typing is
+                    Just t ->
+                        let
+                            typed =
+                                String.fromArray t.edit.chars
+
+                            c =
+                                completions with closed typed
+                        in
+                        when Array.get i c.found |> Maybe.andThen (\name -> typedPath with closed (String.dropLast (String.count c.prefix) typed ++ with.decode name)) is
+                            Just path ->
+                                goTo path Nothing s1
+
+                            Nothing ->
+                                meant Reason.OutOfRange s1
+
+                    Nothing ->
+                        meant Reason.NotOpen s1
+
+            NewFolder ->
+                startNaming s1
+
+            CancelButton ->
+                { s1 | outcome = Cancelled }
+
+            SendButton ->
+                sendHere s1
+
+            Ellipsis ->
+                s1
+
+            Inside ->
+                -- a click elsewhere in the box ends typing a path
+                { s1 | picker = { closed | typing = Nothing } }
+
+            Nowhere ->
+                s1
+
+
+{-| A drag from another program over the window. -}
+dragOver : { x : Int, y : Int } -> Picker -> Picker
+dragOver at p =
+    { p | dragAt = Just at, mouse = at }
+
+
+dragLeft : Picker -> Picker
+dragLeft p =
+    { p | dragAt = Nothing }
+
+
+{-| Where files dropped at a point go: the folder of the row or place
+under it, else the folder you are in. -}
+dropTarget : Size -> With -> { x : Int, y : Int } -> Picker -> Maybe Bytes
+dropTarget size with at p =
+    when hitAt (scene size with p).hits at is
+        RowAt i ->
+            rowDrop p i
+
+        Place path ->
+            Just path
+
+        Crumb path ->
+            Just path
+
+        _ ->
+            p.folder
+
+
+{-| Where files dropped on a row go: into its folder, or for a file's row
+the folder it is in. -}
+rowDrop : Picker -> Int -> Maybe Bytes
+rowDrop p i =
+    when rowAt i p is
+        Just Up ->
+            Maybe.map parentOf p.folder
+
+        Just (Item e) ->
+            if e.kind == Folder then
+                Maybe.map (\f -> under f e.name) p.folder
+
+            else
+                p.folder
+
+        Nothing ->
+            meant Reason.OutOfRange p.folder
+
+
+-- DRAWING
+
+
+amber : Int
+amber =
+    0xE2A648
+
+
+{-| `text` cut in its middle to `width` pixels, its start and its end kept
+(dates, versions and extensions are at the end). -}
+middle : Int -> Int -> String -> String
+middle size width s =
+    if Text.width size s <= width then
+        s
+
+    else
+        middleFrom size width s (String.count s - 1)
+
+
+middleFrom : Int -> Int -> String -> Int -> String
+middleFrom size width s keep =
+    let
+        head =
+            keep // 5 * 2
+
+        cut =
+            String.takeFirst head s ++ "…" ++ String.takeLast (keep - head) s
+    in
+    if keep <= 1 || Text.width size cut <= width then
+        cut
+
+    else
+        middleFrom size width s (keep - 1)
+
+
+{-| The breadcrumb's segments: `/` or `~` first, each with its path. -}
+crumbs : With -> Picker -> Array { label : String, path : Bytes }
+crumbs with p =
+    when p.folder is
+        Just f ->
+            let
+                names =
+                    parts f
+
+                base =
+                    when p.places.home is
+                        Just h ->
+                            if isUnder h f && not (Array.isEmpty (parts h)) then
+                                { label = "~", count = Array.length (parts h) }
+
+                            else
+                                { label = "/", count = 0 }
+
+                        Nothing ->
+                            meant Reason.NotYet { label = "/", count = 0 }
+            in
+            Array.pushFirst { label = base.label, path = joined (Array.takeFirst base.count names) }
+                (Array.indexedMap (\i name -> { label = with.decode name, path = joined (Array.takeFirst (base.count + i + 1) names) }) (Array.dropFirst base.count names))
+
+        Nothing ->
+            meant Reason.NotYet []
+
+
+{-| The send button's words: as much of the folder's path's end as fits
+`width`, `…/` before it when cut. -}
+sendLabel : Int -> With -> Picker -> Int -> String
+sendLabel size with p width =
+    when p.folder is
+        Just f ->
+            let
+                whole =
+                    shown with p.places.home f
+
+                segs =
+                    String.split "/" whole |> Array.keepIf (\x -> x /= "")
+
+                full =
+                    if whole == "/" then
+                        "/"
+
+                    else
+                        whole ++ "/"
+            in
+            if Text.width size ("Send to " ++ full) <= width then
+                "Send to " ++ full
+
+            else
+                tailLabel size width segs 1
+
+        Nothing ->
+            meant Reason.NotYet "Send"
+
+
+tailLabel : Int -> Int -> Array String -> Int -> String
+tailLabel size width segs n =
+    if n < Array.length segs - 1 && Text.width size ("Send to …/" ++ String.join "/" (Array.takeLast (n + 1) segs) ++ "/") <= width then
+        tailLabel size width segs (n + 1)
+
+    else
+        let
+            this =
+                "Send to …/" ++ String.join "/" (Array.takeLast n segs) ++ "/"
+        in
+        if Text.width size this <= width then
+            this
+
+        else
+            "Send to …/" ++ middle size (width - Text.width size "Send to …//") (String.join "" (Array.takeLast 1 segs)) ++ "/"
+
+
+sizeText : Int64 -> String
+sizeText n =
+    let
+        f =
+            Int64.toFloat n
+    in
+    if f < 1024 then
+        String.fromInt (Math.round f) ++ " B"
+
+    else if f < 1024 * 1024 then
+        oneDecimal (f / 1024) ++ " KB"
+
+    else if f < 1024 * 1024 * 1024 then
+        oneDecimal (f / (1024 * 1024)) ++ " MB"
+
+    else
+        oneDecimal (f / (1024 * 1024 * 1024)) ++ " GB"
+
+
+oneDecimal : Float -> String
+oneDecimal f =
+    let
+        tenths =
+            Math.round (f * 10)
+    in
+    if tenths >= 100 then
+        String.fromInt (Math.round f)
+
+    else
+        String.fromInt (tenths // 10) ++ "." ++ String.fromInt (modBy 10 tenths)
+
+
+{-| Seconds since 1970 as `2026-11-18 09:12` in `zone`: the computer's
+offset from UTC now (`Time.here`), so a time on the other side of a
+change to or from summer time is an hour off. -}
+zonedText : Time.Zone -> Int64 -> String
+zonedText zone seconds =
+    let
+        posix =
+            Time.add (Time.seconds seconds) (Time.millisToPosix (Int64.fromInt 0))
+
+        two n =
+            String.padLeft 2 '0' (String.fromInt n)
+
+        month =
+            when Time.toMonth zone posix is
+                Time.Jan ->
+                    1
+
+                Time.Feb ->
+                    2
+
+                Time.Mar ->
+                    3
+
+                Time.Apr ->
+                    4
+
+                Time.May ->
+                    5
+
+                Time.Jun ->
+                    6
+
+                Time.Jul ->
+                    7
+
+                Time.Aug ->
+                    8
+
+                Time.Sep ->
+                    9
+
+                Time.Oct ->
+                    10
+
+                Time.Nov ->
+                    11
+
+                Time.Dec ->
+                    12
+    in
+    String.fromInt (Time.toYear zone posix) ++ "-" ++ two month ++ "-" ++ two (Time.toDay zone posix) ++ " " ++ two (Time.toHour zone posix) ++ ":" ++ two (Time.toMinute zone posix)
+
+
+{-| Seconds since 1970 as `2026-11-18 09:12`, in UTC (the working model's
+pretend host's). -}
+utcText : Int64 -> String
+utcText seconds =
+    let
+        s =
+            Int64.toFloat seconds
+
+        days =
+            Math.floor (s / 86400)
+
+        ofDay =
+            Math.round (s - toFloat days * 86400)
+
+        -- Howard Hinnant's days_from_civil, backwards
+        z =
+            days + 719468
+
+        era =
+            (if z >= 0 then
+                z
+
+             else
+                z - 146096
+            )
+                // 146097
+
+        doe =
+            z - era * 146097
+
+        yoe =
+            (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+
+        doy =
+            doe - (365 * yoe + yoe // 4 - yoe // 100)
+
+        mp =
+            (5 * doy + 2) // 153
+
+        day =
+            doy - (153 * mp + 2) // 5 + 1
+
+        month =
+            if mp < 10 then
+                mp + 3
+
+            else
+                mp - 9
+
+        year =
+            yoe
+                + era * 400
+                + (if month <= 2 then
+                    1
+
+                   else
+                    0
+                  )
+
+        two n =
+            String.padLeft 2 '0' (String.fromInt n)
+    in
+    String.fromInt year ++ "-" ++ two month ++ "-" ++ two day ++ " " ++ two (ofDay // 3600) ++ ":" ++ two (modBy 60 (ofDay // 60))
+
+
+{-| The box's records for a window of `cols` by `rows` cells, and where the
+caret is, in cells, for an input method's window. -}
+draw : Size -> With -> (Int64 -> String) -> Picker -> { list : Bytes, spot : { x : Int, y : Int } }
+draw size with format p =
+    let
+        sc =
+            sceneWith size with format p
+    in
+    { list = sc.list, spot = sc.spot }
+
+
+scene : Size -> With -> Picker -> { list : Bytes, hits : Array Hit, spot : { x : Int, y : Int } }
+scene size with p =
+    sceneWith size with utcText p
+
+
+sceneWith : Size -> With -> (Int64 -> String) -> Picker -> { list : Bytes, hits : Array Hit, spot : { x : Int, y : Int } }
+sceneWith size with timeText p0 =
+    let
+        l =
+            layout size
+
+        px =
+            l.px
+
+        body =
+            l.body
+
+        small =
+            l.small
+
+        -- the highlight kept in view, now that the rows shown are known
+        visibleRows =
+            little l.shownRows
+
+        p =
+            if bounded p0.highlight >= bounded p0.top + visibleRows then
+                { p0 | top = bounded p0.highlight - visibleRows + 1 }
+
+            else
+                p0
+
+        allRows =
+            rows p
+
+        hoverAt =
+            -- the pointer's target, from a scene without hover (the hits do
+            -- not depend on it)
+            p.mouse
+
+        mid y h =
+            y + h // 2 + body // 3
+
+        midSmall y h =
+            y + h // 2 + small // 3
+
+        -- the title
+        names =
+            Array.map with.decode p.files
+
+        what =
+            when Array.first names is
+                Just first ->
+                    if Array.length names == 1 then
+                        first
+
+                    else if Array.length names == 2 then
+                        first ++ " and 1 more"
+
+                    else
+                        first ++ " and " ++ String.fromInt (Array.length names - 1) ++ " more"
+
+                Nothing ->
+                    meant Reason.NoMore "files"
+
+        title =
+            text { x = l.bx + l.pad, y = l.by + l.pad + px 14, size = body, color = look.strong, text = middle body (l.bw - 2 * l.pad) ("Send " ++ what ++ " to " ++ p.host) }
+
+        -- the path bar: the filter and the star at its right end
+        starW =
+            px 30
+
+        filterText =
+            if p.filter == "" then
+                ""
+
+            else
+                "⌕ " ++ p.filter ++ "  ✕"
+
+        filterW =
+            if p.filter == "" then
+                0
+
+            else
+                little (Text.width small filterText) + little (px 16)
+
+        crumbRoom =
+            bounded l.barW - little starW - little filterW - little (px 16)
+
+        sep =
+            " › "
+
+        sepW =
+            little (Text.width body sep)
+
+        segs =
+            crumbs with p
+
+        widths =
+            Array.map (\c -> little (Text.width body c.label) + little (px 8)) segs
+
+        total =
+            -- each segment and a separator after it, less the last one's separator
+            bounded (Array.foldl (\w acc -> bounded (acc + w + sepW)) 0 widths) - sepW
+
+        ellW =
+            Text.width body "…" + px 8
+
+        -- how many of the last segments fit after the first and `…`
+        keepLast =
+            keepFrom widths sepW ellW crumbRoom (Array.length segs - 1) 1
+
+        firstHidden =
+            if total <= crumbRoom then
+                Array.length segs
+
+            else
+                little (Array.length segs) - little keepLast
+
+        visible =
+            if total <= crumbRoom then
+                Array.indexedMap (\i c -> { label = c.label, path = c.path, ellipsis = False, last = i == Array.length segs - 1 }) segs
+
+            else
+                Array.takeFirst 1 segs
+                    |> Array.map (\c -> { label = c.label, path = c.path, ellipsis = False, last = False })
+                    |> Array.pushLast { label = "…", path = Bytes.empty, ellipsis = True, last = False }
+                    |> (\a -> a ++ (Array.takeLast keepLast segs |> Array.indexedMap (\i c -> { label = c.label, path = c.path, ellipsis = False, last = i == keepLast - 1 })))
+
+        hidden =
+            Array.slice 1 firstHidden segs
+
+        -- each visible segment's place, the last cut in its middle when it
+        -- is still too wide
+        placed =
+            Array.foldl
+                (\c acc ->
+                    let
+                        room =
+                            l.barX + px 8 + crumbRoom - acc.x
+
+                        label =
+                            if c.last then
+                                middle body (room - px 8) c.label
+
+                            else
+                                c.label
+
+                        w =
+                            Text.width body label + px 8
+                    in
+                    { x = acc.x + w + sepW, out = Array.pushLast { label = label, path = c.path, ellipsis = c.ellipsis, last = c.last, x = acc.x, w = w } acc.out }
+                )
+                { x = l.barX + px 8, out = [] }
+                visible
+
+        crumbHits =
+            Array.map
+                (\c ->
+                    { x = c.x
+                    , y = l.barY
+                    , w = c.w
+                    , h = l.barH
+                    , target =
+                        if c.ellipsis then
+                            Ellipsis
+
+                        else
+                            Crumb c.path
+                    }
+                )
+                placed.out
+
+        barHits =
+            [ { x = l.barX, y = l.barY, w = l.barW, h = l.barH, target = CrumbEnd } ]
+                ++ crumbHits
+                ++ (if p.filter == "" then
+                        []
+
+                    else
+                        [ { x = l.barX + l.barW - starW - filterW, y = l.barY, w = filterW, h = l.barH, target = ClearFilter } ]
+                   )
+                ++ [ { x = l.barX + l.barW - starW, y = l.barY, w = starW, h = l.barH, target = Star } ]
+
+        -- the places column
+        prows =
+            placeRows with p
+
+        placeRowH =
+            px 24
+
+        placeY i =
+            l.bodyY + i * placeRowH
+
+        choices =
+            Array.keepIf (\r -> Maybe.isJust r.path) prows
+
+        chosenPlace =
+            if p.focus == InPlaces then
+                Array.get p.placeAt choices |> Maybe.andThen .path
+
+            else
+                Nothing
+
+        placeHits =
+            Array.indexedMap (\i r -> { i = i, r = r }) prows
+                |> Array.mapAndKeepJust
+                    (\x ->
+                        Maybe.map (\path -> { x = l.placesX, y = placeY x.i, w = l.placesW, h = placeRowH, target = Place path }) x.r.path
+                    )
+
+        removeW =
+            px 22
+
+        unmarkHits =
+            Array.indexedMap (\i r -> { i = i, r = r }) prows
+                |> Array.mapAndKeepJust
+                    (\x ->
+                        if x.r.removable then
+                            Maybe.map (\path -> { x = l.placesX + l.placesW - removeW, y = placeY x.i, w = removeW, h = placeRowH, target = Unmark path }) x.r.path
+
+                        else
+                            Nothing
+                    )
+
+        -- the list's rows shown
+        shownRows =
+            Array.slice p.top (bounded p.top + visibleRows) allRows
+
+        rowY i =
+            l.rowsY + (i - p.top) * l.rowH
+
+        rowHits =
+            Array.indexedMap (\i _ -> { x = l.listX, y = rowY (p.top + i), w = l.listW, h = l.rowH, target = RowAt (p.top + i) }) shownRows
+
+        -- the footer
+        buttonW label =
+            Text.width body label + 2 * px 16
+
+        newW =
+            buttonW "New folder"
+
+        cancelW =
+            buttonW "Cancel"
+
+        keyHint =
+            "Ctrl+Enter"
+
+        sendRoom =
+            max (px 120) (l.bw // 3)
+
+        sendText =
+            sendLabel body with p sendRoom
+
+        sendW =
+            Text.width body sendText + Text.width small keyHint + 3 * px 14
+
+        sendX =
+            l.bx + l.bw - l.pad - sendW
+
+        cancelX =
+            sendX - px 8 - cancelW
+
+        footHits =
+            [ { x = l.bx + l.pad, y = l.footY, w = newW, h = l.footH, target = NewFolder }
+            , { x = cancelX, y = l.footY, w = cancelW, h = l.footH, target = CancelButton }
+            , { x = sendX, y = l.footY, w = sendW, h = l.footH, target = SendButton }
+            ]
+
+        -- the completions under the path being typed, and the menu of the
+        -- breadcrumb's hidden segments
+        typedNow =
+            Maybe.map (\t -> String.fromArray t.edit.chars) p.typing
+
+        comps =
+            when typedNow is
+                Just typed ->
+                    (completions with p typed).found
+
+                Nothing ->
+                    meant Reason.NotOpen []
+
+        dropX =
+            l.barX + px 8
+
+        dropW =
+            min (px 420) (l.barW - px 16)
+
+        compHits =
+            Array.indexedMap (\i _ -> { x = dropX, y = l.barY + l.barH + px 2 + i * l.rowH, w = dropW, h = l.rowH, target = Completion i }) comps
+
+        ellX =
+            Array.findFirst .ellipsis placed.out |> Maybe.map (\found -> found.value.x) |> Maybe.withDefault (meant Reason.NotSet l.barX)
+
+        menuHits =
+            if p.crumbMenu then
+                Array.indexedMap (\i c -> { x = ellX, y = l.barY + l.barH + px 2 + i * l.rowH, w = dropW, h = l.rowH, target = MenuItem c.path }) hidden
+
+            else
+                []
+
+        hits =
+            [ { x = l.bx, y = l.by, w = l.bw, h = l.bh, target = Inside } ]
+                ++ (if p.typing == Nothing then
+                        barHits
+
+                    else
+                        []
+                   )
+                ++ placeHits
+                ++ unmarkHits
+                ++ rowHits
+                ++ footHits
+                ++ compHits
+                ++ menuHits
+
+        hover =
+            hitAt hits hoverAt
+
+        dragTarget =
+            Maybe.map (\at -> hitAt hits at) p.dragAt
+
+        -- RECORDS
+        frame =
+            [ framed { x = l.bx, y = l.by, w = l.bw, h = l.bh, r = px 10, color = look.bg, border = look.fieldLine }
+            , title
+            ]
+
+        bar =
+            when p.typing is
+                Just t ->
+                    let
+                        typed =
+                            String.fromArray t.edit.chars
+
+                        before =
+                            Text.width body (String.takeFirst t.edit.caret typed)
+
+                        -- the text scrolled so the caret shows
+                        room =
+                            l.barW - px 20
+
+                        shift =
+                            max 0 (before - room)
+
+                        caretX =
+                            l.barX + px 10 + before - shift
+                    in
+                    [ framed { x = l.barX, y = l.barY, w = l.barW, h = l.barH, r = px 5, color = look.field, border = look.accent }
+                    , clip { x = l.barX + 1, y = l.barY, w = l.barW - 2, h = l.barH }
+                    , text { x = l.barX + px 10 - shift, y = mid l.barY l.barH, size = body, color = look.strong, text = typed }
+                    , box { x = caretX, y = l.barY + px 7, w = 1, h = l.barH - px 14, r = 0, color = look.strong }
+                    , noClip
+                    ]
+
+                Nothing ->
+                    meant Reason.NotOpen crumbBar
+
+        -- the breadcrumb, the filter and the star
+        crumbBar =
+            [ framed { x = l.barX, y = l.barY, w = l.barW, h = l.barH, r = px 5, color = look.field, border = look.fieldLine } ]
+                ++ Array.map
+                    (\c ->
+                        Bytes.flatten
+                            [ if hover == Crumb c.path || hover == Ellipsis && c.ellipsis || dragTarget == Just (Crumb c.path) then
+                                box { x = c.x, y = l.barY + px 4, w = c.w, h = l.barH - px 8, r = px 4, color = look.pageOn }
+
+                              else
+                                Bytes.empty
+                            , text
+                                { x = c.x + px 4
+                                , y = mid l.barY l.barH
+                                , size = body
+                                , color =
+                                    if c.last then
+                                        look.accentText
+
+                                    else if c.ellipsis then
+                                        look.dim
+
+                                    else
+                                        look.text
+                                , text = c.label
+                                }
+                            , if c.last then
+                                Bytes.empty
+
+                              else
+                                text { x = c.x + c.w, y = mid l.barY l.barH, size = body, color = look.dim, text = sep }
+                            ]
+                    )
+                    placed.out
+                ++ (if p.filter == "" then
+                        []
+
+                    else
+                        let
+                            fx =
+                                l.barX + l.barW - starW - filterW
+                        in
+                        [ box { x = fx, y = l.barY + px 5, w = filterW - px 6, h = l.barH - px 10, r = px 4, color = look.pageOn }
+                        , text { x = fx + px 6, y = midSmall l.barY l.barH, size = small, color = look.strong, text = filterText }
+                        ]
+                   )
+                ++ [ text
+                        { x = l.barX + l.barW - starW + px 6
+                        , y = mid l.barY l.barH + px 2
+                        , size = px 19
+                        , color =
+                            if isMarked p then
+                                amber
+
+                            else if hover == Star then
+                                look.strong
+
+                            else
+                                look.dim
+                        , text =
+                            if isMarked p then
+                                "★"
+
+                            else
+                                "☆"
+                        }
+                   ]
+
+        placesRecords =
+            [ box { x = l.placesX, y = l.bodyY, w = l.placesW, h = l.bodyBottom - l.bodyY, r = px 6, color = look.side }
+            , clip { x = l.placesX, y = l.bodyY, w = l.placesW, h = l.bodyBottom - l.bodyY }
+            ]
+                ++ Array.indexedMap
+                    (\i r ->
+                        let
+                            y =
+                                placeY i
+
+                            here =
+                                Maybe.isJust r.path && r.path == p.folder
+
+                            target =
+                                Maybe.map Place r.path
+                        in
+                        when r.path is
+                            Just path ->
+                                Bytes.flatten
+                                    [ if chosenPlace == Just path then
+                                        box { x = l.placesX + px 4, y = y + px 1, w = l.placesW - px 8, h = placeRowH - px 2, r = px 4, color = look.selection }
+
+                                      else if target == Just hover || dragTarget == Just (Place path) then
+                                        box { x = l.placesX + px 4, y = y + px 1, w = l.placesW - px 8, h = placeRowH - px 2, r = px 4, color = look.focusRow }
+
+                                      else
+                                        Bytes.empty
+                                    , if here then
+                                        box { x = l.placesX + px 4, y = y + px 5, w = px 3, h = placeRowH - px 10, r = px 1, color = look.accent }
+
+                                      else
+                                        Bytes.empty
+                                    , text
+                                        { x = l.placesX + px 14
+                                        , y = mid y placeRowH
+                                        , size = body
+                                        , color =
+                                            if here then
+                                                look.strong
+
+                                            else
+                                                look.text
+                                        , text =
+                                            middle body
+                                                (l.placesW
+                                                    - px 20
+                                                    - (if r.removable then
+                                                        removeW
+
+                                                       else
+                                                        0
+                                                      )
+                                                )
+                                                r.label
+                                        }
+                                    , if r.removable && (hover == Place path || hover == Unmark path) then
+                                        text
+                                            { x = l.placesX + l.placesW - removeW + px 4
+                                            , y = mid y placeRowH
+                                            , size = small
+                                            , color =
+                                                if hover == Unmark path then
+                                                    look.error
+
+                                                else
+                                                    look.dim
+                                            , text = "✕"
+                                            }
+
+                                      else
+                                        Bytes.empty
+                                    ]
+
+                            Nothing ->
+                                meant Reason.NotSet (placeHeading y r)
+                    )
+                    prows
+                ++ [ noClip ]
+
+        -- a heading of the places, or the hint where no bookmark is
+        placeHeading y r =
+            if r.label == "Recent" || r.label == "Bookmarks" then
+                text { x = l.placesX + px 10, y = midSmall y placeRowH + px 2, size = small, color = look.dim, text = String.toUpper r.label }
+
+            else
+                text { x = l.placesX + px 14, y = midSmall y placeRowH, size = small, color = look.dim, text = middle small (l.placesW - px 20) r.label }
+
+        -- columns: the name, the size, the time
+        timeW =
+            Text.width small "2026-11-18 09:12" + px 12
+
+        sizeW =
+            px 72
+
+        nameW =
+            l.listW - timeW - sizeW - px 16
+
+        listing =
+            if p.folder == Nothing then
+                [ text
+                    { x = l.listX + px 10
+                    , y = mid l.rowsY l.rowH
+                    , size = body
+                    , color = look.dim
+                    , text =
+                        if p.problem == Nothing then
+                            "Reading the host's folders…"
+
+                        else
+                            ""
+                    }
+                ]
+
+            else
+                [ text { x = l.listX + px 10, y = midSmall l.bodyY l.headerH, size = small, color = look.dim, text = "Name" }
+                , text { x = l.listX + px 10 + nameW + sizeW - Text.width small "Size", y = midSmall l.bodyY l.headerH, size = small, color = look.dim, text = "Size" }
+                , text { x = l.listX + l.listW - timeW, y = midSmall l.bodyY l.headerH, size = small, color = look.dim, text = "Modified" }
+                , box { x = l.listX, y = l.rowsY - 1, w = l.listW, h = 1, r = 0, color = look.line }
+                , clip { x = l.listX, y = l.rowsY, w = l.listW, h = l.shownRows * l.rowH }
+                ]
+                    ++ Array.indexedMap
+                        (\j r ->
+                            let
+                                i =
+                                    p.top + j
+
+                                y =
+                                    rowY i
+
+                                isFolder =
+                                    Maybe.isJust (rowFolder p r)
+
+                                dropHere =
+                                    dragTarget == Just (RowAt i) && isFolder
+
+                                label =
+                                    when r is
+                                        Up ->
+                                            ".."
+
+                                        Item e ->
+                                            when e.kind is
+                                                Folder ->
+                                                    with.decode e.name ++ "/"
+
+                                                _ ->
+                                                    with.decode e.name
+
+                                linkText =
+                                    when r is
+                                        Item e ->
+                                            Maybe.map (\target -> "→ " ++ shown with p.places.home target) e.link
+
+                                        Up ->
+                                            Nothing
+
+                                clash =
+                                    when r is
+                                        Item e ->
+                                            e.kind /= Folder && Array.member e.name p.files
+
+                                        Up ->
+                                            False
+
+                                tagText =
+                                    if dropHere then
+                                        "Drop into " ++ label
+
+                                    else if clash then
+                                        "◆ same name"
+
+                                    else
+                                        Maybe.withDefault (meant Reason.NotSet "") linkText
+
+                                -- at most half the name's column, its middle
+                                -- left out
+                                tag =
+                                    middle small (nameW // 2) tagText
+
+                                tagW =
+                                    if tagText == "" then
+                                        0
+
+                                    else
+                                        Text.width small tag + px 12
+
+                                nameRoom =
+                                    nameW - px 22 - tagW
+
+                                color =
+                                    if isFolder then
+                                        look.text
+
+                                    else
+                                        look.dim
+
+                                sizeLabel =
+                                    when r is
+                                        Item e ->
+                                            when e.kind is
+                                                Folder ->
+                                                    ""
+
+                                                _ ->
+                                                    Maybe.map sizeText e.size |> Maybe.withDefault (meant Reason.NotSet "")
+
+                                        Up ->
+                                            ""
+
+                                timeLabel =
+                                    when r is
+                                        Item e ->
+                                            Maybe.map timeText e.mtime |> Maybe.withDefault (meant Reason.NotSet "")
+
+                                        Up ->
+                                            ""
+                            in
+                            Bytes.flatten
+                                [ if dropHere then
+                                    framed { x = l.listX + px 2, y = y + px 1, w = l.listW - px 4, h = l.rowH - px 2, r = px 4, color = look.selection, border = look.accent }
+
+                                  else if i == p.highlight then
+                                    box
+                                        { x = l.listX + px 2
+                                        , y = y + px 1
+                                        , w = l.listW - px 4
+                                        , h = l.rowH - px 2
+                                        , r = px 4
+                                        , color =
+                                            if p.focus == InList && p.typing == Nothing then
+                                                look.selection
+
+                                            else
+                                                look.pageOn
+                                        }
+
+                                  else if hover == RowAt i then
+                                    box { x = l.listX + px 2, y = y + px 1, w = l.listW - px 4, h = l.rowH - px 2, r = px 4, color = look.focusRow }
+
+                                  else
+                                    Bytes.empty
+                                , text
+                                    { x = l.listX + px 10
+                                    , y = mid y l.rowH
+                                    , size = body
+                                    , color = color
+                                    , text =
+                                        if isFolder then
+                                            "▸"
+
+                                        else
+                                            ""
+                                    }
+                                , text { x = l.listX + px 26, y = mid y l.rowH, size = body, color = color, text = middle body nameRoom label }
+                                , if tagText == "" then
+                                    Bytes.empty
+
+                                  else
+                                    text
+                                        { x = l.listX + px 26 + min nameRoom (Text.width body (middle body nameRoom label)) + px 10
+                                        , y = midSmall y l.rowH
+                                        , size = small
+                                        , color =
+                                            if dropHere then
+                                                look.accentText
+
+                                            else if clash then
+                                                amber
+
+                                            else
+                                                look.dim
+                                        , text = tag
+                                        }
+                                , text { x = l.listX + px 10 + nameW + sizeW - Text.width small sizeLabel, y = midSmall y l.rowH, size = small, color = look.dim, text = sizeLabel }
+                                , text { x = l.listX + l.listW - timeW, y = midSmall y l.rowH, size = small, color = look.dim, text = timeLabel }
+                                ]
+                        )
+                        shownRows
+                    ++ [ noClip ]
+                    ++ scrollbar l (Array.length allRows) p.top
+                    ++ (if Array.isEmpty allRows || Array.isEmpty p.entries then
+                            [ text
+                                { x = l.listX + px 26
+                                , y = mid (rowY (Array.length allRows)) l.rowH
+                                , size = body
+                                , color = look.dim
+                                , text =
+                                    if p.filter /= "" then
+                                        "No name here has \"" ++ p.filter ++ "\" in it"
+
+                                    else if p.complete then
+                                        "Nothing in this folder"
+
+                                    else
+                                        "Reading…"
+                                }
+                            ]
+
+                        else
+                            []
+                       )
+
+        -- the new folder's name, over the list's first row
+        namingRecords =
+            when p.naming is
+                Just e ->
+                    let
+                        typed =
+                            String.fromArray e.chars
+
+                        y =
+                            l.rowsY
+
+                        labelW =
+                            Text.width body "New folder: " + px 10
+                    in
+                    [ framed { x = l.listX, y = y, w = l.listW, h = l.rowH + px 8, r = px 5, color = look.field, border = look.accent }
+                    , text { x = l.listX + px 10, y = mid y (l.rowH + px 8), size = body, color = look.dim, text = "New folder:" }
+                    , text { x = l.listX + labelW, y = mid y (l.rowH + px 8), size = body, color = look.strong, text = typed }
+                    , box { x = l.listX + labelW + Text.width body (String.takeFirst e.caret typed), y = y + px 6, w = 1, h = l.rowH - px 4, r = 0, color = look.strong }
+                    ]
+
+                Nothing ->
+                    meant Reason.NotOpen []
+
+        -- the folders a typed path could go on to
+        compRecords =
+            if Array.isEmpty comps then
+                []
+
+            else
+                let
+                    chosen =
+                        when p.typing is
+                            Just t ->
+                                t.chosen
+
+                            Nothing ->
+                                meant Reason.NotOpen -1
+                in
+                [ framed { x = dropX, y = l.barY + l.barH + px 2, w = dropW, h = Array.length comps * l.rowH, r = px 5, color = look.side, border = look.fieldLine } ]
+                    ++ Array.indexedMap
+                        (\i name ->
+                            let
+                                y =
+                                    l.barY + l.barH + px 2 + i * l.rowH
+                            in
+                            Bytes.flatten
+                                [ if i == chosen then
+                                    box { x = dropX + px 2, y = y + px 1, w = dropW - px 4, h = l.rowH - px 2, r = px 4, color = look.selection }
+
+                                  else if hover == Completion i then
+                                    box { x = dropX + px 2, y = y + px 1, w = dropW - px 4, h = l.rowH - px 2, r = px 4, color = look.focusRow }
+
+                                  else
+                                    Bytes.empty
+                                , text { x = dropX + px 10, y = mid y l.rowH, size = body, color = look.text, text = middle body (dropW - px 20) (with.decode name ++ "/") }
+                                ]
+                        )
+                        comps
+
+        -- the breadcrumb's hidden segments, under its `…`
+        menuRecords =
+            if p.crumbMenu && not (Array.isEmpty hidden) then
+                [ framed { x = ellX, y = l.barY + l.barH + px 2, w = dropW, h = Array.length hidden * l.rowH, r = px 5, color = look.side, border = look.fieldLine } ]
+                    ++ Array.indexedMap
+                        (\i c ->
+                            let
+                                y =
+                                    l.barY + l.barH + px 2 + i * l.rowH
+                            in
+                            Bytes.flatten
+                                [ if hover == MenuItem c.path then
+                                    box { x = ellX + px 2, y = y + px 1, w = dropW - px 4, h = l.rowH - px 2, r = px 4, color = look.focusRow }
+
+                                  else
+                                    Bytes.empty
+                                , text { x = ellX + px 10, y = mid y l.rowH, size = body, color = look.text, text = middle body (dropW - px 20) (shown with p.places.home c.path) }
+                                ]
+                        )
+                        hidden
+
+            else
+                []
+
+        -- where files dropped now would go
+        dragFolder =
+            when dragTarget is
+                Just (RowAt i) ->
+                    rowDrop p i
+
+                Just (Place path) ->
+                    Just path
+
+                Just (Crumb path) ->
+                    Just path
+
+                Just _ ->
+                    p.folder
+
+                Nothing ->
+                    meant Reason.NotOpen Nothing
+
+        -- the status line: where a drop goes, else what is under the
+        -- pointer, else what went wrong, else what the listing is doing
+        status =
+            when dragFolder is
+                Just f ->
+                    { line = "Drop to send to " ++ shown with p.places.home f, color = look.accentText }
+
+                Nothing ->
+                    meant Reason.NotOpen hoverStatus
+
+        hoverStatus =
+            when targetPath with p hover is
+                Just line ->
+                    { line = line, color = look.dim }
+
+                Nothing ->
+                    meant Reason.NotSet quietStatus
+
+        quietStatus =
+            when p.problem is
+                Just why ->
+                    { line = why, color = look.error }
+
+                Nothing ->
+                    meant Reason.NotSet
+                        (if p.going /= Nothing || (p.folder /= Nothing && not p.complete) then
+                            { line = "Reading… " ++ String.fromInt (Array.length p.entries) ++ " so far", color = look.dim }
+
+                         else if p.folder == Nothing then
+                            { line = "", color = look.dim }
+
+                         else
+                            { line = countText (Array.length p.entries), color = look.dim }
+                        )
+
+        statusRecords =
+            [ text { x = l.bx + l.pad, y = midSmall l.statusY (px 18), size = small, color = status.color, text = middle small (l.bw - 2 * l.pad) status.line } ]
+
+        -- a button: framed, filled when it is the one Enter-like keys answer
+        button x w label primary =
+            framed
+                { x = x
+                , y = l.footY
+                , w = w
+                , h = l.footH
+                , r = px 5
+                , color =
+                    if primary then
+                        look.accent
+
+                    else
+                        look.field
+                , border =
+                    if primary then
+                        look.accent
+
+                    else
+                        look.fieldLine
+                }
+
+        sendReady =
+            p.folder /= Nothing && p.going == Nothing
+
+        footRecords =
+            [ button (l.bx + l.pad) newW "New folder" False
+            , text { x = l.bx + l.pad + px 16, y = mid l.footY l.footH, size = body, color = look.strong, text = "New folder" }
+            , button cancelX cancelW "Cancel" False
+            , text { x = cancelX + px 16, y = mid l.footY l.footH, size = body, color = look.strong, text = "Cancel" }
+            , button sendX sendW sendText sendReady
+            , text
+                { x = sendX + px 14
+                , y = mid l.footY l.footH
+                , size = body
+                , color =
+                    if sendReady then
+                        0x00FFFFFF
+
+                    else
+                        look.dim
+                , text = sendText
+                }
+            , text
+                { x = sendX + sendW - px 14 - Text.width small keyHint
+                , y = midSmall l.footY l.footH
+                , size = small
+                , color =
+                    if sendReady then
+                        0x00D0E4F5
+
+                    else
+                        look.dim
+                , text = keyHint
+                }
+            ]
+
+        -- a row dragged to the places, to be a bookmark
+        ghost =
+            when p.pressed is
+                Just pr ->
+                    if pr.moved then
+                        when rowAt pr.row p |> Maybe.andThen (rowFolder p) is
+                            Just f ->
+                                let
+                                    label =
+                                        "★ " ++ middle body (px 260) (shown with p.places.home f)
+
+                                    gw =
+                                        Text.width body label + px 20
+                                in
+                                [ framed { x = p.mouse.x + px 12, y = p.mouse.y + px 8, w = gw, h = l.rowH, r = px 5, color = look.side, border = look.accent }
+                                , text { x = p.mouse.x + px 22, y = mid (p.mouse.y + px 8) l.rowH, size = body, color = look.strong, text = label }
+                                ]
+
+                            Nothing ->
+                                meant Reason.OutOfRange []
+
+                    else
+                        []
+
+                Nothing ->
+                    meant Reason.NotOpen []
+
+        caretAt =
+            when p.typing is
+                Just t ->
+                    { x = l.barX + px 10 + min (l.barW - px 20) (Text.width body (String.takeFirst t.edit.caret (String.fromArray t.edit.chars))), y = l.barY }
+
+                Nothing ->
+                    meant Reason.NotOpen namingCaret
+
+        namingCaret =
+            when p.naming is
+                Just e ->
+                    { x = l.listX + Text.width body "New folder: " + px 10 + Text.width body (String.takeFirst e.caret (String.fromArray e.chars)), y = l.rowsY }
+
+                Nothing ->
+                    meant Reason.NotOpen { x = l.bx + l.pad, y = l.by + l.pad }
+    in
+    { list =
+        Bytes.flatten
+            (frame
+                ++ bar
+                ++ placesRecords
+                ++ listing
+                ++ namingRecords
+                ++ statusRecords
+                ++ footRecords
+                ++ compRecords
+                ++ menuRecords
+                ++ ghost
+            )
+    , hits = hits
+    , spot = { x = caretAt.x // max 1 size.cellWidth, y = caretAt.y // max 1 size.cellHeight }
+    }
+
+
+{-| A thin bar at the list's right while it has more rows than it shows. -}
+scrollbar : Layout -> Int -> Int -> Array Bytes
+scrollbar l count top =
+    if count <= l.shownRows then
+        []
+
+    else
+        let
+            track =
+                l.shownRows * l.rowH
+
+            thumbH =
+                max (l.px 20) (track * l.shownRows // count)
+
+            thumbY =
+                l.rowsY + (track - thumbH) * top // max 1 (count - l.shownRows)
+        in
+        [ box { x = l.listX + l.listW - l.px 6, y = thumbY, w = l.px 4, h = thumbH, r = l.px 2, color = look.pageOn } ]
+
+
+{-| How many of the breadcrumb's last segments fit after its first and a
+`…`, at least one. -}
+keepFrom : Array Int -> Int -> Int -> Int -> Int -> Int -> Int
+keepFrom widths sepW ellW room last n =
+    let
+        first =
+            Array.get 0 widths |> Maybe.withDefault (meant Reason.NoMore 0)
+
+        tail =
+            Array.foldl (+) 0 (Array.takeLast (n + 1) widths)
+
+        need =
+            first + sepW + ellW + sepW + tail + n * sepW
+    in
+    if n + 1 <= last && need <= room then
+        keepFrom widths sepW ellW room last (n + 1)
+
+    else
+        n
+
+
+{-| A pixel position or count kept to what any window has, so that sums of
+two stay inside an Int. -}
+bounded : Int -> (r : Int where -1000000 <= r && r <= 1000000)
+bounded n =
+    if n < -1000000 then
+        -1000000
+
+    else if n > 1000000 then
+        1000000
+
+    else
+        n
+
+
+{-| A width, a count of rows or of a path's names: kept so that a product of
+two stays inside an Int. -}
+little : Int -> (r : Int where 0 <= r && r <= 10000)
+little n =
+    if n < 0 then
+        0
+
+    else if n > 10000 then
+        10000
+
+    else
+        n
+
+
+countText : Int -> String
+countText n =
+    if n == 1 then
+        "1 item"
+
+    else
+        String.fromInt n ++ " items"

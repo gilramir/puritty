@@ -30,6 +30,29 @@ image = "tmux-panes.png"
 alt = "puritty attached to tmux 3.8 with tmux -CC, in Ghostty's colors: two panes side by side, English in bold, italic, curly, dotted and dashed underlines and 24-bit color on the left, a Korean poem and table on the right, a floating pane of git history over both, and tmux's windows as tabs"
 
 [[extra.features]]
+kicker = "Drag and drop"
+title = "Drop files on an ssh tab, and they land on the host"
+body = """
+Drag files or folders from your file manager onto an ssh tab, and puritty
+sends them over the tab's own connection: no second login, no `scp` to
+type, on Linux and Windows.
+
+- **They go where you are.** When your shell says which folder it's in,
+  the files go there. Under `tmux -CC`, the pane you drag over says which
+  folder it would drop into.
+- **Otherwise a folder picker opens** on the host, with your recent
+  folders and your bookmarks for that host. Type to filter, type a path,
+  make a new folder, or drop the files straight onto a folder in the list.
+- **A name that's there already is asked about**, a progress bar shows
+  the speed and time left, and Korean file names arrive intact, on EUC-KR
+  hosts too.
+"""
+link = "@/guide/file-transfer.md"
+link_text = "Sending files to a host"
+image = "drop-picker.png"
+alt = "Three files, logo.png, notes.txt and report-2026-11.pdf, dragged from the Nemo file manager onto puritty, where the folder picker is open on the host at /srv/www/site: the shell's folder, home, recent folders and a bookmark at the left; assets, css, img, a link to /var/releases and three files in the list, logo.png marked same name; the assets row lit with Drop into assets/, and the button Send to /srv/www/site/"
+
+[[extra.features]]
 kicker = "Pictures"
 title = "Plots and pictures, right in the terminal"
 body = """

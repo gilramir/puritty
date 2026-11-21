@@ -13,7 +13,7 @@ folder`. Where each sits in the file manager's window was read from a
 screenshot (probes/xdnd/drag-from-nemo.py); the pin of a case that moved
 would show it.
 """
-import argparse, os, shutil, subprocess, sys, tempfile, time
+import argparse, os, shutil, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,9 +62,9 @@ TMUX_CASES = [
 # an ssh tab without tmux (FT24): the folder chooser, driven by keys: a path
 # typed over the home it opens at, its folders listed, the second chosen,
 # gone into, and chosen
-CHOOSER_KEYS = ["ctrl+a", "type:HOST", "Return", "Down", "Down", "Down", "Return", "Return"]
+CHOOSER_KEYS = ["ctrl+l", "ctrl+a", "type:HOST", "Return", "sleep:1", "Down", "Down", "Down", "Return", "sleep:1", "ctrl+Return"]
 # the chooser's folder, typed and chosen at once
-TO_HOST = ["ctrl+a", "type:HOST", "Return", "Return"]
+TO_HOST = ["ctrl+l", "ctrl+a", "type:HOST", "Return", "sleep:1", "ctrl+Return"]
 
 
 def taken(there):
@@ -174,8 +174,7 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
     app_env = dict(env, XDG_RUNTIME_DIR=tempfile.mkdtemp(prefix="pd-")) if client == "openssh" else env
     procs = []
     try:
-        procs.append(subprocess.Popen(["dbus-run-session", "--", "nemo", "--no-desktop", "--geometry=640x700+0+0", str(files)],
-                                      env=dict(env, GTK_THEME="Adwaita"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        procs.append(file_manager(["nemo", "--no-desktop", "--geometry=640x700+0+0", str(files)], dict(env, GTK_THEME="Adwaita")))
         procs.append(subprocess.Popen([str(APP), "--host", "test"], env=app_env, stdout=subprocess.DEVNULL, stderr=open(home / "stderr.txt", "w")))
         time.sleep(7)
         for wid in xdo(env, "search", "--class", "nemo").split():
@@ -213,7 +212,21 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
             for wid in xdo(env, "search", "--class", "puritty").split():
                 xdo(env, "windowfocus", "--sync", wid)
             for n, k in enumerate(after):
-                if k.startswith("type:"):
+                if k.startswith("redrag:"):
+                    # the first item dragged again, onto a point of the
+                    # screen: a row of the open folder picker (FT33)
+                    tx, ty = map(int, k[7:].split(","))
+                    xdo(env, "mousemove", x, y)
+                    time.sleep(0.3)
+                    xdo(env, "mousedown", 1)
+                    for i in range(1, 31):
+                        xdo(env, "mousemove", x + (tx - x) * i // 30, y + (ty - y) * i // 30)
+                        time.sleep(0.03)
+                    xdo(env, "mousemove", tx + 1, ty + 1)
+                    time.sleep(1.5)
+                    subprocess.run(shot + [str(home / f"redrag-{n}.png")], env=env)
+                    xdo(env, "mouseup", 1)
+                elif k.startswith("type:"):
                     xdo(env, "type", "--delay", "30", k[5:].replace("HOST", str(there)))
                 elif k.startswith("sleep:"):
                     time.sleep(float(k[6:]))
@@ -232,9 +245,7 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
         # what is sent, given time to arrive
         time.sleep(wait)
     finally:
-        for p in procs:
-            if p.poll() is None:
-                p.kill()
+        ended(procs)
         subprocess.run(["tmux", "-L", "puritty-drop", "kill-server"], capture_output=True)
         server.stop()
     said = [line.split(None, 3)[-1].replace(str(there), "HOST").replace(str(files), "DIR")
@@ -245,14 +256,50 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
     # a large file sent is not kept in the work folder
     for p in list(there.rglob("big.bin")) + list(there.rglob(".big.bin.puritty-part")):
         p.unlink()
+    # what the folder picker kept (FT33): a bookmark in the host's table,
+    # the recent folders in the state folder
+    settings = [l.replace(str(there), "HOST") for l in (home / "config" / "puritty" / "config.toml").read_text().splitlines()
+                if l.startswith("bookmarks")]
+    state = home / ".local" / "state" / "puritty" / "folders.toml"
+    kept = [l.replace(str(there), "HOST") for l in state.read_text().splitlines() if l] if state.exists() else []
     return (f"dropped {items} {'on the pane ' if tmux else ''}at {at}{', then ' + str(after) if after else ''}\nsaid: {said}\n"
-            + "the host holds:\n" + "\n".join(held) + "\n")
+            + "the host holds:\n" + "\n".join(held) + "\n"
+            + ("settings: " + "; ".join(settings) + "\n" if settings else "")
+            + ("kept: " + "; ".join(kept) + "\n" if kept else ""))
 
 
 def dolphin():
     out = subprocess.run(["nix", "build", "--no-link", "--print-out-paths", "nixpkgs#kdePackages.dolphin"], capture_output=True, text=True,
                          check=True)
     return out.stdout.split()[0] + "/bin/dolphin"
+
+
+def file_manager(cmd, env):
+    """A file manager on a D-Bus session of its own, in a process group of
+    its own, so that `ended` can stop the session's bus and the gvfs
+    daemons it starts with it: killing `dbus-run-session` alone leaves them
+    running, each holding inotify instances, until the user's 128 are gone
+    and `zola serve` cannot start (seen 2026-11-21, 404 sets left)."""
+    return subprocess.Popen(["dbus-run-session", "--", *cmd], env=env, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def ended(procs):
+    """Each process stopped, with its process group when it leads one."""
+    for p in procs:
+        if p.poll() is None:
+            try:
+                os.killpg(p.pid, signal.SIGTERM) if os.getpgid(p.pid) == p.pid else p.terminate()
+            except ProcessLookupError:
+                pass
+    time.sleep(0.5)
+    for p in procs:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        if p.poll() is None:
+            p.kill()
 
 
 def xdo(env, *args):
@@ -277,8 +324,7 @@ def run_case(env0, name, fm, items, charset):
     procs = []
     try:
         cmd = [env0["DOLPHIN"], str(files)] if fm == "dolphin" else ["nemo", "--no-desktop", "--geometry=640x700+0+0", str(files)]
-        procs.append(subprocess.Popen(["dbus-run-session", "--", *cmd], env=dict(env, QT_QPA_PLATFORM="xcb", GTK_THEME="Adwaita"),
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        procs.append(file_manager(cmd, dict(env, QT_QPA_PLATFORM="xcb", GTK_THEME="Adwaita")))
         app = subprocess.Popen([str(APP)], env=env, stdout=subprocess.DEVNULL, stderr=open(home / "stderr.txt", "w"))
         procs.append(app)
         time.sleep(5)
@@ -316,9 +362,7 @@ def run_case(env0, name, fm, items, charset):
             time.sleep(0.5)
         time.sleep(1)
     finally:
-        for p in procs:
-            if p.poll() is None:
-                p.kill()
+        ended(procs)
     got = out.read_text().strip() if out.exists() else "the program ended without saying"
     if got not in ("nothing pasted", "the program ended without saying"):
         raw = bytes.fromhex(got)
@@ -357,6 +401,14 @@ def main():
          # four items, a folder among them, to the folder typed
          ("ssh-several", lambda: run_tmux_case(env, "ssh-several", (950, 300), keys, after=TO_HOST, tmux=False,
                                                items=("plain", "folder", "korean", "quote"))),
+         # the folder typed bookmarked (Ctrl+D), and nothing sent: the
+         # bookmark kept in the host's table of the settings (FT33)
+         ("ssh-bookmark", lambda: run_tmux_case(env, "ssh-bookmark", (950, 300), keys, tmux=False,
+                                                after=["ctrl+l", "ctrl+a", "type:HOST", "Return", "sleep:1", "ctrl+d", "Escape"])),
+         # the picker open at the folder typed, the file dragged again onto
+         # its `beta dir` row: sent there, no question asked (FT33)
+         ("ssh-drop-on-row", lambda: run_tmux_case(env, "ssh-drop-on-row", (950, 300), keys, tmux=False,
+                                                   after=["ctrl+l", "ctrl+a", "type:HOST", "Return", "sleep:1", "redrag:920,244"])),
          # a name there already: the question, answered K, keep both
          ("ssh-keep-both", lambda: run_tmux_case(env, "ssh-keep-both", (950, 300), keys, after=TO_HOST + ["k"], tmux=False,
                                                  before=taken)),
@@ -378,7 +430,7 @@ def main():
          # where Enter sends; one whose last OSC 7 named another host (a
          # nested ssh's) gets the chooser at home, and Esc
          ("osc7-ask", lambda: run_tmux_case(env, "osc7-ask", (950, 300), keys, tmux=False, osc7="beta", after=["Return"])),
-         ("osc7-another", lambda: run_tmux_case(env, "osc7-another", (950, 300), keys, tmux=False, osc7="beta", after=["c", "Return"])),
+         ("osc7-another", lambda: run_tmux_case(env, "osc7-another", (950, 300), keys, tmux=False, osc7="beta", after=["c", "sleep:1", "ctrl+Return"])),
          ("osc7-nested", lambda: run_tmux_case(env, "osc7-nested", (950, 300), keys, tmux=False, osc7="nested", after=["Escape"])),
          # a tab of OpenSSH's ssh (FT31): the chooser and the sending through
          # its connection by ControlMaster, on a tab with no tmux and on a
