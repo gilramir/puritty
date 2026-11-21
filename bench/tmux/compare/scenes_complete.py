@@ -1,0 +1,20 @@
+"""Tab at tmux's prompt (docs/tmux.md TM96): a command's name, 3.8's list of
+what it cannot choose between, an option's name past the first word, each
+shot beside a plain client given the same keys."""
+
+from scenes import P
+
+SCENES = [
+    dict(name="complete-spl", steps=[("keys", P, ":"), ("type", "spl"), ("keys", "Tab"), ("shot", "spl"), ("keys", "C-c")]),
+    dict(name="complete-select", steps=[("keys", P, ":"), ("type", "select-"), ("keys", "Tab"), ("shot", "select"), ("keys", "C-c")]),
+    dict(name="complete-option", steps=[("keys", P, ":"), ("type", "set -g status-k"), ("keys", "Tab"), ("shot", "option"), ("keys", "C-c")]),
+    # before 3.2 a -t word: a session, then a window (TM97)
+    dict(name="complete-target-session", setup=[("new-window", "-t", "main", "-n", "second")],
+         steps=[("keys", P, ":"), ("type", "select-window -tma"), ("keys", "Tab"), ("shot", "session"), ("keys", "C-c")]),
+    dict(name="complete-target-window", setup=[("new-window", "-t", "main", "-n", "second")],
+         steps=[("keys", P, ":"), ("type", "select-window -t:se"), ("keys", "Tab"), ("shot", "window"), ("keys", "C-c")]),
+    # 3.2 to 3.7: a window by its index from a menu (TM98)
+    dict(name="complete-window-menu", setup=[("new-window", "-t", "main", "-n", "second")],
+         steps=[("keys", P, ":"), ("type", "select-window -tmain:"), ("keys", "Tab"), ("shot", "menu"), ("keys", "1"),
+                ("shot", "chosen"), ("keys", "C-c")]),
+]

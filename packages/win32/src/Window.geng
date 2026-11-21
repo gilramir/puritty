@@ -1,25 +1,33 @@
 module Window exposing
     ( Cell
+    , DragPosition
     , Event(..)
     , Pointer(..)
     , PointerEvent
     , Selection(..)
     , Settings
+    , attention
     , draw
+    , dropped
     , events
     , fontUsed
     , fonts
     , isMaximized
+    , jumpList
     , menu
     , motion
+    , notify
     , open
+    , openLink
     , paste
+    , pasteOrImage
     , pasted
     , raise
     , resize
     , select
     , setFont
     , setMaximized
+    , setPadding
     , setPointer
     , setTitle
     , shot
@@ -28,6 +36,7 @@ module Window exposing
     , startMaximized
     , systemMenu
     , take
+    , warning
     , zoom
     )
 
@@ -47,7 +56,7 @@ the loop (WS4). Keys, the pointer and the IME's records are X11's, read as
 Linux reads them (WS5-WS7, WS19). The selections are step 5's (WS12), and
 until then [`select`](#select) and [`paste`](#paste) change nothing.
 
-@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, attention, notify, openLink, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasteOrImage, pasted, dropped, sound, events, take, Event, PointerEvent, DragPosition
 
 -}
 
@@ -60,7 +69,9 @@ import UInt8
 {-| What the window is opened with: its size in cells, the primary font as
 its family names it and its size in points, the language fallback fonts
 are asked for (V25; empty for none), the bytes of glyphs kept before they
-are begun again (V37), and the title. -}
+are begun again (V37), the title, and the gaps between the cells and
+the window's edges in points, `x` left and right and `y` above and below, 0
+for none (puritty `docs/renderer.md` R20, R21). -}
 type alias Settings =
     { cols : Int
     , rows : Int
@@ -69,6 +80,7 @@ type alias Settings =
     , lang : String
     , glyphCap : Int
     , title : String
+    , padding : { x : Int, y : Int }
     }
 
 
@@ -83,7 +95,7 @@ type alias Cell =
 font, or no window. -}
 open : Settings -> Task x (Result String Cell)
 open s =
-    openExtern s.cols s.rows s.points (Bytes.fromString s.font) (Bytes.fromString s.lang) s.glyphCap (Bytes.fromString s.title)
+    openExtern s.cols s.rows s.points (Bytes.fromString s.font) (Bytes.fromString s.lang) s.glyphCap (Bytes.fromString s.title) (max 0 s.padding.x) (max 0 s.padding.y)
         |> Task.map
             (\code ->
                 if code == -1 then
@@ -98,7 +110,7 @@ open s =
 
 
 @extern(c, "puritty_win32_open")
-openExtern : Int -> Int -> Int -> Bytes -> Bytes -> Int -> Bytes -> Task x Int
+openExtern : Int -> Int -> Int -> Bytes -> Bytes -> Int -> Bytes -> Int -> Int -> Task x Int
 
 
 {-| Executes one frame's display list, and answers the ink of the cells it
@@ -271,7 +283,23 @@ paste which =
 pasteExtern : Int -> Task x Int
 
 
-{-| The paste's text since it was last taken, UTF-8. -}
+{-| A paste of the clipboard that may be a picture (puritty
+`docs/sftp.md` FT13): its text when it holds any, told by `Pasted` events
+as [`paste`](#paste)'s; else its picture as PNG, told by `PastedImage`
+events; with neither, a `Pasted` with nothing. `pasted` takes what came.
+False when another paste is under way and this one is not made. -}
+pasteOrImage : Task x Bool
+pasteOrImage =
+    pasteOrImageExtern
+        |> Task.map (\r -> r == 1)
+
+
+@extern(c, "puritty_win32_pasteOrImage")
+pasteOrImageExtern : Task x Int
+
+
+{-| The paste's text, or an image paste's bytes, since it was last taken;
+text in UTF-8. -}
 pasted : Task x Bytes
 pasted =
     pastedExtern
@@ -279,6 +307,20 @@ pasted =
 
 @extern(c, "puritty_win32_pasted")
 pastedExtern : Task x Bytes
+
+
+{-| A drop's list of files since it was last taken (`Dropped` events,
+puritty `docs/sftp.md` FT22): each file a line, ended CRLF, as a
+`file://` URI on X11 (`text/uri-list`, each name's bytes percent-encoded)
+and as a path in UTF-8 on Windows; nothing when the drag held no files on
+disk. -}
+dropped : Task x Bytes
+dropped =
+    droppedExtern
+
+
+@extern(c, "puritty_win32_dropped")
+droppedExtern : Task x Bytes
 
 
 {-| The window sized to hold `cols` by `rows` cells at the font it has,
@@ -293,6 +335,18 @@ resize size =
 
 @extern(c, "puritty_win32_resize")
 resizeExtern : Int -> Int -> Task x Int
+
+
+{-| The gaps between the cells and the window's edges set again, in points
+(puritty `docs/renderer.md` R20, R21): the window kept at its size in pixels,
+so a `Resized` follows with the cells that now fit it. -}
+setPadding : { x : Int, y : Int } -> Task x {}
+setPadding points =
+    paddingExtern (max 0 points.x) (max 0 points.y) |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_padding")
+paddingExtern : Int -> Int -> Task x Int
 
 
 {-| The font at a new size in points (V50): every face sized again, the
@@ -394,6 +448,39 @@ systemMenu items =
 systemMenuExtern : Bytes -> Task x Int
 
 
+{-| The taskbar's jump list (right-click on puritty's button): a category
+named `category` of these links, each puritty itself started with
+`commandLine` (one line, quoted as the C runtime splits it), shown as
+`title` (`docs/settings-gui.md` SG19). Made anew each time; a link the user
+took off the list is not put back. Answers 0, or the HRESULT of the step
+that failed: E_ACCESSDENIED when Windows is set not to show recently
+opened items. -}
+jumpList : String -> Array { title : String, commandLine : String } -> Task x Int
+jumpList category links =
+    let
+        clean text =
+            String.replace "\n" " " (String.replace "\t" " " text)
+    in
+    jumpListExtern (Bytes.fromString (String.join "\n" (Array.pushFirst (clean category) (Array.map (\l -> clean l.title ++ "\t" ++ clean l.commandLine) links))))
+
+
+@extern(c, "puritty_win32_jump_list")
+jumpListExtern : Bytes -> Task x Int
+
+
+{-| A warning the platform draws over the window, which nothing a program
+prints can pass for (`docs/ssh-client.md` SC28): Windows' message box,
+Yes, No and Cancel, Cancel the default. Answers 1 for Yes, 2 for No and 3
+for Cancel; waits for the answer. -}
+warning : { title : String, text : String } -> Task x Int
+warning w =
+    warningExtern (Bytes.fromString w.title) (Bytes.fromString w.text)
+
+
+@extern(c, "puritty_win32_warning")
+warningExtern : Bytes -> Bytes -> Task x Int
+
+
 {-| The pointer over the window: the cursor theme's I-beam, over text, or
 its arrow, while the program takes the mouse (docs/phase3-select.md §21),
 and the shapes for what can be dragged (`docs/tmux.md` TM38). -}
@@ -439,6 +526,50 @@ setTitle title =
 titleExtern : Bytes -> Task x Int
 
 
+{-| The window asks for the user's attention (`True`), or stops: the
+window manager's urgency hint on X11, the taskbar button flashing until
+the window is brought forward on Windows. For a tab that waits on the user
+while the window is not looked at (puritty `docs/claude-code.md` CL7). -}
+attention : Bool -> Task x {}
+attention on =
+    attentionExtern
+        (if on then
+            1
+
+         else
+            0
+        )
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_attention")
+attentionExtern : Int -> Task x Int
+
+
+{-| A desktop notification, a program's (OSC 9, 777, 99; puritty
+`docs/claude-code.md` CL8): a balloon from puritty's icon in the
+notification area, which Windows shows as a toast. Whether it was shown. -}
+notify : { title : String, body : String } -> Task x Bool
+notify n =
+    notifyExtern (Bytes.fromString n.title) (Bytes.fromString n.body) |> Task.map (\shown -> shown == 1)
+
+
+@extern(c, "puritty_win32_notify")
+notifyExtern : Bytes -> Bytes -> Task x Int
+
+
+{-| A link opened by the shell's "open", as Explorer opens one (puritty
+`docs/claude-code.md` CL9); the caller decides it may be. Whether the
+shell took it. -}
+openLink : String -> Task x Bool
+openLink uri =
+    openLinkExtern (Bytes.fromString uri) |> Task.map (\r -> r == 1)
+
+
+@extern(c, "puritty_win32_openLink")
+openLinkExtern : Bytes -> Task x Int
+
+
 {-| Waits for events: answers `True` once there are some, or `False` once
 the window is gone. It takes none, so a race that cancels it after
 it answered loses nothing; [`take`](#take) takes them. -}
@@ -482,6 +613,10 @@ type Event
     | Pointer PointerEvent
     | SelectionLost Selection
     | Pasted Bool
+    | PastedImage Bool
+    | DragOver DragPosition
+    | DragLeft
+    | Dropped Bool
     | MenuChosen { menu : Int, index : Int }
     | Rescaled Cell
     | Note String
@@ -499,6 +634,21 @@ type alias PointerEvent =
     , button : Int
     , mods : Int
     , x : Int
+    , y : Int
+    , width : Int
+    , height : Int
+    , cellWidth : Int
+    , cellHeight : Int
+    }
+
+
+{-| Where a drag from another program is over the window (puritty
+`docs/sftp.md` FT22), as a pointer's position is: pixels from the cells'
+top left, the cells' area and a cell. `DragLeft` says it went, or ended
+elsewhere; `Dropped` that its files' list has come, `True` while more is
+to come, which [`dropped`](#dropped) takes. -}
+type alias DragPosition =
+    { x : Int
     , y : Int
     , width : Int
     , height : Int
@@ -633,8 +783,45 @@ decode b at acc =
             11 ->
                 decode b (advance b at 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)
 
+            14 ->
+                decode b (advance b at 2) (Array.pushLast (PastedImage (byte 1 == 1)) acc)
+
             12 ->
                 decode b (advance b at 4) (Array.pushLast (MenuChosen { menu = byte 1, index = u16 2 }) acc)
+
+            15 ->
+                let
+                    signed i =
+                        let
+                            v =
+                                u16 i
+                        in
+                        if v >= 0x8000 then
+                            v - 0x10000
+
+                        else
+                            v
+                in
+                decode b
+                    (advance b at 13)
+                    (Array.pushLast
+                        (DragOver
+                            { x = signed 1
+                            , y = signed 3
+                            , width = u16 5
+                            , height = u16 7
+                            , cellWidth = u16 9
+                            , cellHeight = u16 11
+                            }
+                        )
+                        acc
+                    )
+
+            16 ->
+                decode b (advance b at 1) (Array.pushLast DragLeft acc)
+
+            17 ->
+                decode b (advance b at 2) (Array.pushLast (Dropped (byte 1 == 1)) acc)
 
             10 ->
                 decode b

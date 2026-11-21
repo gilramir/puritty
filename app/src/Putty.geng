@@ -1,0 +1,395 @@
+module Putty exposing (Session, hosts, parseFile, parseSessions, unescape)
+
+{-| PuTTY's saved sessions as hosts (`docs/settings-gui.md` SG21,
+Dnene62): listed beside the settings' own and `~/.ssh/config`'s, and made
+a host of the settings when one is connected or opened.
+
+PuTTY keeps a session as its settings by name (`settings.c`): on Windows
+the values of a registry key under
+`HKCU\Software\SimonTatham\PuTTY\Sessions`, on Linux a file of
+`Key=Value` lines in its `sessions` folder. Either way a session's name is
+%-escaped (`escape_registry_key`, `make_session_filename`), and every
+setting is written, so a session is whole without "Default Settings".
+
+What a host takes from a session: where it goes (`HostName`, which may
+hold `user@`, `PortNumber`, `UserName`), the command run there
+(`RemoteCommand`), a jump host (`ProxyMethod` 6, PuTTY's "SSH to proxy
+and use port forwarding", whose `ProxyHost` may be another session's
+name), its character set (`LineCodePage`; "Use font encoding" with a
+Hangul font, `FontCharSet` 129, is CP949, since PuTTY on Windows takes no
+multi-byte code page by name), its colors and font where they are not
+PuTTY's defaults, and its title. A key (`PublicKeyFile`) is not taken:
+PuTTY's are `.ppk` files, which neither OpenSSH nor the built-in client
+reads; Pageant's keys are used as before. A session that is not ssh
+(telnet, serial, raw, rlogin) or has no host is left out.
+
+-}
+
+import Bitwise
+import Bytes
+import Config exposing (Host)
+import Dict exposing (Dict)
+import Reason
+import UInt8
+
+
+{-| A session: its name, and its settings by PuTTY's names for them. -}
+type alias Session =
+    { name : String, values : Dict String String }
+
+
+{-| A name %-escaped as PuTTY writes it, as it was: each `%XY` the byte
+`XY`, the bytes read as UTF-8 (a byte that is not, U+FFFD). PuTTY on
+Windows writes the code page's bytes; that side decodes them itself. -}
+unescape : String -> String
+unescape escaped =
+    let
+        chars =
+            String.toArray escaped
+
+        n =
+            Array.length chars
+
+        go i acc =
+            if i >= n then
+                acc
+
+            else
+                let
+                    c =
+                        charAt i chars
+                in
+                if c == '%' && i < n - 2 then
+                    when hexByte (charAt (i + 1) chars) (charAt (i + 2) chars) is
+                        Just b ->
+                            go (i + 3) (Array.pushLast (Bytes.fromUInt8s [ UInt8.fromIntWrap b ]) acc)
+
+                        Nothing ->
+                            -- not two hex digits: the `%` kept, as PuTTY would read it
+                            meant Reason.FromOutside go (i + 1) (Array.pushLast (Bytes.fromString "%") acc)
+
+                else
+                    go (i + 1) (Array.pushLast (Bytes.fromString (String.fromChar c)) acc)
+    in
+    go 0 [] |> Bytes.flatten |> Bytes.toStringLossy
+
+
+hexByte : Char -> Char -> Maybe Int
+hexByte hi lo =
+    Maybe.map2 (\h l -> h * 16 + l) (hexDigit hi) (hexDigit lo)
+
+
+hexDigit : Char -> Maybe Int
+hexDigit c =
+    let
+        code =
+            Char.toCode c
+    in
+    if code >= 0x30 && code <= 0x39 then
+        Just (code - 0x30)
+
+    else if code >= 0x41 && code <= 0x46 then
+        Just (code - 0x41 + 10)
+
+    else if code >= 0x61 && code <= 0x66 then
+        Just (code - 0x61 + 10)
+
+    else
+        Nothing
+
+
+charAt : Int -> Array Char -> Char
+charAt i chars =
+    Maybe.withDefault (meant Reason.OutOfRange ' ') (Array.get i chars)
+
+
+{-| A session from its file on Linux: its name (the file's, unescaped)
+and its `Key=Value` lines. -}
+parseFile : String -> String -> Session
+parseFile name text =
+    { name = name, values = valuesOf (String.lines text) }
+
+
+{-| The sessions as Windows' side gives them: each a `[name]` line, then
+its `Key=Value` lines. -}
+parseSessions : String -> Array Session
+parseSessions text =
+    let
+        step line acc =
+            if String.startsWith "[" line && String.endsWith "]" line then
+                { done = flush acc, name = Just (String.dropLast 1 (String.dropFirst 1 line)), lines = [] }
+
+            else
+                { acc | lines = Array.pushLast line acc.lines }
+
+        flush acc =
+            when acc.name is
+                Just name ->
+                    Array.pushLast { name = name, values = valuesOf acc.lines } acc.done
+
+                Nothing ->
+                    -- the lines before the first session: none are written
+                    meant Reason.NotYet acc.done
+    in
+    String.lines text
+        |> Array.foldl step { done = [], name = Nothing, lines = [] }
+        |> flush
+
+
+valuesOf : Array String -> Dict String String
+valuesOf lines =
+    Array.foldl
+        (\line d ->
+            when String.firstIndexOf "=" line is
+                Just i ->
+                    Dict.set (String.takeFirst i line) (String.dropFirst (i + 1) (String.replace "\u{000D}" "" line)) d
+
+                Nothing ->
+                    -- a line that is no setting: an empty one
+                    meant Reason.FromOutside d
+        )
+        Dict.empty
+        lines
+
+
+{-| The sessions that are hosts, as hosts, by name as PuTTY lists them;
+"Default Settings", and those not ssh or with no host, left out. -}
+hosts : Array Session -> Array Host
+hosts sessions =
+    let
+        names =
+            Array.map .name sessions
+    in
+    sessions
+        |> Array.keepIf (\s -> s.name /= "Default Settings")
+        |> Array.mapAndKeepJust (hostOf names)
+        |> Array.sortBy .name
+
+
+get : String -> Session -> String
+get key s =
+    Maybe.withDefault (meant Reason.NotSet "") (Dict.get key s.values)
+
+
+getInt : String -> Session -> Maybe Int
+getInt key s =
+    Dict.get key s.values |> Maybe.andThen String.toInt
+
+
+{-| A number, unless it is PuTTY's default. -}
+unless : Int -> Int -> Maybe Int
+unless default n =
+    if n == default then
+        Nothing
+
+    else
+        Just n
+
+
+nonEmpty : String -> Maybe String
+nonEmpty t =
+    if String.trim t == "" then
+        Nothing
+
+    else
+        Just t
+
+
+hostOf : Array String -> Session -> Maybe Host
+hostOf names s =
+    let
+        protocol =
+            -- a session saved before PuTTY wrote one is Default Settings' protocol, ssh by default
+            Maybe.withDefault (meant Reason.NotSet "ssh") (Dict.get "Protocol" s.values)
+
+        given =
+            String.trim (get "HostName" s)
+
+        at =
+            String.lastIndexOf "@" given
+
+        address =
+            when at is
+                Just i ->
+                    String.dropFirst (i + 1) given
+
+                Nothing ->
+                    meant Reason.NotSet given
+
+        user =
+            when at is
+                Just i ->
+                    nonEmpty (String.takeFirst i given)
+
+                Nothing ->
+                    meant Reason.NotSet nonEmpty (get "UserName" s)
+    in
+    if protocol /= "ssh" || address == "" then
+        Nothing
+
+    else
+        let
+            bare =
+                Config.host s.name address
+
+            colors =
+                colorsOf s
+        in
+        Just
+            { bare
+                | user = user
+                , port = getInt "PortNumber" s |> Maybe.andThen (unless 22)
+                , jump = jumpOf names s
+                , command = nonEmpty (get "RemoteCommand" s)
+                , charset = charsetOf s
+                , foreground = colors.foreground
+                , background = colors.background
+                , palette = colors.palette
+                , font = fontOf s
+                , points = getInt "FontHeight" s |> Maybe.andThen (unless 10)
+                , title = nonEmpty (get "WinTitle" s)
+            }
+
+
+{-| PuTTY's jump host, "SSH to proxy and use port forwarding" (`ProxyMethod`
+6, `proxy/sshproxy.c`): a saved session when `ProxyHost` names one, as PuTTY
+tries first, else `user@host:port`. Its other proxies (SOCKS, HTTP, telnet,
+a local command) are not jump hosts and are not taken. -}
+jumpOf : Array String -> Session -> Maybe String
+jumpOf names s =
+    let
+        proxy =
+            String.trim (get "ProxyHost" s)
+    in
+    if getInt "ProxyMethod" s /= Just 6 || proxy == "" then
+        Nothing
+
+    else if Array.member proxy names then
+        Just proxy
+
+    else
+        Just
+            ((when nonEmpty (get "ProxyUsername" s) is
+                Just u ->
+                    u ++ "@"
+
+                Nothing ->
+                    meant Reason.NotSet ""
+             )
+                ++ proxy
+                ++ (when getInt "ProxyPort" s is
+                        Just 22 ->
+                            ""
+
+                        Just p ->
+                            ":" ++ String.fromInt p
+
+                        Nothing ->
+                            meant Reason.NotSet ""
+                   )
+            )
+
+
+{-| The character set, of those puritty has: UTF-8 is the default and
+left unset; "Use font encoding" with a Hangul font is CP949. -}
+charsetOf : Session -> Maybe String
+charsetOf s =
+    let
+        page =
+            String.toLower (get "LineCodePage" s)
+    in
+    if String.startsWith "use font encoding" page && getInt "FontCharSet" s == Just 129 then
+        Just "cp949"
+
+    else if page == "cp949" || page == "949" then
+        Just "cp949"
+
+    else if page == "euc-kr" then
+        Just "euc-kr"
+
+    else
+        Nothing
+
+
+{-| The font, where it is not PuTTY's default (Courier New on Windows,
+`server:fixed` on Linux); a Linux font's `client:` or `server:` taken
+off. -}
+fontOf : Session -> Maybe String
+fontOf s =
+    let
+        name =
+            String.trim (get "Font" s)
+
+        bare =
+            if String.startsWith "client:" name then
+                String.dropFirst 7 name
+
+            else
+                name
+    in
+    if name == "" || name == "Courier New" || String.startsWith "server:" name then
+        Nothing
+
+    else
+        Just bare
+
+
+{-| The colors, where the session changed them from PuTTY's defaults
+(`settings.c`): `Colour0` the text, `Colour2` the background, `Colour6`
+to `Colour21` the sixteen, each normal then bold. A session that kept
+PuTTY's look takes puritty's. -}
+colorsOf : Session -> { foreground : Maybe Int, background : Maybe Int, palette : Maybe (Array Int) }
+colorsOf s =
+    let
+        color i =
+            when Dict.get ("Colour" ++ String.fromInt i) s.values |> Maybe.andThen rgb is
+                Just c ->
+                    c
+
+                Nothing ->
+                    meant Reason.NotSet defaultColor i
+
+        changed i =
+            color i /= defaultColor i
+
+        -- ANSI's 0 to 7 are the even ones from Colour6, 8 to 15 the odd
+        sixteen =
+            Array.map (\k -> color (6 + 2 * k)) (Array.range 0 7) ++ Array.map (\k -> color (7 + 2 * k)) (Array.range 0 7)
+
+        only i =
+            if changed i then
+                Just (color i)
+
+            else
+                Nothing
+    in
+    { foreground = only 0
+    , background = only 2
+    , palette =
+        if Array.any changed (Array.range 6 21) then
+            Just sixteen
+
+        else
+            Nothing
+    }
+
+
+rgb : String -> Maybe Int
+rgb text =
+    when Array.map (\p -> String.toInt (String.trim p)) (String.split "," text) is
+        [ Just r, Just g, Just b ] ->
+            Just (Bitwise.or (Bitwise.shiftLeftBy 16 (clamp 0 255 r)) (Bitwise.or (Bitwise.shiftLeftBy 8 (clamp 0 255 g)) (clamp 0 255 b)))
+
+        _ ->
+            Nothing
+
+
+defaultColor : Int -> Int
+defaultColor i =
+    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i puttyDefaults)
+
+
+{-| PuTTY's 22 colors by default (`settings.c`'s `load_open_settings`). -}
+puttyDefaults : Array Int
+puttyDefaults =
+    [ 0xBBBBBB, 0xFFFFFF, 0x000000, 0x555555, 0x000000, 0x00FF00, 0x000000, 0x555555, 0xBB0000, 0xFF5555, 0x00BB00, 0x55FF55, 0xBBBB00, 0xFFFF55, 0x0000BB, 0x5555FF, 0xBB00BB, 0xFF55FF, 0x00BBBB, 0x55FFFF, 0xBBBBBB, 0xFFFFFF ]

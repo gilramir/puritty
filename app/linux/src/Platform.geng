@@ -1,4 +1,4 @@
-module Platform exposing (Locale, copyToClipboard, defaultClient, font, interfaceFont, locale, logDirectory, pathSeparator, programs, settingsDirectory, sharedPrimary, sshConfig, start, stateDirectory)
+module Platform exposing (Locale, copyToClipboard, defaultClient, font, interfaceFont, locale, logDirectory, pasteDirectory, pathSeparator, programs, settingsDirectory, sharedPrimary, sshConfig, start, stateDirectory)
 
 {-| What puritty does differently on Linux and on Windows, other than its
 window (`docs/windows.md` WS10, V55): this module is `app/linux`'s, and
@@ -235,3 +235,28 @@ copyToClipboard =
 sharedPrimary : Bool
 sharedPrimary =
     True
+
+
+{-| Where a picture pasted in a local tab is put, its name pasted in its
+place (`docs/sftp.md` FT13): `$XDG_RUNTIME_DIR/puritty/paste`, the user's
+own and cleared at logout, or `~/.cache/puritty/paste`. -}
+pasteDirectory : Dict String String -> Maybe String
+pasteDirectory vars =
+    let
+        set name =
+            Dict.get name vars
+                |> Maybe.andThen
+                    (\v ->
+                        if v == "" then
+                            Nothing
+
+                        else
+                            Just v
+                    )
+    in
+    when set "XDG_RUNTIME_DIR" is
+        Just d ->
+            Just (d ++ "/puritty/paste")
+
+        Nothing ->
+            meant Reason.NotSet Maybe.map (\h -> h ++ "/.cache/puritty/paste") (set "HOME")

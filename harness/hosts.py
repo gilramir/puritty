@@ -74,14 +74,21 @@ CASES = [
     # the tab's name and color, TB9, and reopening one, docs/tabs.md TB11),
     # the first host, started in a window of its own
     ("menu-connects", None, ["--title", "term", "--", "sh", "-c", "exec sleep 600"],
-     ("term", ["ctrl+button3", "Down", "Down", "Down", "Down", "Down", "Down", "Return"])),
+     # "Connect to bastion" is the menu's eighth: Settings…, Hosts…, New
+     # tab, New local window, Rename tab…, Tab color…, Reopen closed tab
+     # (docs/tabs.md), then the connections (docs/settings-gui.md SG19)
+     ("term", ["ctrl+button3"] + ["Down"] * 7 + ["Return"])),
     # a double click on a host in the settings window (ST27): the Hosts page
     # clicked, then the first host's row twice, at pixels of the drawn
     # window (settings.py's click cases say where things are)
     # the Hosts page is the sidebar's ninth since the Keys page (puritty
     # docs/tabs.md TB6): eight Downs, and its row's middle at 321
-    ("double-click-host", None, ["settings"], ("puritty settings", ["click 50 321 1", "click 300 221 2"])),
-    ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 8 + ["Right", "Down", "Down", "Return"])),
+    # its rows: Quick connect, New connection, the local shell (SG15), then
+    # the first host, bastion, whose row's middle is at 289
+    ("double-click-host", None, ["settings"], ("puritty settings", ["click 50 321 1", "click 300 289 2"])),
+    # the host list's rows: Quick connect, New connection, the local shell
+    # (docs/settings-gui.md SG15), then the hosts
+    ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 8 + ["Right", "Down", "Down", "Down", "Return"])),
 ]
 
 

@@ -1193,8 +1193,8 @@ with no `client` line logged in through Pageant, which `ssh.exe` does not
 use, and exited with the command's status.
 
 **Not yet, of step 9:** Gilbert's own session to an EUC-KR host;
-passwords kept in Windows' Credential Manager; the jump host, the strip
-and the changed-key dialog of SC18.
+passwords kept in Windows' Credential Manager (built: `saved-secrets.md` PW8); the strip of SC18. (The
+jump host was built the same day, SC21; the changed-key dialog in SC28.)
 
 ## SC20 · A typed secret shown as bullets (2026-11-10)
 
@@ -1510,3 +1510,94 @@ that could not start is Gilbert's to decide. (Decided and done in
 three are `Session.resolveOne`'s `String.toInt` defaults for those three
 numbers, which `Config.checked` now makes unreachable, though the checker
 cannot see it, so they join the provable ones.
+
+
+## SC28 · A changed host key asked about (2026-11-15)
+
+Gilbert asked for the changed-key dialog of SC10 and SC18, which had been
+left as a refusal. A key that is not the one `known_hosts` holds for the
+host, of the same type, is now a question, `Ask.HostKeyChanged`, with
+three answers:
+
+- **Cancel**, the default and the one called safe: refused, as before.
+- **Trust once** (`Trust { remember = False }`): the connection goes on,
+  `known_hosts` as it was.
+- **Trust, in place of the old key** (`Trust { remember = True }`): in each
+  `known_hosts` file the host's own lines with another key of that type are
+  taken out (`KnownHosts.replaced`; the file written whole and moved into
+  place), and the new key written as a first contact's is. A line that
+  names other hosts too, or the host by a pattern, is left, and said:
+  taking it out would change what those hosts are trusted by.
+
+Under `StrictHostKeyChecking yes` it is refused with no question, as
+OpenSSH refuses it. A revoked key is still refused outright.
+
+**Where it is asked.** On Windows by the platform's own message box over
+the window (`Window.warning`: Yes, No, Cancel, Cancel the default,
+`MB_ICONWARNING`), which nothing a server prints can pass for, as SC10
+asks; the same words are in puritty's box behind it. On Linux, where X11
+has no such dialog, in puritty's box over the screen (SC23): "THE KEY OF
+host HAS CHANGED", the line of `known_hosts`, the new key's fingerprint,
+and Esc (don't connect, safe), O (trust once) and A (trust, in place of
+the old key); Enter does nothing, so that no habit trusts it.
+
+**Checked:** `ssh-tests known-hosts` 40 (six new `replace` cases: the
+host's own line and a hashed one taken out, a shared and a pattern line
+kept, the known key changing nothing, a `[host]:port` line), each with the
+whole text after; the ssh gate's sshd cases (`driver-changed`, refused
+with no answer; `-once`, `-replace`, `-strict`, `-shared`), the file's old
+and new keys checked after each; `harness/sshwindow.py` 13 of 13
+(`changed`: Enter does nothing, Esc refuses; `changed-once`;
+`changed-replace`), and the box seen in its picture.
+
+**Seen on Windows** (beelink1, a probe with its own home and state folders
+and a made-up key for `localhost`, `puritty ssh yosup@localhost`): Windows'
+warning box over puritty's window, titled "puritty: localhost's key has
+changed", the warning icon, the key's type, the line of `known_hosts`, the
+new key's fingerprint and what Yes, No and Cancel do, Cancel focused. Esc
+answered Cancel, and the probe's `known_hosts` was as it was. The probe and
+its files were removed after; Gilbert's own `~/.ssh` was not touched.
+
+## SC29 · A session whose program fails keeps its window (2026-11-18)
+
+Gilbert, puritty 0.1.1 on Windows: the built-in client to a host with
+the command `tmux -CC attach -t main` logged in, and the window closed.
+The log said only `outside control mode 21 bytes`, `the program exited,
+status 1`. The cause was the host's: its zsh puts `tmux` on `PATH` in a
+file a command's shell does not read (a command runs in a shell that is
+neither interactive nor a login one, as OpenSSH and PuTTY run it), so the
+shell said it could not find `tmux`. The full path worked.
+
+puritty's part: the one line that said why was thrown away with the
+window. Measured here, the same command against a server without a
+`main` session: tmux says `can't find session: main` inside control mode
+(2.7 to 3.8 alike), puritty logs it and the window closes too.
+
+**Decided** (Gilbert, 2026-11-18): when a session's program ends with a
+status other than 0, or tmux's control mode ends with an error, the
+window stays open. It shows what the program wrote, tmux's error lines
+among them, then a line of puritty's own, `the command "tmux -CC attach
+-t main" ended with status 1` (or the error tmux gave), and closes on the
+next key. A program that ends with 0 closes the window as now.
+
+**Built.** It holds for a host whose entry gives a command: a login
+shell's exit status is its last command's, so a shell left with `exit`
+after a failed `grep` would otherwise keep its window. `Main.commandFailed`
+says why, and a session that ends with that keeps its screen, as a dropped
+one does (TB8): the box "The session could not go on" with the last four
+lines the program left on its terminal (`lastWritten`, read from the
+screen and the rows just above it, so tmux's error from inside control
+mode is among them, TM70), then `the command "…"` and `ended with status
+N` on their own lines, so a long command is not cut. Enter closes it, the
+window's exit status the command's; R connects again. tmux's control mode
+ending with an error needs nothing of its own: tmux then exits with 1.
+
+**Measured** in `harness/sshwindow.py`, three cases, the window's picture
+read: `echo it went wrong; exit 7` shows `it went wrong` and status 7;
+`no-such-tmux -CC attach -t main` shows the shell's `command not found:
+no-such-tmux` and status 127, the case reported; `tmux -CC attach -t main`
+with no server shows tmux's `no sessions` and status 1. Each stays until
+Enter and exits with the status. The other cases' commands now end with
+`exit 0`, closing as before (`exit 7` would now wait for a key); two
+resizes' pins moved from 29×100 to 28×97, R20's gap (0fb39e4), not pinned
+again then. 17 of 17 pass.

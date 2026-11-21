@@ -184,6 +184,27 @@ class Session:
                 os.kill(self.bus_pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+        # what the IME started on its own and let go of: mozc_server, which
+        # the Mozc engines start and which detaches, and outlived every run
+        # until this (two left per run). Each still has this session's HOME.
+        self.reap(signal.SIGTERM)
+        time.sleep(0.5)
+        self.reap(signal.SIGKILL)
+
+    def reap(self, sig):
+        mark = b"HOME=" + str(self.home).encode() + b"\0"
+        for d in Path("/proc").iterdir():
+            if not d.name.isdigit() or int(d.name) == os.getpid():
+                continue
+            try:
+                env = (d / "environ").read_bytes()
+            except OSError:
+                continue
+            if env.startswith(mark) or b"\0" + mark in env:
+                try:
+                    os.kill(int(d.name), sig)
+                except ProcessLookupError:
+                    pass
 
 
 def main():

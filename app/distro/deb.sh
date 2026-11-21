@@ -7,12 +7,16 @@
 # fetches what Depends names, and run there as smoke.sh runs a build.
 #
 #   app/distro/deb.sh noble [VERSION] [OUT-DIR]
+#
+# The file is puritty_VERSION_LABEL_amd64.deb, LABEL being PURITTY_DEB_LABEL
+# or else NAME (prerelease.sh names noble's ubuntu24.04, RL8).
 set -e
 name=${1:?the distribution, a folder of app/distro}
 version=${2:-0.1.0}
 here=$(cd "$(dirname "$0")" && pwd)
 outdir=$(realpath "${3:-$here/..}")
 bin=${PURITTY_BIN:-$here/../puritty-$name}
+label=${PURITTY_DEB_LABEL:-$name}
 [ -x "$bin" ] || { echo "no $bin: run app/distro/build.sh $name first" >&2; exit 1; }
 base=$(sed -n 's/^FROM //p' "$here/$name/Containerfile" | head -1)
 podman image exists "puritty-build-$name" || podman build -q -t "puritty-build-$name" "$here/$name"
@@ -28,7 +32,19 @@ for s in 16 24 32 48 64 256; do
 done
 mkdir -p "$pkg/usr/share/icons/hicolor/scalable/apps"
 cp "$here/../icon/puritty.svg" "$pkg/usr/share/icons/hicolor/scalable/apps/puritty.svg"
-cp "$here/../../LICENSE" "$pkg/usr/share/doc/puritty/copyright"
+# puritty's licence, then the third parties' notices and each licence,
+# as Debian's copyright file holds them; and the notices' folder beside it
+{
+    cat "$here/../../LICENSE"
+    printf '\n\n'
+    cat "$here/../../THIRD-PARTY-NOTICES.md"
+    for f in "$here"/../../LICENSES/*.txt; do
+        printf '\n\n==== %s ====\n\n' "$(basename "$f")"
+        cat "$f"
+    done
+} >"$pkg/usr/share/doc/puritty/copyright"
+cp "$here/../../THIRD-PARTY-NOTICES.md" "$pkg/usr/share/doc/puritty/"
+cp -r "$here/../../LICENSES" "$pkg/usr/share/doc/puritty/LICENSES"
 
 # Depends: what the binary links, as the distribution's packages
 depends=$(podman run --rm -v "$work:$work" -w "$work" "puritty-build-$name" sh -c "
@@ -53,7 +69,7 @@ Description: a terminal for X11 that stays fast over the network
 EOF
 podman run --rm -v "$work:$work" -w "$work" "puritty-build-$name" \
     dpkg-deb --build --root-owner-group "$pkg" "$work/puritty_${version}_amd64.deb" >/dev/null
-cp "$work/puritty_${version}_amd64.deb" "$outdir/puritty_${version}_${name}_amd64.deb"
+cp "$work/puritty_${version}_amd64.deb" "$outdir/puritty_${version}_${label}_amd64.deb"
 echo "Depends: $depends"
 
 # installed with apt into the plain distribution, and run
@@ -83,4 +99,4 @@ if lit < 100:
     sys.exit("nothing drawn")
 PY
 rm -rf "$work"
-echo "$outdir/puritty_${version}_${name}_amd64.deb"
+echo "$outdir/puritty_${version}_${label}_amd64.deb"

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Each distribution's own tmux, as its package builds it (patches and
-# all), dumped by dump-tmux.py and dump-lines.py into corpus/tmux/DISTRIBUTION
+# all), dumped by dump-tmux.py, dump-lines.py and dump-notices.py into corpus/tmux/DISTRIBUTION
 # (docs/tmux-versions.md): the distributions puritty is built for
 # (docs/releasing.md RL3) and their neighbors.
 #
@@ -31,6 +31,7 @@ for name in ${*:-$all}; do
             package=\$( (rpm -q tmux || dpkg-query -W -f '\${Package} \${Version}' tmux) 2>/dev/null)
             cd /tmp && HOME=/tmp LANG=C.UTF-8 $py /tests/dump-tmux.py \$(command -v tmux) /out \"$name's package: \$package\"
             cd /tmp && HOME=/tmp LANG=C.UTF-8 $py /tests/dump-lines.py \$(command -v tmux) /out
+            cd /tmp && HOME=/tmp LANG=C.UTF-8 $py /tests/dump-notices.py \$(command -v tmux) /out
         " > "${XDG_CACHE_HOME:-$HOME/.cache}/puritty/tmux/$name.log" 2>&1 && echo "$name dumped" || echo "$name FAILED: see ${XDG_CACHE_HOME:-$HOME/.cache}/puritty/tmux/$name.log"
     ) &
 done

@@ -1,0 +1,164 @@
+module KittyFiles exposing (suite)
+
+{-| Kitty's pictures from files a program names, `t=f` and `t=t`
+(puritty `docs/images-kitty.md` KG9): the core asks its embedder for the
+file and parses nothing more until it is given. -}
+
+import Bytes exposing (Bytes)
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+import Vt.Base64 as Base64
+
+
+{-| A terminal whose embedder reads files, as puritty's window's does. -}
+reading : {} -> Vt.Term
+reading _ =
+    let
+        t =
+            term 10 4
+
+        e =
+            Vt.embedderOf t
+    in
+    (Vt.takeReplies (Vt.withEmbedder { e | kittyFiles = True } t)).term
+
+
+{-| A path as a command's payload. -}
+named : String -> String
+named path =
+    Bytes.toStringLossy (Base64.encode (Bytes.fromString path))
+
+
+{-| One red pixel, RGB. -}
+red : Bytes
+red =
+    Support.bytes [ 255, 0, 0 ]
+
+
+replies : (taken t : Vt.Term) -> Array String
+replies t =
+    (Vt.takeReplies t).replies |> Array.map Support.text
+
+
+imageLines : Vt.Term -> Array String
+imageLines t =
+    Support.lines t |> Array.keepIf (\l -> String.startsWith "image " l)
+
+
+suite : U.Suite
+suite =
+    Support.run "KittyFiles"
+        [ { name = "where the embedder reads no files, t=f is refused as before (KG9)"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed ("\u{001B}_Ga=t,t=f,f=24,s=1,v=1,i=5;" ++ named "/tmp/x" ++ "\u{001B}\\") (term 10 4)
+                    in
+                    Expect.equal { wanted = Nothing, replies = [ "\u{001B}_Gi=5;EINVAL: unsupported medium\u{001B}\\" ] }
+                        { wanted = Vt.fileWanted t, replies = replies t }
+          }
+        , { name = "t=f waits for its file: the path, the offset and size asked; what follows is held"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed ("\u{001B}_Ga=t,t=f,f=24,s=1,v=1,i=5,O=7,S=3;" ++ named "/tmp/x.rgb" ++ "\u{001B}\\after") (reading {})
+                    in
+                    Expect.equal { wanted = Just { path = "/tmp/x.rgb", temporary = False, offset = 7, size = 3 }, text = [], replies = [] }
+                        { wanted = Vt.fileWanted t, text = Support.lines t |> Array.keepIf (\l -> String.contains "after" l), replies = replies t }
+          }
+        , { name = "given, the image is made and answered, then what was held is parsed, in order"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed ("\u{001B}_Ga=t,t=f,f=24,s=1,v=1,i=5;" ++ named "/tmp/x.rgb" ++ "\u{001B}\\a") (reading {})
+                                |> feed "b"
+                                |> Vt.fileGiven (Ok red)
+
+                        shown =
+                            Support.lines t |> Array.keepIf (\l -> String.contains "ab" l)
+                    in
+                    Expect.equal { wanted = Nothing, replies = [ "\u{001B}_Gi=5;OK\u{001B}\\" ], shown = 1 }
+                        { wanted = Vt.fileWanted t, replies = replies t, shown = Array.length shown }
+          }
+        , { name = "a=T from a file is placed where the cursor was at the command, not after what was held"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed ("\u{001B}[2;3H\u{001B}_Ga=T,t=f,f=24,s=1,v=1,i=6,q=2;" ++ named "/tmp/x.rgb" ++ "\u{001B}\\\u{001B}[4;1Hzz") (Vt.withCellSize { width = 9, height = 20 } (reading {}))
+                                |> Vt.fileGiven (Ok red)
+                    in
+                    Expect.equal [ True ] (imageLines t |> Array.map (\l -> String.contains " at 2,1 " l))
+          }
+        , { name = "a file that could not be read is answered with why, and nothing is made"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed ("\u{001B}_Ga=T,t=f,f=24,s=1,v=1,i=7;" ++ named "/nope" ++ "\u{001B}\\") (reading {})
+                                |> Vt.fileGiven (Err "ENOENT: no such file")
+                    in
+                    Expect.equal { replies = [ "\u{001B}_Gi=7;ENOENT: no such file\u{001B}\\" ], images = [] }
+                        { images = imageLines t, replies = replies t }
+          }
+        , { name = "t=t is a temporary file, to be removed once read"
+          , test =
+                \_ ->
+                    Expect.equal (Just True)
+                        (feed ("\u{001B}_Ga=t,t=t,f=24,s=1,v=1,i=5;" ++ named "/tmp/tty-graphics-protocol-1" ++ "\u{001B}\\") (reading {})
+                            |> Vt.fileWanted
+                            |> Maybe.map .temporary
+                        )
+          }
+        , { name = "a path with a control character is refused at once, and nothing waits"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed ("\u{001B}_Ga=t,t=f,f=24,s=1,v=1,i=5;" ++ named "/tmp/a\nb" ++ "\u{001B}\\x") (reading {})
+                    in
+                    Expect.equal { wanted = Nothing, replies = [ "\u{001B}_Gi=5;EINVAL: invalid data\u{001B}\\" ] }
+                        { wanted = Vt.fileWanted t, replies = replies t }
+          }
+        , { name = "a=q from a file checks the file's data and keeps no image"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed ("\u{001B}_Ga=q,t=f,f=24,s=1,v=1,i=31;" ++ named "/tmp/x.rgb" ++ "\u{001B}\\") (reading {})
+                                |> Vt.fileGiven (Ok red)
+                    in
+                    Expect.equal { replies = [ "\u{001B}_Gi=31;OK\u{001B}\\" ], images = [] }
+                        { images = imageLines t, replies = replies t }
+          }
+        , { name = "two files in one read: the second waits once the first is given"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            feed
+                                ("\u{001B}_Ga=t,t=f,f=24,s=1,v=1,i=1,q=2;"
+                                    ++ named "/tmp/one"
+                                    ++ "\u{001B}\\\u{001B}_Ga=t,t=f,f=24,s=1,v=1,i=2,q=2;"
+                                    ++ named "/tmp/two"
+                                    ++ "\u{001B}\\"
+                                )
+                                (reading {})
+
+                        before =
+                            Vt.fileWanted first |> Maybe.map .path
+
+                        second =
+                            Vt.fileGiven (Ok red) first
+
+                        after =
+                            Vt.fileWanted second |> Maybe.map .path
+                    in
+                    Expect.equal [ Just "/tmp/one", Just "/tmp/two" ] [ before, after ]
+          }
+        ]

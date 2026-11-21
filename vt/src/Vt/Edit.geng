@@ -39,6 +39,7 @@ import Vt.Cell exposing (..)
 import Vt.Cursor exposing (..)
 import Vt.Dump exposing (..)
 import Vt.Keys as Keys
+import Vt.Kitty as Kitty
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Prompt exposing (..)
@@ -350,6 +351,24 @@ cell. -}
 eraseSpan : Bool -> (from : Int where 0 <= from && from <= t.cols) -> (to : Int where to <= t.cols) -> (taken t : Term) -> Term
 eraseSpan guarded from to t =
     let
+        y =
+            t.y
+
+        done =
+            eraseCells guarded from to t
+    in
+    -- an image drawn into the cells loses them, past the row's text too
+    -- (`docs/images.md` IM23); no call where there are no placements
+    if Array.isEmpty done.images.shown.placements then
+        done
+
+    else
+        Kitty.overwritten y y from (to - 1) done
+
+
+eraseCells : Bool -> (from : Int where 0 <= from && from <= t.cols) -> (to : Int where to <= t.cols) -> (taken t : Term) -> Term
+eraseCells guarded from to t =
+    let
         s =
             t.screen
 
@@ -501,10 +520,47 @@ what was above a prompt cleared with ^L (#905, §VC22). -}
 eraseDisplay : Bool -> Int -> (taken t : Term) -> Term
 eraseDisplay selective how t =
     if how == 2 && not t.alt && atPrompt (t.rows - 1) t.screen then
-        erasePlain selective 2 (scrollClear t)
+        imagesErased how (erasePlain selective 2 (scrollClear t))
 
     else
-        erasePlain selective how t
+        let
+            y =
+                t.y
+
+            rows =
+                t.rows
+
+            cols =
+                t.cols
+
+            done =
+                imagesErased how (erasePlain selective how t)
+        in
+        -- the rows other than the cursor's, whose part `eraseLine` takes
+        -- (`docs/images.md` IM23)
+        if how == 0 then
+            Kitty.overwritten (y + 1) (rows - 1) 0 (cols - 1) done
+
+        else if how == 1 then
+            Kitty.overwritten 0 (y - 1) 0 (cols - 1) done
+
+        else
+            done
+
+
+{-| What ED does to the Kitty graphics placements (`docs/images-kitty.md`
+KG7): 2 and 22 take those on the screen and the images left unshown, 3
+those in the scrollback. -}
+imagesErased : Int -> (taken t : Term) -> Term
+imagesErased how t =
+    if how == 2 || how == 22 then
+        Kitty.cleared t
+
+    else if how == 3 then
+        Kitty.clearedHistory t
+
+    else
+        t
 
 
 {-| From row `y` up, the first row with a prompt mark or text: a mark. -}

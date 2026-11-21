@@ -1,4 +1,4 @@
-module Recent exposing (Recent(..), added, fileName, forgotten, fromText, keep, toText)
+module Recent exposing (Recent(..), added, arguments, commandLine, fileName, forgotten, fromText, keep, name, toText)
 
 {-| The connections made last (`docs/settings-gui.md` SG14, Dnene59), newest
 first, which the host list offers before the saved ones: a saved host by its
@@ -50,8 +50,8 @@ toText recents =
         |> Array.map
             (\r ->
                 when r is
-                    Saved name ->
-                        "host " ++ name
+                    Saved host ->
+                        "host " ++ host
 
                     Quick text ->
                         "quick " ++ text
@@ -71,3 +71,63 @@ added most r recents =
 forgotten : Recent -> Array Recent -> Array Recent
 forgotten r recents =
     Array.keepIf (\x -> x /= r) recents
+
+
+{-| What puritty is started with to make the connection again
+(`docs/settings-gui.md` SG19): a saved host by `--host`, what quick connect
+was given by `ssh`, as the host list starts them. -}
+arguments : Recent -> Array String
+arguments r =
+    when r is
+        Saved host ->
+            [ "--host", host ]
+
+        Quick text ->
+            [ "ssh", text ]
+
+
+{-| How a menu names it: the saved host's name, or what quick connect was
+given. -}
+name : Recent -> String
+name r =
+    when r is
+        Saved host ->
+            host
+
+        Quick text ->
+            text
+
+
+{-| Arguments as one Windows command line, each split back out as the C
+runtime splits one (`CommandLineToArgvW`): in quotes when it is empty or
+holds a space, a tab or a quote; a quote written `\"`, and the backslashes
+before a quote or the closing quote doubled. Os.Process quotes a child's
+so; a jump list's link takes its arguments as one line. -}
+commandLine : Array String -> String
+commandLine args =
+    String.join " " (Array.map quoted args)
+
+
+quoted : String -> String
+quoted arg =
+    if arg /= "" && not (String.any (\c -> c == ' ' || c == '\t' || c == '"') arg) then
+        arg
+
+    else
+        let
+            done =
+                String.foldl
+                    (\c acc ->
+                        if c == '\\' then
+                            { acc | slashes = acc.slashes + 1 }
+
+                        else if c == '"' then
+                            { out = acc.out ++ String.repeat (acc.slashes * 2 + 1) "\\" ++ "\"", slashes = 0 }
+
+                        else
+                            { out = acc.out ++ String.repeat acc.slashes "\\" ++ String.fromChar c, slashes = 0 }
+                    )
+                    { out = "", slashes = 0 }
+                    arg
+        in
+        "\"" ++ done.out ++ String.repeat (done.slashes * 2) "\\" ++ "\""

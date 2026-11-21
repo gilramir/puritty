@@ -1,0 +1,1249 @@
+module Ssh.Transfer exposing
+    ( Choice(..)
+    , Conflict
+    , Event(..)
+    , Job(..)
+    , Local(..)
+    , Step
+    , Transfer
+    , answer
+    , cancel
+    , keepBothName
+    , localDone
+    , localFailed
+    , localRead
+    , received
+    , start
+    )
+
+{-| Files moved over SFTP (puritty `docs/sftp.md` FT4, FT17): a batch of
+uploads and downloads, run one file after another, each pipelined, over
+the bytes of a channel the caller opened (`subsystem sftp`).
+
+Pure, as the rest of the package is. The engine says what to send on the
+channel, what to do on this computer's files ([`Local`](#Local)), which the
+caller does and answers, and what happened ([`Event`](#Event)); it is told
+the channel's bytes ([`received`](#received)), what the caller did
+([`localRead`](#localRead), [`localDone`](#localDone),
+[`localFailed`](#localFailed)), and the user's answer to a conflict
+([`answer`](#answer)).
+
+What it does with a file:
+
+  - **Names already there are found first.** Every upload's target is
+    looked at before anything is written; a download's the caller says.
+    If any is there, one question for the batch ([`Conflicts`](#Event)):
+    replace, keep both (`name (2).ext`), skip, or replace if newer.
+  - **A new file is written to a name of its own and renamed at the end**,
+    so a broken transfer leaves no half file under the real name: on the
+    host `.NAME.puritty-part` beside it, renamed with `posix-rename` when
+    the server has it. Where the rename is refused, the part is removed and
+    the file written under its own name instead.
+  - **A file replaced on the host is written in place**, so it keeps its
+    owner and mode; a broken transfer then leaves it partly written, which
+    is said.
+  - **The modification time is kept**, both ways.
+  - **Cancelled**, the file being moved is closed and its part removed.
+
+Sizes and offsets are `Int64`, since files pass 2 GiB. A remote name is
+`Bytes`, in the host's own character set, and a local path an `Os.Path`,
+its bytes as this computer names the file: neither need be UTF-8, so an
+EUC-KR name goes through as it is (FT19).
+-}
+
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Os.Path as Path exposing (Path)
+import Ssh.Reason as Reason
+import Ssh.Sftp as Sftp exposing (Request(..), Response(..))
+import UInt8
+
+
+{-| What to move:
+
+  - `Upload`: the local file `local`, of `size` bytes changed at `mtime`
+    (seconds since 1970), to `name` in the host's folder `dir`.
+  - `Download`: the host's file `remote` to the local path `to`, by way of
+    the local `part`; `keepBoth` is the path for "keep both", one the
+    caller found free; `existing` is what is at `to` already, if anything.
+  - `MakeDir`: a folder made on the host at `path` if it is not there, for
+    an upload of a folder, before its files.
+
+-}
+type Job
+    = Upload { local : Path, size : Int64, mtime : Maybe Int64, dir : Bytes, name : Bytes }
+    | Download { remote : Bytes, to : Path, part : Path, keepBoth : Path, existing : Maybe { size : Int64, mtime : Maybe Int64 } }
+    | MakeDir { path : Bytes }
+
+
+{-| The answer to [`Conflicts`](#Event), for the batch. -}
+type Choice
+    = Replace
+    | KeepBoth
+    | Skip
+    | ReplaceIfNewer
+
+
+{-| A name that is there already: the job's number, its name, and the
+size and time of the file being sent and of the one it would replace. -}
+type alias Conflict =
+    { job : Int
+    , name : Bytes
+    , ours : { size : Maybe Int64, mtime : Maybe Int64 }
+    , theirs : { size : Maybe Int64, mtime : Maybe Int64 }
+    }
+
+
+{-| What the caller does on this computer, in the order given:
+
+  - `ReadPiece`: `length` bytes of `path` from `offset`, answered with
+    [`localRead`](#localRead).
+  - `CreateFile`: `path` made empty, or emptied.
+  - `WritePiece`: `bytes` written to `path` at `offset`.
+  - `Move`: `from` renamed to `to`, over what is there, its modification
+    time set first when given; answered with [`localDone`](#localDone).
+  - `RemoveFile`: `path` removed, if it is there.
+
+Any that fails is answered with [`localFailed`](#localFailed).
+
+-}
+type Local
+    = ReadPiece { job : Int, path : Path, offset : Int64, length : Int }
+    | CreateFile { job : Int, path : Path }
+    | WritePiece { job : Int, path : Path, offset : Int64, bytes : Bytes }
+    | Move { job : Int, from : Path, to : Path, mtime : Maybe Int64 }
+    | RemoveFile { job : Int, path : Path }
+
+
+{-| What happened:
+
+  - `Conflicts`: names already there; nothing more is done until
+    [`answer`](#answer) or [`cancel`](#cancel).
+  - `Progress`: bytes moved of the batch's total, and which file of how
+    many is moving.
+  - `Done`: a job finished, with the name it ended under (another, for
+    keep both).
+  - `Skipped`, `Failed`: a job not done, and for a failure why, in the
+    server's or the system's words.
+  - `Finished`: every job is over, or the batch was cancelled; how many
+    of each.
+  - `Broken`: the channel's bytes stopped being SFTP; the batch is over.
+
+-}
+type Event
+    = Conflicts (Array Conflict)
+    | Progress { bytes : Int64, total : Int64, file : Int, files : Int, name : Bytes }
+    | Done { job : Int, as_ : Bytes }
+    | Skipped { job : Int }
+    | Failed { job : Int, why : String }
+    | Finished { done : Int, skipped : Int, failed : Int, cancelled : Bool }
+    | Broken String
+
+
+{-| The engine after a step: bytes for the channel, local actions, and
+events, each in order. -}
+type alias Step =
+    { transfer : Transfer, send : Bytes, local : Array Local, events : Array Event }
+
+
+type Transfer
+    = Transfer State
+
+
+type alias State =
+    { client : Sftp.Client
+    , piece : Int
+    , most : Int
+    , jobs : Array Job
+    , phase : Phase
+    , waiting : Dict Int Pending
+    , run : Maybe Run
+    , next : Int
+    , theirs : Dict Int Sftp.Attrs
+    , checking : Int
+    , choice : Choice
+    , moved : Int64
+    , total : Int64
+    , done : Int
+    , skipped : Int
+    , failed : Int
+    , sendQ : Array Bytes
+    , localQ : Array Local
+    , eventQ : Array Event
+    }
+
+
+type Phase
+    = Starting
+    | Checking
+    | Asking
+    | Moving
+    | Draining Bool
+    | Over
+
+
+{-| What a request in flight was for, by its number. -}
+type Pending
+    = StatTarget Int
+    | StatCandidate { job : Int, n : Int }
+    | MadeDir Int
+    | StatDir Int
+    | Opened Int
+    | Wrote { job : Int, n : Int }
+    | ReadAt { job : Int, at : Int64, n : Int }
+    | TimeSet Int
+    | Closed Int
+    | Renamed Int
+    | PartRemoved { job : Int, retry : Retry }
+    | Ignored
+
+
+{-| Why a part on the host was removed: one in the way when it was to be
+made, left by a transfer that broke, so it is made again; or one whose
+rename was refused, so the file is written under its own name. -}
+type Retry
+    = MakeAgain
+    | WriteInPlace
+
+
+{-| How the file being moved is written. -}
+type Mode
+    = ByPart
+    | InPlace
+
+
+{-| The file being moved: its job, how, the host's names for it, its
+handle once open, the next offset to ask for, its size, the requests
+and local reads in flight, and whether a download has reached the end. -}
+type alias Run =
+    { job : Int
+    , mode : Mode
+    , target : Bytes
+    , part : Bytes
+    , localTo : Path
+    , handle : Maybe Bytes
+    , offset : Int64
+    , size : Int64
+    , flying : Int
+    , ended : Bool
+    , closing : Bool
+    , retried : Bool
+    }
+
+
+{-| A batch begun: `piece` bytes a request, at most `most` in flight
+(FT14: 32 KiB and 64, OpenSSH `sftp`'s). Its first bytes are the client's
+`INIT`. -}
+start : { piece : Int, most : Int } -> Array Job -> Step
+start options jobs =
+    let
+        s =
+            Sftp.start
+    in
+    finish
+        { client = s.client
+        , piece = max 1 options.piece
+        , most = max 1 options.most
+        , jobs = jobs
+        , phase = Starting
+        , waiting = Dict.empty
+        , run = Nothing
+        , next = 0
+        , theirs = Dict.empty
+        , checking = 0
+        , choice = Replace
+        , moved = Int64.fromInt 0
+        , total = Int64.fromInt 0
+        , done = 0
+        , skipped = 0
+        , failed = 0
+        , sendQ = [ s.send ]
+        , localQ = []
+        , eventQ = []
+        }
+
+
+finish : State -> Step
+finish st =
+    { transfer = Transfer { st | sendQ = [], localQ = [], eventQ = [] }
+    , send = Bytes.flatten st.sendQ
+    , local = st.localQ
+    , events = st.eventQ
+    }
+
+
+emit : Event -> State -> State
+emit e st =
+    { st | eventQ = Array.pushLast e st.eventQ }
+
+
+doLocal : Local -> State -> State
+doLocal l st =
+    { st | localQ = Array.pushLast l st.localQ }
+
+
+ask : Request -> Pending -> State -> State
+ask r p st =
+    let
+        q =
+            Sftp.request r st.client
+    in
+    { st | client = q.client, waiting = Dict.set q.id p st.waiting, sendQ = Array.pushLast q.send st.sendQ }
+
+
+{-| The channel's bytes. -}
+received : Bytes -> Transfer -> Step
+received bytes (Transfer st0) =
+    let
+        got =
+            Sftp.received bytes st0.client
+    in
+    finish (Array.foldl onEvent { st0 | client = got.client } got.events)
+
+
+onEvent : Sftp.Event -> State -> State
+onEvent e st =
+    if st.phase == Over then
+        st
+
+    else if isDraining st then
+        -- only answers to what was in flight are waited for now
+        when e is
+            Sftp.Answer a ->
+                ended { st | waiting = Dict.remove a.id st.waiting }
+
+            Sftp.Broken why ->
+                emit (Broken why) { st | waiting = Dict.empty } |> ended
+
+            Sftp.Ready _ ->
+                st
+
+    else
+        when e is
+            Sftp.Ready _ ->
+                check st
+
+            Sftp.Broken why ->
+                emit (Finished { done = st.done, skipped = st.skipped, failed = st.failed + remaining st, cancelled = False })
+                    (emit (Broken why) { st | phase = Over, run = Nothing })
+
+            Sftp.Answer a ->
+                when Dict.get a.id st.waiting is
+                    Just p ->
+                        onAnswer p a.response { st | waiting = Dict.remove a.id st.waiting }
+
+                    Nothing ->
+                        -- an answer to nothing asked: the server's mistake
+                        meant Reason.FromOutside st
+
+
+isDraining : State -> Bool
+isDraining st =
+    when st.phase is
+        Draining _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| The batch over: [`Finished`](#Event) told once every request in
+flight has its answer, closes and removals too, since a server may drop
+what it has not done when its channel closes (OpenSSH's `sftp-server`
+does), and the caller closes it on `Finished`. -}
+over : Bool -> State -> State
+over cancelled st =
+    ended { st | phase = Draining cancelled, run = Nothing }
+
+
+ended : State -> State
+ended st =
+    if Dict.isEmpty st.waiting then
+        emit
+            (Finished
+                { done = st.done
+                , skipped = st.skipped
+                , failed = st.failed
+                , cancelled = st.phase == Draining True
+                }
+            )
+            { st | phase = Over }
+
+    else
+        st
+
+
+{-| Jobs not yet over: those from `next` on, and the one moving. -}
+remaining : State -> Int
+remaining st =
+    Array.length st.jobs - st.next
+
+
+{-| Every upload's target looked at, and every download's source, before
+anything is written. -}
+check : State -> State
+check st0 =
+    let
+        asked =
+            Array.foldl
+                (\job acc ->
+                    { index = acc.index + 1
+                    , st =
+                        when job is
+                            Upload u ->
+                                ask (Stat (joinName u.dir u.name)) (StatTarget acc.index) { acc.st | checking = acc.st.checking + 1 }
+
+                            Download d ->
+                                ask (Stat d.remote) (StatTarget acc.index) { acc.st | checking = acc.st.checking + 1 }
+
+                            MakeDir _ ->
+                                acc.st
+                    }
+                )
+                { index = 0, st = { st0 | phase = Checking } }
+                st0.jobs
+    in
+    checked asked.st
+
+
+{-| Once every look has come back: the total, and the question if any
+name is there already; else the first file. -}
+checked : State -> State
+checked st =
+    if st.checking > 0 then
+        st
+
+    else
+        let
+            conflicts =
+                Array.indexedMap (\i job -> conflictOf i job st) st.jobs
+                    |> Array.mapAndKeepJust identity
+
+            total =
+                Array.indexedMap (\i job -> sizeOf i job st) st.jobs
+                    |> Array.foldl (+) (Int64.fromInt 0)
+        in
+        if Array.isEmpty conflicts then
+            startNext { st | phase = Moving, total = total }
+
+        else
+            emit (Conflicts conflicts) { st | phase = Asking, total = total }
+
+
+sizeOf : Int -> Job -> State -> Int64
+sizeOf i job st =
+    when job is
+        Upload u ->
+            u.size
+
+        Download _ ->
+            Dict.get i st.theirs |> Maybe.andThen .size |> Maybe.withDefault (meant Reason.FromOutside (Int64.fromInt 0))
+
+        MakeDir _ ->
+            Int64.fromInt 0
+
+
+conflictOf : Int -> Job -> State -> Maybe Conflict
+conflictOf i job st =
+    when job is
+        Upload u ->
+            Dict.get i st.theirs
+                -- a folder in the way is no question: the upload fails
+                |> Maybe.andThen
+                    (\a ->
+                        if isDirectory a then
+                            Nothing
+
+                        else
+                            Just a
+                    )
+                |> Maybe.map
+                    (\a ->
+                        { job = i
+                        , name = u.name
+                        , ours = { size = Just u.size, mtime = u.mtime }
+                        , theirs = { size = a.size, mtime = a.mtime }
+                        }
+                    )
+
+        Download d ->
+            d.existing
+                |> Maybe.map
+                    (\e ->
+                        let
+                            a =
+                                Dict.get i st.theirs |> Maybe.withDefault (meant Reason.FromOutside Sftp.noAttrs)
+                        in
+                        { job = i
+                        , name = lastName d.remote
+                        , ours = { size = a.size, mtime = a.mtime }
+                        , theirs = { size = Just e.size, mtime = e.mtime }
+                        }
+                    )
+
+        MakeDir _ ->
+            Nothing
+
+
+{-| The user's answer to [`Conflicts`](#Event): the batch goes on. -}
+answer : Choice -> Transfer -> Step
+answer choice (Transfer st) =
+    if st.phase == Asking then
+        finish (startNext { st | phase = Moving, choice = choice })
+
+    else
+        finish st
+
+
+{-| The batch stopped: the file being moved closed and its part removed,
+the jobs not begun skipped. -}
+cancel : Transfer -> Step
+cancel (Transfer st) =
+    if st.phase == Over || isDraining st then
+        finish st
+
+    else
+        let
+            cleaned =
+                when st.run is
+                    Just run ->
+                        dropRun run st
+
+                    Nothing ->
+                        meant Reason.NotOpen st
+
+            -- the file stopped is not done either
+            stopped =
+                if st.run /= Nothing then
+                    1
+
+                else
+                    0
+        in
+        finish (over True { cleaned | skipped = cleaned.skipped + remaining cleaned + stopped, next = Array.length cleaned.jobs })
+
+
+{-| A run given up: its handle closed, and its part removed, on the host
+or here; nothing is waited for. -}
+dropRun : Run -> State -> State
+dropRun run st =
+    let
+        closed =
+            when run.handle is
+                Just h ->
+                    ask (Close h) Ignored st
+
+                Nothing ->
+                    meant Reason.NotYet st
+    in
+    when Array.get run.job st.jobs is
+        Just (Download d) ->
+            doLocal (RemoveFile { job = run.job, path = d.part }) closed
+
+        Just _ ->
+            if run.mode == ByPart then
+                ask (Remove run.part) Ignored closed
+
+            else
+                closed
+
+        Nothing ->
+            meant Reason.NotKnown closed
+
+
+{-| The next job begun, or the batch finished. -}
+startNext : State -> State
+startNext st =
+    when Array.get st.next st.jobs is
+        Nothing ->
+            -- every job begun: the batch is over
+            meant Reason.NoMore over False st
+
+        Just job ->
+            let
+                i =
+                    st.next
+
+                s =
+                    { st | next = i + 1 }
+
+                theirs =
+                    Dict.get i st.theirs
+            in
+            when job is
+                MakeDir m ->
+                    ask (Sftp.MakeDir { path = m.path, attrs = Sftp.noAttrs }) (MadeDir i) s
+
+                Upload u ->
+                    let
+                        target =
+                            joinName u.dir u.name
+                    in
+                    when theirs is
+                        Nothing ->
+                            -- nothing of that name on the host
+                            meant Reason.FromOutside openUpload i ByPart target s
+
+                        Just a ->
+                            if isDirectory a then
+                                failJob i "a folder of that name is there" s
+
+                            else
+                                when st.choice is
+                                    Replace ->
+                                        openUpload i InPlace target s
+
+                                    ReplaceIfNewer ->
+                                        if newer u.mtime a.mtime then
+                                            openUpload i InPlace target s
+
+                                        else
+                                            skipJob i s
+
+                                    Skip ->
+                                        skipJob i s
+
+                                    KeepBoth ->
+                                        ask (Stat (joinName u.dir (keepBothName 2 u.name))) (StatCandidate { job = i, n = 2 }) s
+
+                Download d ->
+                    when d.existing is
+                        Nothing ->
+                            -- nothing of that name here
+                            meant Reason.FromOutside openDownload i d.to s
+
+                        Just e ->
+                            when st.choice is
+                                Replace ->
+                                    openDownload i d.to s
+
+                                ReplaceIfNewer ->
+                                    if newer (Maybe.andThen .mtime theirs) e.mtime then
+                                        openDownload i d.to s
+
+                                    else
+                                        skipJob i s
+
+                                Skip ->
+                                    skipJob i s
+
+                                KeepBoth ->
+                                    openDownload i d.keepBoth s
+
+
+{-| Whether a time is later than another; not known, no. -}
+newer : Maybe Int64 -> Maybe Int64 -> Bool
+newer ours theirs =
+    when { ours = ours, theirs = theirs } is
+        { ours = Just o, theirs = Just t } ->
+            o > t
+
+        _ ->
+            False
+
+
+isDirectory : Sftp.Attrs -> Bool
+isDirectory a =
+    when a.permissions is
+        Just mode ->
+            -- S_IFMT's directory bits
+            modBy 65536 mode // 4096 == 4
+
+        Nothing ->
+            meant Reason.FromOutside False
+
+
+skipJob : Int -> State -> State
+skipJob i st =
+    startNext (emit (Skipped { job = i }) { st | skipped = st.skipped + 1, run = Nothing })
+
+
+failJob : Int -> String -> State -> State
+failJob i why st =
+    startNext (emit (Failed { job = i, why = why }) { st | failed = st.failed + 1, run = Nothing })
+
+
+newRun : Int -> Mode -> Bytes -> Bytes -> Path -> Int64 -> Run
+newRun i mode target part localTo size =
+    { job = i
+    , mode = mode
+    , target = target
+    , part = part
+    , localTo = localTo
+    , handle = Nothing
+    , offset = Int64.fromInt 0
+    , size = size
+    , flying = 0
+    , ended = False
+    , closing = False
+    , retried = False
+    }
+
+
+{-| An upload's file opened on the host: a part beside the target, made
+only if it is not there, or the target itself, emptied. -}
+openUpload : Int -> Mode -> Bytes -> State -> State
+openUpload i mode target st =
+    let
+        part =
+            partName target
+
+        size =
+            when Array.get i st.jobs is
+                Just (Upload u) ->
+                    u.size
+
+                _ ->
+                    meant Reason.NotKnown (Int64.fromInt 0)
+
+        run =
+            newRun i mode target part (Path.fromString "") size
+    in
+    ask
+        (Open
+            { path =
+                if mode == ByPart then
+                    part
+
+                else
+                    target
+            , for =
+                if mode == ByPart then
+                    Sftp.ForWritingNew
+
+                else
+                    Sftp.ForWriting
+            , attrs = Sftp.noAttrs
+            }
+        )
+        (Opened i)
+        { st | run = Just run }
+        |> progress
+
+
+{-| A download's file opened on the host, to be written here to its part,
+then moved to `to`. -}
+openDownload : Int -> Path -> State -> State
+openDownload i to st =
+    let
+        size =
+            Dict.get i st.theirs |> Maybe.andThen .size |> Maybe.withDefault (meant Reason.FromOutside (Int64.fromInt 0))
+
+        remote =
+            when Array.get i st.jobs is
+                Just (Download d) ->
+                    d.remote
+
+                _ ->
+                    meant Reason.NotKnown Bytes.empty
+    in
+    ask (Open { path = remote, for = Sftp.ForReading, attrs = Sftp.noAttrs }) (Opened i) { st | run = Just (newRun i InPlace remote Bytes.empty to size) }
+        |> progress
+
+
+progress : State -> State
+progress st =
+    when st.run is
+        Just run ->
+            emit
+                (Progress
+                    { bytes = st.moved
+                    , total = st.total
+                    , file = run.job + 1
+                    , files = Array.length st.jobs
+                    , name =
+                        when Array.get run.job st.jobs is
+                            Just (Upload u) ->
+                                u.name
+
+                            Just (Download d) ->
+                                lastName d.remote
+
+                            _ ->
+                                meant Reason.NotKnown Bytes.empty
+                    }
+                )
+                st
+
+        Nothing ->
+            meant Reason.NotOpen st
+
+
+onAnswer : Pending -> Response -> State -> State
+onAnswer p response st =
+    when p is
+        Ignored ->
+            st
+
+        StatTarget i ->
+            let
+                s =
+                    { st | checking = st.checking - 1 }
+            in
+            when response is
+                Attributes a ->
+                    checked { s | theirs = Dict.set i a s.theirs }
+
+                _ ->
+                    -- not there (or not to be read): nothing in the way
+                    checked s
+
+        StatCandidate { job = i, n = n } ->
+            when { response = response, job = Array.get i st.jobs } is
+                { response = Attributes _, job = Just (Upload u) } ->
+                    if n >= 1000 then
+                        failJob i "no free name for keep both" st
+
+                    else
+                        ask (Stat (joinName u.dir (keepBothName (n + 1) u.name))) (StatCandidate { job = i, n = n + 1 }) st
+
+                { job = Just (Upload u) } ->
+                    openUpload i ByPart (joinName u.dir (keepBothName n u.name)) st
+
+                _ ->
+                    startNext st
+
+        MadeDir i ->
+            if isOk response then
+                madeDir i st
+
+            else
+                -- there already, as a folder, is as good as made
+                when Array.get i st.jobs is
+                    Just (MakeDir m) ->
+                        ask (Stat m.path) (StatDir i) st
+
+                    _ ->
+                        meant Reason.NotKnown startNext st
+
+        StatDir i ->
+            when response is
+                Attributes a ->
+                    if isDirectory a then
+                        madeDir i st
+
+                    else
+                        failJob i "a file of that name is there" st
+
+                _ ->
+                    failJob i (reasonOf response) st
+
+        Opened i ->
+            withRun i
+                st
+                (\run ->
+                    when response is
+                        Handle h ->
+                            begin { run | handle = Just h } st
+
+                        _ ->
+                            if run.mode == ByPart && isUpload i st && not run.retried then
+                                -- perhaps a part left by a transfer that
+                                -- broke: puritty's own name, so it is
+                                -- removed and made again, once
+                                ask (Remove run.part) (PartRemoved { job = i, retry = MakeAgain }) { st | run = Just { run | retried = True } }
+
+                            else
+                                failJob i (reasonOf response) st
+                )
+
+        PartRemoved { job = i, retry = retry } ->
+            withRun i
+                st
+                (\run ->
+                    when retry is
+                        MakeAgain ->
+                            ask (Open { path = run.part, for = Sftp.ForWritingNew, attrs = Sftp.noAttrs }) (Opened i) st
+
+                        WriteInPlace ->
+                            -- the rename refused: the file written under
+                            -- its own name instead
+                            openUpload i InPlace run.target { st | run = Nothing }
+                )
+
+        Wrote { job = i, n = n } ->
+            withRun i
+                st
+                (\run ->
+                    if isOk response then
+                        fill { run | flying = run.flying - 1 } { st | moved = st.moved + Int64.fromInt n } |> progress
+
+                    else
+                        giveUp run (reasonOf response) st
+                )
+
+        ReadAt { job = i, at = at, n = n } ->
+            withRun i
+                st
+                (\run ->
+                    when response is
+                        Data bytes ->
+                            let
+                                got =
+                                    Bytes.length bytes
+
+                                written =
+                                    doLocal (WritePiece { job = i, path = partOf i st, offset = at, bytes = bytes }) { st | moved = st.moved + Int64.fromInt got }
+                            in
+                            if got < n && got > 0 then
+                                -- a short read: the rest asked for in its place
+                                ask (Read { handle = handleOf run, offset = at + Int64.fromInt got, length = n - got }) (ReadAt { job = i, at = at + Int64.fromInt got, n = n - got }) written
+                                    |> progress
+
+                            else
+                                fill { run | flying = run.flying - 1 } written |> progress
+
+                        Status s ->
+                            if s.code == Sftp.statusEof then
+                                fill { run | flying = run.flying - 1, ended = True } st
+
+                            else
+                                giveUp run (reasonOf response) st
+
+                        _ ->
+                            giveUp run (reasonOf response) st
+                )
+
+        TimeSet i ->
+            -- a time that will not set is no reason to fail the file
+            withRun i st (\run -> ask (Close (handleOf run)) (Closed i) st)
+
+        Closed i ->
+            withRun i
+                st
+                (\run ->
+                    if not (isOk response) then
+                        giveUp { run | handle = Nothing } (reasonOf response) st
+
+                    else
+                        when Array.get i st.jobs is
+                            Just (Download d) ->
+                                doLocal (Move { job = i, from = d.part, to = run.localTo, mtime = Dict.get i st.theirs |> Maybe.andThen .mtime }) { st | run = Just { run | handle = Nothing } }
+
+                            Just (Upload _) ->
+                                if run.mode == ByPart then
+                                    ask (Rename { from = run.part, to = run.target }) (Renamed i) { st | run = Just { run | handle = Nothing } }
+
+                                else
+                                    doneRun run st
+
+                            Just (MakeDir _) ->
+                                doneRun run st
+
+                            Nothing ->
+                                meant Reason.NotKnown doneRun run st
+                )
+
+        Renamed i ->
+            withRun i
+                st
+                (\run ->
+                    if isOk response then
+                        doneRun run st
+
+                    else
+                        -- the rename refused: the part removed, and the file
+                        -- written under its own name
+                        ask (Remove run.part) (PartRemoved { job = i, retry = WriteInPlace }) { st | moved = st.moved - run.size }
+                )
+
+
+{-| A folder made, or there already: the next job. -}
+madeDir : Int -> State -> State
+madeDir i st =
+    let
+        path =
+            when Array.get i st.jobs is
+                Just (MakeDir m) ->
+                    m.path
+
+                _ ->
+                    meant Reason.NotKnown Bytes.empty
+    in
+    startNext (emit (Done { job = i, as_ = lastName path }) { st | done = st.done + 1 })
+
+
+doneRun : Run -> State -> State
+doneRun run st =
+    startNext (emit (Done { job = run.job, as_ = lastName run.target }) { st | done = st.done + 1, run = Nothing })
+
+
+{-| The file being moved given up: what of it is on the host or here
+removed, and the next begun. -}
+giveUp : Run -> String -> State -> State
+giveUp run reason st =
+    let
+        said =
+            if run.mode == InPlace && isUpload run.job st then
+                reason ++ "; the file on the host is partly written"
+
+            else
+                reason
+    in
+    failJob run.job said (dropRun run st)
+
+
+withRun : Int -> State -> (Run -> State) -> State
+withRun i st f =
+    when st.run is
+        Just run ->
+            if run.job == i then
+                f run
+
+            else
+                st
+
+        Nothing ->
+            -- an answer for a file given up
+            meant Reason.NotKnown st
+
+
+isUpload : Int -> State -> Bool
+isUpload i st =
+    when Array.get i st.jobs is
+        Just (Upload _) ->
+            True
+
+        Just (Download _) ->
+            False
+
+        Just (MakeDir _) ->
+            False
+
+        Nothing ->
+            meant Reason.NotKnown False
+
+
+partOf : Int -> State -> Path
+partOf i st =
+    when Array.get i st.jobs is
+        Just (Download d) ->
+            d.part
+
+        _ ->
+            meant Reason.NotKnown (Path.fromString "")
+
+
+localOf : Int -> State -> Path
+localOf i st =
+    when Array.get i st.jobs is
+        Just (Upload u) ->
+            u.local
+
+        _ ->
+            meant Reason.NotKnown (Path.fromString "")
+
+
+handleOf : Run -> Bytes
+handleOf run =
+    Maybe.withDefault (meant Reason.NotYet Bytes.empty) run.handle
+
+
+{-| A file open: a download's part made here; then the pieces asked for. -}
+begin : Run -> State -> State
+begin run st =
+    when Array.get run.job st.jobs is
+        Just (Download d) ->
+            fill run (doLocal (CreateFile { job = run.job, path = d.part }) st)
+
+        Just (Upload _) ->
+            fill run st
+
+        Just (MakeDir _) ->
+            fill run st
+
+        Nothing ->
+            meant Reason.NotKnown fill run st
+
+
+{-| As many pieces in flight as allowed: for an upload, local reads (each
+becoming a write when it comes); for a download, reads on the host. With
+none in flight and nothing left, the file is finished: its time set, then
+closed. -}
+fill : Run -> State -> State
+fill run st =
+    let
+        upload =
+            isUpload run.job st
+
+        more =
+            if upload then
+                run.offset < run.size
+
+            else
+                not run.ended
+    in
+    if more && run.flying < st.most then
+        let
+            n =
+                if upload then
+                    Int64.toInt (min (Int64.fromInt st.piece) (run.size - run.offset))
+
+                else
+                    st.piece
+
+            next =
+                { run | offset = run.offset + Int64.fromInt n, flying = run.flying + 1 }
+        in
+        fill next
+            (if upload then
+                doLocal (ReadPiece { job = run.job, path = localOf run.job st, offset = run.offset, length = n }) st
+
+             else
+                ask (Read { handle = handleOf run, offset = run.offset, length = n }) (ReadAt { job = run.job, at = run.offset, n = n }) st
+            )
+
+    else if run.flying == 0 && not run.closing then
+        let
+            mtime =
+                when Array.get run.job st.jobs is
+                    Just (Upload u) ->
+                        u.mtime
+
+                    Just (Download _) ->
+                        -- a download's time is set here, by the Move
+                        Nothing
+
+                    Just (MakeDir _) ->
+                        Nothing
+
+                    Nothing ->
+                        meant Reason.NotKnown Nothing
+
+            done =
+                { run | closing = True }
+        in
+        when mtime is
+            Just t ->
+                ask (HandleSetStat { handle = handleOf run, attrs = { noTimes | atime = Just t, mtime = Just t } }) (TimeSet run.job) { st | run = Just done }
+
+            Nothing ->
+                -- no time to keep
+                meant Reason.NotSet ask (Close (handleOf run)) (Closed run.job) { st | run = Just done }
+
+    else
+        { st | run = Just run }
+
+
+noTimes : Sftp.Attrs
+noTimes =
+    Sftp.noAttrs
+
+
+{-| A local piece read, for an upload: written on the host. -}
+localRead : { job : Int, offset : Int64, bytes : Bytes } -> Transfer -> Step
+localRead r (Transfer st) =
+    finish
+        (withRun r.job
+            st
+            (\run ->
+                ask (Write { handle = handleOf run, offset = r.offset, data = r.bytes }) (Wrote { job = r.job, n = Bytes.length r.bytes }) st
+            )
+        )
+
+
+{-| A local [`Move`](#Local) done: the download is finished. -}
+localDone : Int -> Transfer -> Step
+localDone i (Transfer st) =
+    finish (withRun i st (\run -> doneRun { run | target = Path.toBytes run.localTo } st))
+
+
+{-| A local action failed: the file is given up, with the system's words. -}
+localFailed : { job : Int, why : String } -> Transfer -> Step
+localFailed f (Transfer st) =
+    finish (withRun f.job st (\run -> giveUp run f.why st))
+
+
+isOk : Response -> Bool
+isOk response =
+    when response is
+        Status s ->
+            s.code == Sftp.statusOk
+
+        _ ->
+            False
+
+
+reasonOf : Response -> String
+reasonOf response =
+    when response is
+        Status s ->
+            if s.message /= "" then
+                s.message
+
+            else
+                Sftp.codeName s.code
+
+        _ ->
+            "the server answered with something else"
+
+
+{-| `dir/name`, one slash between. -}
+joinName : Bytes -> Bytes -> Bytes
+joinName dir name =
+    if Bytes.isEmpty dir then
+        name
+
+    else if Bytes.get (Bytes.length dir - 1) dir == Just (UInt8.fromInt 47) then
+        Bytes.flatten [ dir, name ]
+
+    else
+        Bytes.flatten [ dir, Bytes.fromString "/", name ]
+
+
+{-| A path's last name: what follows its last slash. -}
+lastName : Bytes -> Bytes
+lastName path =
+    when lastIndexOf 47 path (Bytes.length path - 1) is
+        Just at ->
+            Bytes.slice (at + 1) (Bytes.length path) path
+
+        Nothing ->
+            meant Reason.NotSet path
+
+
+{-| A host's part for `target`: `.NAME.puritty-part` in its folder. -}
+partName : Bytes -> Bytes
+partName target =
+    let
+        name =
+            lastName target
+
+        dir =
+            Bytes.slice 0 (Bytes.length target - Bytes.length name) target
+    in
+    Bytes.flatten [ dir, Bytes.fromString ".", name, Bytes.fromString ".puritty-part" ]
+
+
+{-| The name keep both gives, `n` from 2: `name (2).ext`, the number
+before the last dot; a name with no dot, or only a leading one, at its
+end. -}
+keepBothName : Int -> Bytes -> Bytes
+keepBothName n name =
+    let
+        mark =
+            Bytes.fromString (" (" ++ String.fromInt n ++ ")")
+    in
+    when lastIndexOf 46 name (Bytes.length name - 1) is
+        Just at ->
+            if at > 0 then
+                Bytes.flatten [ Bytes.slice 0 at name, mark, Bytes.slice at (Bytes.length name) name ]
+
+            else
+                Bytes.flatten [ name, mark ]
+
+        Nothing ->
+            meant Reason.NotSet (Bytes.flatten [ name, mark ])
+
+
+lastIndexOf : Int -> Bytes -> Int -> Maybe Int
+lastIndexOf byte bytes at =
+    if at < 0 then
+        Nothing
+
+    else if Bytes.get at bytes == Just (UInt8.fromInt byte) then
+        Just at
+
+    else
+        lastIndexOf byte bytes (at - 1)

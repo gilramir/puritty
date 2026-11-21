@@ -297,8 +297,8 @@ font and size. It is still one window a process. Opened from a running
 terminal (the Ctrl+right-click menu, the system menu), the list starts
 each session in a new window and stays, since a session is already open.
 
-Windows' taskbar jump list (right-click on the taskbar icon) listing the
-hosts is a later nicety.
+Windows' taskbar jump list (right-click on the taskbar icon) lists the
+recent connections (`settings-gui.md` SG19).
 
 ## ST12 · The order to build
 

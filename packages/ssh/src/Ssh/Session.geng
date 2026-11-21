@@ -5,9 +5,11 @@ module Ssh.Session exposing
     , Input(..)
     , Notice(..)
     , Options
+    , Pacing
     , Permissions
     , fingerprint
     , optionsFor
+    , pacing
     , resized
     , run
     )
@@ -34,6 +36,7 @@ is open a hop runs in a process of its own, carrying bytes both ways.
 
 import Bytes exposing (Bytes)
 import Dict
+import Int64
 import Os.Directory as Directory
 import Os.Error
 import Os.File as File
@@ -52,6 +55,7 @@ import Ssh.Reason as Reason
 import Ssh.Transport as Transport
 import SshCrypto
 import Task exposing (Task)
+import Time
 
 
 type alias Permissions =
@@ -79,6 +83,33 @@ type alias Options =
     , session : Connection.Session
     , keepaliveSeconds : Int
     , keepaliveCountMax : Int
+    , pacing : Pacing
+    }
+
+
+{-| How a side channel's bytes are paced beside the session's keys
+(puritty `docs/sftp.md` FT12, FT17). While keys come, the socket keeps at
+most `unsent` bytes unsent and each turn sends `pump` bytes of the side
+channels, so a key never waits behind much. Once no key has come for
+`quietMs`, `quietUnsent` and `quietPump` are used instead, for speed, until
+the next key, which then waits behind at most `quietUnsent`. -}
+type alias Pacing =
+    { unsent : Int
+    , pump : Int
+    , quietMs : Int
+    , quietUnsent : Int
+    , quietPump : Int
+    }
+
+
+{-| The pacing puritty uses (FT17). -}
+pacing : Pacing
+pacing =
+    { unsent = 65536
+    , pump = 32768
+    , quietMs = 1000
+    , quietUnsent = 262144
+    , quietPump = 131072
     }
 
 
@@ -94,13 +125,15 @@ type AgentPath
 {-| What the user is asked. -}
 type Ask
     = TrustHostKey { host : String, algorithm : String, fingerprint : String, knownTypes : Array String }
-    | Password { prompt : String }
+    | HostKeyChanged { host : String, algorithm : String, fingerprint : String, lineNumbers : Array Int }
+    | Password { prompt : String, account : String }
     | Passphrase { file : String }
-    | Responses { name : String, instruction : String, prompts : Array { text : String, echo : Bool } }
+    | Responses { name : String, instruction : String, prompts : Array { text : String, echo : Bool }, account : String }
 
 
 {-| The user's answer to the last [`Ask`](#Ask). `Trust`: connect, and
-remember the key if `remember`. `Give` and `GiveAll`: what was typed.
+remember the key if `remember` (for a changed key, in place of the old
+one, SC28). `Give` and `GiveAll`: what was typed.
 `Decline`: no, and the method or the connection is given up. -}
 type Answer
     = Trust { remember : Bool }
@@ -109,13 +142,28 @@ type Answer
     | Decline
 
 
-{-| What the window gives the session. -}
+{-| What the window gives the session. The side channels (puritty
+`docs/sftp.md` FT12) are named by a number of the window's choosing,
+`ref`, which their [`Side`](#Notice) notices carry back:
+
+  - `OpenExec`: a channel beside the session running a command, no
+    terminal; `OpenSubsystem`: one running a subsystem (`sftp`).
+  - `SideWrite`: bytes for its program, sent as the connection has room,
+    after the session's keys; `SideEof`: the end of them; `SideClose`: the
+    channel closed.
+
+-}
 type Input
     = Keys Bytes
-    | Resize { columns : Int, rows : Int }
+    | Resize { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int }
     | Answered Answer
     | Hangup
     | Reconnect
+    | OpenExec { ref : Int, command : Bytes }
+    | OpenSubsystem { ref : Int, name : String }
+    | SideWrite { ref : Int, bytes : Bytes }
+    | SideEof Int
+    | SideClose Int
 
 
 {-| What the window is told:
@@ -129,6 +177,8 @@ type Input
     for a signal, as OpenSSH's `ssh` gives).
   - `Failed`: why the session could not start or ended badly.
   - `Ended`: nothing more comes.
+  - `Side`: what happened on a side channel, by its `ref`. Its `Ended`
+    is its last; a side channel ends with the session too, said or not.
 
 -}
 type Notice
@@ -140,6 +190,7 @@ type Notice
     | Exited Int
     | Failed String
     | Ended
+    | Side { ref : Int, event : Connection.Event }
 
 
 {-| A key's fingerprint as OpenSSH prints it: `SHA256:` and the hash in
@@ -156,6 +207,7 @@ type alias Identity =
 type Waiting
     = NotWaiting
     | ForHostKey { name : String, key : Bytes }
+    | ForChangedKey { name : String, key : Bytes }
     | ForPassword
     | ForPassphrase { need : { id : Int, algorithm : String, data : Bytes }, text : Bytes, path : String, tries : Int }
     | ForResponses
@@ -166,15 +218,33 @@ jump host's channel. `read` answers empty bytes at the end. -}
 type alias Link =
     { read : Task Os.Error.Error Bytes
     , write : Bytes -> Task Os.Error.Error {}
+    , writable : Task Os.Error.Error {}
     , close : Task Os.Error.Error {}
+    , setUnsent : Int -> Task Os.Error.Error {}
     }
+
+
+{-| A socket that keeps little unsent in its buffer (geng-lang
+`Os.Net.limitUnsent`, Dnene62), so a side channel's file, pumped as the
+socket has room, never sits in front of the session's keys by more than
+that (docs/sftp.md FT12). A system that will not set it is used as it
+is. -}
+limited : Int -> Net.Socket -> Task Os.Error.Error Link
+limited most socket =
+    let
+        link =
+            socketLink socket
+    in
+    link.setUnsent most |> Task.map (\_ -> link)
 
 
 socketLink : Net.Socket -> Link
 socketLink socket =
     { read = Net.read socket
     , write = \bytes -> Net.write bytes socket
+    , writable = Net.writable socket
     , close = Net.close socket |> Task.onError (\_ -> Task.succeed {})
+    , setUnsent = \most -> Net.limitUnsent most socket |> Task.onError (\_ -> Task.succeed {})
     }
 
 
@@ -197,6 +267,8 @@ type alias State =
     , transport : Transport.Transport
     , auth : Maybe Auth.Auth
     , connection : Maybe Connection.Connection
+    , sides : Dict.Dict Int Int
+    , refs : Dict.Dict Int Int
     , identities : Array Identity
     , known : Array KnownHosts.Entry
     , hostKeyTrusted : Bool
@@ -205,6 +277,10 @@ type alias State =
     , exitStatus : Maybe Int
     , unanswered : Int
     , done : Bool
+    -- when keys last came, on the monotonic clock, and whether the link
+    -- is paced for quiet (FT17)
+    , keysAt : Int64
+    , quiet : Bool
     }
 
 
@@ -284,7 +360,9 @@ through permissions jumps target notices inputs given =
                                                         (Just
                                                             { read = Source.next pipes.toInner |> Task.map (Maybe.withDefault Bytes.empty)
                                                             , write = \bytes -> Source.emit pipes.fromInner bytes
+                                                            , writable = Task.succeed {}
                                                             , close = Source.close pipes.fromInner
+                                                            , setUnsent = \_ -> Task.succeed {}
                                                             }
                                                         )
                                                 )
@@ -341,7 +419,7 @@ connectTo permissions options notices label given =
                         Task.succeed link
 
                     Nothing ->
-                        meant Reason.NotSet Net.connect permissions.net { host = options.host, port = options.port } |> Task.map socketLink
+                        meant Reason.NotSet Net.connect permissions.net { host = options.host, port = options.port } |> Task.andThen (limited options.pacing.unsent)
             )
 
 
@@ -387,6 +465,8 @@ session permissions options role label link notices =
                                                         , transport = started.transport
                                                         , auth = Nothing
                                                         , connection = Nothing
+                                                        , sides = Dict.empty
+                                                        , refs = Dict.empty
                                                         , identities = files ++ agent.identities
                                                         , known = known
                                                         , hostKeyTrusted = False
@@ -395,6 +475,8 @@ session permissions options role label link notices =
                                                         , exitStatus = Nothing
                                                         , unanswered = 0
                                                         , done = False
+                                                        , keysAt = Int64.fromInt 0
+                                                        , quiet = False
                                                         }
                                                 )
                                     )
@@ -524,6 +606,7 @@ type Turn
     | FromWindow (Maybe Input)
     | FromInner (Maybe Bytes)
     | Tick
+    | Pump
 
 
 {-| The server's bytes, the other side's (the window's inputs, or for a
@@ -544,8 +627,22 @@ loop other st =
 
                 else
                     []
+
+            -- side channels' bytes go only when the link has room, so
+            -- the session's keys never wait behind more than a pump
+            pumping =
+                when st.connection is
+                    Just c ->
+                        if Connection.sideWaiting c > 0 then
+                            [ st.link.writable |> Task.map (\_ -> Pump) ]
+
+                        else
+                            []
+
+                    Nothing ->
+                        meant Reason.NotYet []
         in
-        Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer)
+        Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer ++ pumping)
             |> Task.andThen
                 (\turn ->
                     when turn is
@@ -576,6 +673,29 @@ loop other st =
 
                             else
                                 withConnection Connection.keepalive st
+
+                        Pump ->
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\now ->
+                                        let
+                                            p =
+                                                st.options.pacing
+
+                                            quiet =
+                                                Time.inMilliseconds now - st.keysAt >= Int64.fromInt p.quietMs
+                                        in
+                                        if quiet && not st.quiet then
+                                            -- no key for a while: more at once
+                                            st.link.setUnsent p.quietUnsent
+                                                |> Task.andThen (\_ -> withConnection (Connection.pump p.quietPump) { st | quiet = True })
+
+                                        else if st.quiet then
+                                            withConnection (Connection.pump p.quietPump) st
+
+                                        else
+                                            withConnection (Connection.pump p.pump) st
+                                    )
                 )
             |> Task.andThen (loop other)
 
@@ -603,7 +723,19 @@ onInput input st =
             Task.succeed st
 
         { input = Keys bytes } ->
-            withConnection (Connection.write bytes) st
+            -- a key ends a quiet spell: the link paced for keys again
+            -- before it goes (FT17)
+            Time.monotonic
+                |> Task.andThen
+                    (\now ->
+                        (if st.quiet then
+                            st.link.setUnsent st.options.pacing.unsent
+
+                         else
+                            Task.succeed {}
+                        )
+                            |> Task.andThen (\_ -> withConnection (Connection.write bytes) { st | keysAt = Time.inMilliseconds now, quiet = False })
+                    )
 
         { input = Resize size } ->
             when st.connection is
@@ -624,16 +756,64 @@ onInput input st =
         { input = Reconnect } ->
             Task.succeed st
 
+        { role = Forward _ } ->
+            -- a hop has no side channels
+            Task.succeed st
+
+        { input = OpenExec o } ->
+            openSide o.ref (Connection.openExec o.command) st
+
+        { input = OpenSubsystem o } ->
+            openSide o.ref (Connection.openSubsystem o.name) st
+
+        { input = SideWrite w } ->
+            onSide w.ref (\channel -> Connection.writeSide channel w.bytes) st
+
+        { input = SideEof ref } ->
+            onSide ref Connection.sendEofSide st
+
+        { input = SideClose ref } ->
+            onSide ref Connection.closeSide st
+
+
+{-| A side channel opened under the window's `ref`; before the session has
+a connection, refused at once. -}
+openSide : Int -> (Connection.Connection -> { channel : Int, step : Connection.Step }) -> State -> Task Os.Error.Error State
+openSide ref opener st =
+    when st.connection is
+        Just c ->
+            let
+                opened =
+                    opener c
+            in
+            onConnection opened.step { st | sides = Dict.set ref opened.channel st.sides, refs = Dict.set opened.channel ref st.refs }
+
+        Nothing ->
+            meant Reason.NotYet
+                tell (Side { ref = ref, event = Connection.Refused "the session is not connected" }) st
+                    |> Task.andThen (tell (Side { ref = ref, event = Connection.Ended }))
+
+
+onSide : Int -> (Int -> Connection.Connection -> Connection.Step) -> State -> Task Os.Error.Error State
+onSide ref f st =
+    when Dict.get ref st.sides is
+        Just channel ->
+            withConnection (f channel) st
+
+        Nothing ->
+            -- a channel already ended, or never opened
+            meant Reason.NotKnown Task.succeed st
+
 
 {-| The options with the terminal at a new size, for a session not yet
 connected: the size its `pty-req` asks for. -}
-resized : { columns : Int, rows : Int } -> Options -> Options
+resized : { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int } -> Options -> Options
 resized size options =
     let
         asked =
             options.session
     in
-    { options | session = { asked | terminal = Maybe.map (\t -> { t | columns = size.columns, rows = size.rows }) asked.terminal } }
+    { options | session = { asked | terminal = Maybe.map (\t -> { t | columns = size.columns, rows = size.rows, widthInPixels = size.widthInPixels, heightInPixels = size.heightInPixels }) asked.terminal } }
 
 
 withConnection : (Connection.Connection -> Connection.Step) -> State -> Task Os.Error.Error State
@@ -744,17 +924,25 @@ hostKey shown st =
                     |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "a revoked key" s.transport) s)
 
             KnownHosts.Changed changed ->
-                ending
-                    ("THE HOST'S KEY HAS CHANGED: its "
-                        ++ shown.algorithm
-                        ++ " key is now "
-                        ++ printed
-                        ++ ", but the known hosts hold another for it (line "
-                        ++ String.join ", " (Array.map String.fromInt changed.lineNumbers)
-                        ++ "). Someone may be listening in, or the host was rebuilt. The connection is refused; if the host was rebuilt, take its old key out of the known hosts."
-                    )
-                    st
-                    |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "the host key changed" s.transport) s)
+                if st.options.strictHostKeyChecking == "yes" then
+                    -- refused, as OpenSSH refuses it, with no question
+                    ending
+                        ("THE HOST'S KEY HAS CHANGED: its "
+                            ++ shown.algorithm
+                            ++ " key is now "
+                            ++ printed
+                            ++ ", but the known hosts hold another for it (line "
+                            ++ String.join ", " (Array.map String.fromInt changed.lineNumbers)
+                            ++ "). Someone may be listening in, or the host was rebuilt. The connection is refused, as StrictHostKeyChecking is yes; if the host was rebuilt, take its old key out of the known hosts."
+                        )
+                        st
+                        |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "the host key changed" s.transport) s)
+
+                else
+                    -- asked, Cancel the safe answer (SC10, SC28)
+                    tell
+                        (Asking (HostKeyChanged { host = name, algorithm = shown.algorithm, fingerprint = printed, lineNumbers = changed.lineNumbers }))
+                        { st | waiting = ForChangedKey { name = name, key = shown.key } }
 
             KnownHosts.Unknown unknown ->
                 when st.options.strictHostKeyChecking is
@@ -801,6 +989,66 @@ remember name key st =
                 |> Task.andThen (\_ -> File.appendFile st.permissions.fs (Bytes.fromString (KnownHosts.line { name = name, salt = Nothing } key)) path)
                 |> Task.andThen (\_ -> tell (Status ("the host's key is written to " ++ file)) st)
                 |> Task.onError (\e -> tell (Status ("the host's key could not be written: " ++ Os.Error.toString e)) st)
+
+
+{-| A changed key accepted (SC28): in each `known_hosts` file, the host's
+own lines with another key of its type taken out (the file written whole
+and moved into place), then the key written as a new one is. A line that
+names other hosts too is left, and said. -}
+replaceKey : String -> Bytes -> State -> Task Os.Error.Error State
+replaceKey name key st =
+    st.options.knownHostsFiles
+        |> Array.foldl
+            (\file task ->
+                task
+                    |> Task.andThen
+                        (\s ->
+                            let
+                                path =
+                                    Path.fromString file
+                            in
+                            File.readFile s.permissions.fs path
+                                |> Task.map (\b -> Just (Bytes.toStringLossy b))
+                                |> Task.onError (\_ -> Task.succeed Nothing)
+                                |> Task.andThen
+                                    (\read ->
+                                        when read is
+                                            Nothing ->
+                                                -- a file not there, or not
+                                                -- readable: nothing of it
+                                                -- to take out
+                                                meant Reason.FromOutside (Task.succeed s)
+
+                                            Just text ->
+                                                let
+                                                    r =
+                                                        KnownHosts.replaced name key text
+
+                                                    next =
+                                                        Path.fromString (file ++ ".puritty-new")
+
+                                                    keptSaid =
+                                                        if Array.isEmpty r.kept then
+                                                            Task.succeed
+
+                                                        else
+                                                            tell (Status (file ++ ": line " ++ String.join ", " (Array.map String.fromInt r.kept) ++ " names other hosts too, and keeps the old key for them"))
+                                                in
+                                                (if Array.isEmpty r.removed then
+                                                    Task.succeed s
+
+                                                 else
+                                                    File.writeFile s.permissions.fs (Bytes.fromString r.text) next
+                                                        |> Task.andThen (\_ -> File.move s.permissions.fs { from = next, to = path })
+                                                        |> Task.andThen (\_ -> tell (Status (file ++ ": the old key taken out (line " ++ String.join ", " (Array.map String.fromInt r.removed) ++ ")")) s)
+                                                        |> Task.onError (\e -> tell (Status (file ++ ": the old key could not be taken out: " ++ Os.Error.toString e)) s)
+                                                )
+                                                    |> Task.andThen keptSaid
+                                    )
+                        )
+            )
+            (Task.succeed st)
+        |> Task.andThen (remember name key)
 
 
 -- AUTHENTICATION
@@ -907,10 +1155,18 @@ onRequest request st =
                             meant Reason.NotSet signWith need file.text Bytes.empty st
 
         { request = Auth.NeedPassword need } ->
-            tell (Asking (Password { prompt = need.prompt })) { st | waiting = ForPassword }
+            tell (Asking (Password { prompt = need.prompt, account = accountOf st.options })) { st | waiting = ForPassword }
 
         { request = Auth.NeedResponses need } ->
-            tell (Asking (Responses need)) { st | waiting = ForResponses }
+            tell (Asking (Responses { name = need.name, instruction = need.instruction, prompts = need.prompts, account = accountOf st.options })) { st | waiting = ForResponses }
+
+
+{-| Whom a password is for, `user@host:port`, as the connection was made
+(the host's address, or its `HostKeyAlias`'s name is not used): a jump
+host's question says its own (`docs/saved-secrets.md` PW8). -}
+accountOf : Options -> String
+accountOf o =
+    o.user ++ "@" ++ o.host ++ ":" ++ String.fromInt o.port
 
 
 {-| A signature by a key file's key: loaded, used and forgotten, so the
@@ -965,6 +1221,19 @@ onAnswer answer st =
             )
                 |> Task.andThen beginAuth
 
+        { waiting = ForChangedKey shown, answer = Trust trust } ->
+            (if trust.remember then
+                replaceKey shown.name shown.key { cleared | hostKeyTrusted = True }
+
+             else
+                tell (Status "the host's changed key is trusted for this connection only") { cleared | hostKeyTrusted = True }
+            )
+                |> Task.andThen beginAuth
+
+        { waiting = ForChangedKey _ } ->
+            ending "the host's key has changed, and the connection is refused" cleared
+                |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "the host key changed" s.transport) s)
+
         { waiting = ForHostKey _ } ->
             ending "the host's key was not trusted" cleared
                 |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "the host key was not trusted" s.transport) s)
@@ -997,7 +1266,26 @@ onAnswer answer st =
 onConnection : Connection.Step -> State -> Task Os.Error.Error State
 onConnection step st0 =
     Array.foldl (\payload acc -> acc |> Task.andThen (send payload)) (Task.succeed { st0 | connection = Just step.connection }) step.send
+        |> (\sent -> Array.foldl (\e acc -> acc |> Task.andThen (onSideEvent e)) sent step.side)
         |> (\sent -> Array.foldl (\e acc -> acc |> Task.andThen (onConnectionEvent e)) sent step.events)
+
+
+{-| A side channel's event, told to the window by its `ref`; after its
+`Ended`, the channel's number is forgotten. -}
+onSideEvent : Connection.SideEvent -> State -> Task Os.Error.Error State
+onSideEvent e st =
+    when Dict.get e.channel st.refs is
+        Just ref ->
+            tell (Side { ref = ref, event = e.event })
+                (if e.event == Connection.Ended then
+                    { st | sides = Dict.remove ref st.sides, refs = Dict.remove e.channel st.refs }
+
+                 else
+                    st
+                )
+
+        Nothing ->
+            meant Reason.NotKnown Task.succeed st
 
 
 onConnectionEvent : Connection.Event -> State -> Task Os.Error.Error State
@@ -1040,6 +1328,10 @@ onConnectionEvent event st =
         { event = Connection.KeepaliveUnanswered n } ->
             Task.succeed { st | unanswered = n }
 
+        { event = Connection.Sent _ } ->
+            -- a side channel's only; the session's own bytes are not pumped
+            Task.succeed st
+
 
 isJust : Maybe a -> Bool
 isJust m =
@@ -1070,7 +1362,7 @@ followed.
 -}
 optionsFor :
     Permissions
-    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe String, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool } }
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe Bytes, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
     -> Task x { options : Options, jumps : Array Options, problems : Array String }
 optionsFor permissions given =
     resolveOne permissions given
@@ -1151,7 +1443,7 @@ jumpSpecs value =
 it (`none` when neither does). -}
 resolveOne :
     Permissions
-    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe String, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool } }
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe Bytes, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
     -> Task x { options : Options, proxyJump : String, problems : Array String }
 resolveOne permissions given =
     let
@@ -1248,7 +1540,9 @@ resolveOne permissions given =
                                             Just c
 
                                         Nothing ->
-                                            meant Reason.NotSet Dict.get "remotecommand" settings.values |> Maybe.andThen Array.first
+                                            -- RemoteCommand as the file has it, as OpenSSH
+                                            -- sends it (FT20)
+                                            meant Reason.NotSet Dict.get "remotecommand" settings.values |> Maybe.andThen Array.first |> Maybe.map Bytes.fromString
                             in
                             { options =
                                 { host = one "hostname" given.host
@@ -1277,6 +1571,7 @@ resolveOne permissions given =
                                     }
                                 , keepaliveSeconds = Dict.get "serveraliveinterval" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 0)
                                 , keepaliveCountMax = Dict.get "serveralivecountmax" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 3)
+                                , pacing = pacing
                                 }
                             , proxyJump = one "proxyjump" "none"
                             , problems = parsed.problems ++ settings.problems

@@ -68,7 +68,7 @@ Remote X11 is a main path in puritty, not an afterthought.
 
 The terminal core is tested against libghostty-vt on recorded sessions,
 fuzzed, and run against the `esctest2` conformance suite, where it passes
-386 of 567 tests (Ghostty 1.4 passes 388). Every buffer a remote program can
+410 of 567 tests (Ghostty 1.4 passes 388). Every buffer a remote program can
 fill has a limit. puritty is written in Geng, a memory-safe language whose
 compiler proves array and byte reads in range before it builds the program.
 
@@ -246,3 +246,12 @@ from close readings of Alacritty, Ghostty, WezTerm, Windows Terminal and
 PuTTY (see [`docs/`](docs/)). Its key encoder, mouse encoder and Unicode
 widths follow Ghostty's, and libghostty-vt is the reference its core is
 tested against.
+
+## License
+
+puritty is under the BSD 3-Clause License ([`LICENSE`](LICENSE)). It is
+built with code and data from other projects, among them PuTTY, FreeType,
+HarfBuzz, tmux, Ghostty's tables and xcb-imdkit;
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) lists each with its
+licence, the texts are in [`LICENSES/`](LICENSES/), and every package of
+puritty carries both.

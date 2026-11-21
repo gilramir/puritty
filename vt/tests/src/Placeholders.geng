@@ -1,0 +1,160 @@
+module Placeholders exposing (suite)
+
+{-| Kitty's Unicode placeholders (`docs/images.md` IM35): a cell's reading,
+the runs a row's cells make, the piece of the image a run shows (Ghostty's
+`renderPlacement` tests, their numbers kept), and what a terminal fed a
+virtual placement and its cells shows.
+-}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+import Vt.Placeholder as Placeholder
+
+
+{-| A terminal of 10 by 5 cells of 10 by 20 pixels, an image of 40 by 40
+pixels (id 1) sent, and a virtual placement of 4 by 2 cells made of it. -}
+withVirtual : {} -> Vt.Term
+withVirtual {} =
+    Vt.withCellSize { width = 10, height = 20 } (term 10 5)
+        |> feed ("\u{001B}_Ga=t,f=24,s=40,v=40,i=1,q=2;" ++ String.repeat 1600 "AAAA" ++ "\u{001B}\\")
+        |> feed "\u{001B}_Ga=p,i=1,U=1,c=4,r=2,q=2\u{001B}\\"
+
+
+{-| Two rows of four placeholder cells for image 1 (its id in color 1),
+each naming its row and leaving its columns to follow. -}
+cells : String
+cells =
+    "\u{001B}[38;5;1m"
+        ++ String.repeat 4 "\u{10EEEE}\u{0305}"
+        ++ "\u{001B}[2;1H"
+        ++ String.repeat 4 "\u{10EEEE}\u{030D}"
+        ++ "\u{001B}[39m"
+
+
+shown : Vt.Term -> Array { y : Int, x : Int, cols : Int, rows : Int, under : Bool, src : { x : Int, y : Int, w : Int, h : Int }, w : Int, h : Int }
+shown t =
+    Vt.placeholderPlacements 0 t
+        |> Array.map (\p -> { y = p.y, x = p.x, cols = p.cols, rows = p.rows, under = p.under, src = p.src, w = p.w, h = p.h })
+
+
+plain : { fg : Int, bg : Int, ulc : Int, flags : Int, ul : Int, link : Int }
+plain =
+    { fg = 0, bg = 0, ulc = 0, flags = 0, ul = 0, link = 0 }
+
+
+cell : Int -> Placeholder.Cell -> { x : Int, cell : Placeholder.Cell }
+cell x c =
+    { x = x, cell = c }
+
+
+{-| A cell of image `low`, its row and column given or not (-1). -}
+of : Int -> Int -> Int -> Placeholder.Cell
+of low row col =
+    { low = low, high = -1, placement = 0, row = row, col = col }
+
+
+suite : U.Suite
+suite =
+    Support.run "Placeholders"
+        [ { name = "Ghostty's dog 4x2: each row half the image, centred down its cells"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just { offX = 0, offY = 36, srcX = 0, srcY = 0, srcW = 500, srcH = 153, w = 144, h = 44 }
+                        , Just { offX = 0, offY = 0, srcX = 0, srcY = 153, srcW = 500, srcH = 153, w = 144, h = 44 }
+                        ]
+                        [ Placeholder.fit { cols = 4, rows = 2 } { imgW = 500, imgH = 306 } { cw = 36, ch = 80 } { col = 0, row = 0, width = 4 }
+                        , Placeholder.fit { cols = 4, rows = 2 } { imgW = 500, imgH = 306 } { cw = 36, ch = 80 } { col = 0, row = 1, width = 4 }
+                        ]
+          }
+        , { name = "Ghostty's dog 2x2 with blank cells: a run wider than the grid draws the image's width"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just { offX = 0, offY = 58, srcX = 0, srcY = 0, srcW = 500, srcH = 153, w = 72, h = 22 }
+                        , Just { offX = 0, offY = 0, srcX = 0, srcY = 153, srcW = 500, srcH = 153, w = 72, h = 22 }
+                        ]
+                        [ Placeholder.fit { cols = 2, rows = 2 } { imgW = 500, imgH = 306 } { cw = 36, ch = 80 } { col = 0, row = 0, width = 4 }
+                        , Placeholder.fit { cols = 2, rows = 2 } { imgW = 500, imgH = 306 } { cw = 36, ch = 80 } { col = 0, row = 1, width = 4 }
+                        ]
+          }
+        , { name = "Ghostty's dog 1x1: the whole image in one cell"
+          , test =
+                \_ ->
+                    Expect.equal (Just { offX = 0, offY = 29, srcX = 0, srcY = 0, srcW = 500, srcH = 306, w = 36, h = 22 })
+                        (Placeholder.fit { cols = 1, rows = 1 } { imgW = 500, imgH = 306 } { cw = 36, ch = 80 } { col = 0, row = 0, width = 4 })
+          }
+        , { name = "a cell reads its image from the foreground, its placement from the underline color, its row, column and high byte from marks"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { low = 1, high = -1, placement = 0, row = -1, col = -1 }
+                        , { low = 0x010203, high = 2, placement = 5, row = 1, col = 3 }
+                        , { low = 7, high = -1, placement = 0, row = 0, col = -1 }
+                        ]
+                        [ Placeholder.decode { plain | fg = 2 } []
+                        , Placeholder.decode { plain | fg = 0x1010203, ulc = 6 } [ 0x030D, 0x0310, 0x030E ]
+                        , Placeholder.decode { plain | fg = 8 } [ 0x0305, 0x41 ]
+                        ]
+          }
+        , { name = "cells that leave out their column continue the run to their left; a gap or another image ends it"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { x = 0, width = 3, image = 1, placement = 0, row = 0, col = 0 }
+                        , { x = 4, width = 1, image = 1, placement = 0, row = 0, col = 0 }
+                        , { x = 5, width = 1, image = 2, placement = 0, row = 0, col = 0 }
+                        , { x = 6, width = 2, image = 2, placement = 0, row = 1, col = 5 }
+                        ]
+                        (Placeholder.runsOfRow
+                            [ cell 0 (of 1 0 0), cell 1 (of 1 -1 -1), cell 2 (of 1 0 -1), cell 4 (of 1 -1 -1), cell 5 (of 2 0 -1), cell 6 (of 2 1 5), cell 7 (of 2 -1 6) ]
+                        )
+          }
+        , { name = "a column that does not follow begins a new run"
+          , test =
+                \_ ->
+                    Expect.equal [ { x = 0, width = 1, image = 1, placement = 0, row = 0, col = 0 }, { x = 1, width = 1, image = 1, placement = 0, row = 0, col = 3 } ]
+                        (Placeholder.runsOfRow [ cell 0 (of 1 0 0), cell 1 (of 1 0 3) ])
+          }
+        , { name = "the third mark is the image id's high byte"
+          , test =
+                \_ ->
+                    Expect.equal [ 33554433 ]
+                        (Placeholder.runsOfRow [ cell 0 { low = 1, high = 2, placement = 0, row = 0, col = 0 } ] |> Array.map .image)
+          }
+        , { name = "a virtual placement's cells show it, a row a piece, under the text"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { y = 0, x = 0, cols = 4, rows = 1, under = True, src = { x = 0, y = 0, w = 40, h = 20 }, w = 40, h = 20 }
+                        , { y = 1, x = 0, cols = 4, rows = 1, under = True, src = { x = 0, y = 20, w = 40, h = 20 }, w = 40, h = 20 }
+                        ]
+                        (shown (feed cells (withVirtual {})))
+          }
+        , { name = "placeholder cells without a virtual placement show nothing"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (shown (feed cells (Vt.withCellSize { width = 10, height = 20 } (term 10 5) |> feed ("\u{001B}_Ga=t,f=24,s=40,v=40,i=1,q=2;" ++ String.repeat 1600 "AAAA" ++ "\u{001B}\\"))))
+          }
+        , { name = "cells overwritten with text take the piece away"
+          , test =
+                \_ ->
+                    Expect.equal [ { y = 1, x = 0, cols = 4, rows = 1 } ]
+                        (shown (feed "\u{001B}[1;1H\u{001B}[2K" (feed cells (withVirtual {}))) |> Array.map (\p -> { y = p.y, x = p.x, cols = p.cols, rows = p.rows }))
+          }
+        , { name = "a view scrolled back shows the pieces where its rows are"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "\u{001B}[5;1H\n\n" (feed cells (withVirtual {}))
+                    in
+                    Expect.equal { live = [], back = [ 0, 1 ] }
+                        { live = Vt.placeholderPlacements 0 t |> Array.map .y
+                        , back = Vt.placeholderPlacements 2 t |> Array.map .y
+                        }
+          }
+        ]

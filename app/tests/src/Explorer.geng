@@ -1,4 +1,4 @@
-module Explorer exposing (explorer, lineShapesDiffer, violations)
+module Explorer exposing (explorer, lineShapesDiffer, noticesDiffer, violations)
 
 {-| Check 3 (`docs/tmux-checks.md` TK4, TK10): puritty's real `TmuxMode`
 against the fake tmux, in every order the conversation can take.
@@ -35,6 +35,7 @@ import FakeTmux exposing (World)
 import LinesRecorded
 import Task
 import Test.Runner.UnitNode as U
+import Tmux.Command as Command
 import Tmux.Syntax as Syntax
 import TmuxMode
 
@@ -176,6 +177,115 @@ lineShapesDiffer =
             )
 
 
+{-| The steps of dump-notices.py the fake models (TK11), by what each
+step is, and the event it is in the fake; windows' ids as a fresh server
+gives them, the steps between that it does not model left out. -}
+noticeSteps : Array { what : String, happen : World -> { world : World, notices : Array String } }
+noticeSteps =
+    [ { what = "a window made, not shown", happen = FakeTmux.addWindow 1 1 }
+    , { what = "another window renamed", happen = FakeTmux.renameWindow 1 "renamed" }
+    , { what = "the shown window renamed", happen = FakeTmux.renameWindow 0 "first" }
+    , { what = "another window shown", happen = FakeTmux.switchWindow 1 }
+    , { what = "the first window shown again", happen = FakeTmux.switchWindow 0 }
+    , { what = "another window killed", happen = FakeTmux.closeWindow 1 }
+    , { what = "a window made and shown, whose program ends", happen = openedShown 3 5 }
+    , { what = "the shown window's last pane's program ends", happen = FakeTmux.closeWindow 3 }
+    ]
+
+
+{-| A window made and shown (`new-window` without `-d`): on 2.x its pane
+said active, the window added, then the session's window changed; from
+3.0 the session's window changed, then the window added. -}
+openedShown : Int -> Int -> World -> { world : World, notices : Array String }
+openedShown id pane w =
+    let
+        added =
+            FakeTmux.addWindow id pane w
+
+        shown =
+            FakeTmux.switchWindow id added.world
+    in
+    { world = shown.world
+    , notices =
+        -- 2.x adds the window before it shows it; 3.x shows it first
+        -- (notices.txt, TK11)
+        if Array.any (String.startsWith "%window-pane-changed") added.notices then
+            added.notices ++ shown.notices
+
+        else
+            Array.keepIf (\n -> not (String.startsWith "%window-add" n)) added.notices
+                ++ shown.notices
+                ++ Array.keepIf (String.startsWith "%window-add") added.notices
+    }
+
+
+{-| A notification about windows, as its name and the window it names. -}
+windowNotice : String -> Maybe String
+windowNotice line =
+    let
+        parts =
+            String.split " " line
+
+        name =
+            Maybe.withDefault "" (Array.first parts)
+    in
+    if Array.member name [ "%window-add", "%window-close", "%unlinked-window-close", "%window-renamed", "%unlinked-window-renamed", "%session-window-changed", "%window-pane-changed" ] then
+        Just (name ++ " " ++ (Array.findFirst (String.startsWith "@") parts |> Maybe.map .value |> Maybe.withDefault ""))
+
+    else
+        Nothing
+
+
+{-| Each step the fake models where what it tells of windows is not what
+the real tmux told, for every dumped tmux: `name: step: tmux …, fake …`.
+A record that ends where its tmux ended the client is held to as far as
+it goes. -}
+noticesDiffer : Array String
+noticesDiffer =
+    LinesRecorded.recorded
+        |> Array.mapAndFlatten
+            (\tmux ->
+                let
+                    made =
+                        FakeTmux.world { version = "3.8", cols = 80, rows = 24, lines = [ "line 200" ] }
+
+                    ended =
+                        Array.findFirst (\l -> Array.member "(the client ended)" l.wrote) tmux.notices |> Maybe.map .index |> Maybe.withDefault (Array.length tmux.notices)
+
+                    recordedOf what =
+                        Array.takeFirst ended tmux.notices
+                            |> Array.findFirst (\l -> String.contains ("# " ++ what) l.line || String.contains ("(" ++ what ++ ":") l.line)
+                            |> Maybe.map (\found -> Array.mapAndKeepJust (\l -> windowNotice (String.trim l)) found.value.wrote)
+                in
+                Array.foldl
+                    (\s acc ->
+                        let
+                            done =
+                                s.happen acc.w
+
+                            ours =
+                                Array.mapAndKeepJust windowNotice done.notices
+                        in
+                        { w = done.world
+                        , differ =
+                            when recordedOf s.what is
+                                Just real ->
+                                    if real == ours then
+                                        acc.differ
+
+                                    else
+                                        Array.pushLast (tmux.name ++ ": " ++ s.what ++ ": tmux " ++ String.join ", " real ++ "; fake " ++ String.join ", " ours) acc.differ
+
+                                Nothing ->
+                                    acc.differ
+                        }
+                    )
+                    { w = { made | rules = tmux.version }, differ = [] }
+                    noticeSteps
+                    |> .differ
+            )
+
+
 -- THE EXPLORER
 
 
@@ -188,7 +298,7 @@ type alias Node =
     { tmux : TmuxMode.State
     , world : World
     , inbox : Array String
-    , outbox : Array String
+    , outbox : Array { text : String, told : Array FakeTmux.Told }
     , events : Array Event
     , actions : Array Action
     , steps : Array String
@@ -276,7 +386,7 @@ runs node =
                         node.outbox
 
                     else
-                        Array.pushLast text node.outbox
+                        Array.pushLast { text = text, told = answered.told } node.outbox
                 , steps = Array.pushLast ("tmux runs: " ++ first) node.steps
             }
 
@@ -303,10 +413,13 @@ apply choice node =
                 Just { first, rest } ->
                     let
                         line =
-                            "puritty reads: " ++ String.join " | " (String.split "\u{000D}\n" first |> Array.keepIf (\l -> l /= "") |> Array.takeFirst 3)
+                            "puritty reads: " ++ String.join " | " (String.split "\u{000D}\n" first.text |> Array.keepIf (\l -> l /= "") |> Array.takeFirst 3)
+
+                        before =
+                            node.tmux.expecting
 
                         r =
-                            readsAll first { node | outbox = rest, steps = Array.pushLast line node.steps }
+                            readsAll first.text { node | outbox = rest, steps = Array.pushLast line node.steps }
                     in
                     { node = r.node
                     , broken =
@@ -314,7 +427,8 @@ apply choice node =
                             Just "puritty read a reply to its own command while it waited for nothing"
 
                         else
-                            Nothing
+                            orElse (lacked r.node.world (Array.dropFirst (Array.length node.inbox) r.node.inbox))
+                                (heldTo first.told before r.node.tmux.expecting)
                     }
 
                 Nothing ->
@@ -330,7 +444,7 @@ apply choice node =
                     { node =
                         { node
                             | world = done.world
-                            , outbox = Array.pushLast (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") done.notices)) node.outbox
+                            , outbox = Array.pushLast { text = String.join "" (Array.map (\n -> n ++ "\u{000D}\n") done.notices), told = [] } node.outbox
                             , events = without i node.events
                             , steps = Array.pushLast e.name node.steps
                         }
@@ -369,11 +483,133 @@ apply choice node =
                             Just ("the user's action sent " ++ String.fromInt commands ++ " commands, and puritty waits for " ++ String.fromInt waited ++ " replies to them: " ++ String.join " / " done.commands)
 
                         else
-                            Nothing
+                            lacked node.world done.commands
                     }
 
                 Nothing ->
                     { node = node, broken = Nothing }
+
+
+{-| A line sent that asks this tmux for what it does not have: `#{T:…}`
+before 2.9, which it expands empty (docs/tmux-versions.md TV10), but for
+the probe, `#{T:version}`, by which puritty learns it (TM72). -}
+lacked : World -> Array String -> Maybe String
+lacked w lines =
+    if FakeTmux.tenths w.version < 29 then
+        Array.findFirst (\line -> String.contains "#{T:" (String.replace "#{T:version}" "" line)) lines
+            |> Maybe.map (\found -> "puritty asked tmux " ++ w.version ++ ", which has no #{T:…}, for " ++ found.value)
+
+    else
+        Nothing
+
+
+orElse : Maybe a -> Maybe a -> Maybe a
+orElse first second =
+    when first is
+        Just _ ->
+            first
+
+        Nothing ->
+            second
+
+
+{-| A command as tmux reads it: its words, quotes taken off, joined by
+spaces, as the fake tells each block's. -}
+words : String -> String
+words command =
+    Syntax.tokens command |> Array.map .value |> String.join " "
+
+
+{-| A read's blocks held to what puritty waited for (TK10.5): each block
+of its own commands must answer the question asked by the command that
+made it, in turn; one that fails ends its line, whose other questions go
+unanswered; the blocks of the commands a command ran come before its
+fence's. And what puritty waits for after the read must begin with what
+those blocks left. -}
+heldTo : Array FakeTmux.Told -> Array TmuxMode.Asked -> Array TmuxMode.Asked -> Maybe String
+heldTo told before after =
+    let
+        fence =
+            words (Command.display "puritty-fence")
+
+        step b acc =
+            when acc.broken is
+                Just _ ->
+                    acc
+
+                Nothing ->
+                    when Array.first acc.queue is
+                        Nothing ->
+                            { acc | broken = Just ("tmux's reply to `" ++ b.command ++ "` came while puritty waited for nothing") }
+
+                        Just head ->
+                            if words head.command == fence && b.command /= fence then
+                                -- what a command ran, before its fence
+                                acc
+
+                            else if words head.command /= b.command then
+                                { acc | broken = Just ("tmux's reply to `" ++ b.command ++ "` was read as the answer to `" ++ head.command ++ "`") }
+
+                            else
+                                let
+                                    rest =
+                                        Array.dropFirst 1 acc.queue
+
+                                    ended =
+                                        if b.ok then
+                                            0
+
+                                        else
+                                            Array.findFirst (\a -> a.line /= head.line) rest |> Maybe.map .index |> Maybe.withDefault (Array.length rest)
+                                in
+                                { acc | queue = Array.dropFirst ended rest }
+
+        held =
+            Array.foldl step { queue = before, broken = Nothing } (Array.keepIf (\b -> b.flags == 1) told)
+
+        same a b =
+            a.command == b.command && a.line == b.line
+    in
+    when held.broken is
+        Just why ->
+            Just why
+
+        Nothing ->
+            if Array.length after >= Array.length held.queue && Array.all identity (Array.map2 same held.queue (Array.takeFirst (Array.length held.queue) after)) then
+                Nothing
+
+            else
+                Just ("after the read puritty waits for " ++ String.join "; " (Array.map .command after) ++ ", where tmux's blocks left " ++ String.join "; " (Array.map .command held.queue))
+
+
+{-| tmux's windows and the shown window's panes, as `TmuxMode.viewLine`
+writes puritty's (TK11). -}
+worldView : World -> String
+worldView w =
+    let
+        windows =
+            Array.pushFirst { id = w.window.id, index = w.window.index, name = w.window.name } (Array.map (\o -> { id = o.id, index = o.index, name = o.name }) w.others)
+                |> Array.sortBy .index
+    in
+    "tabs "
+        ++ String.join " " (Array.map (\o -> "@" ++ String.fromInt o.id ++ ":" ++ o.name) windows)
+        ++ " | window @"
+        ++ String.fromInt w.window.id
+        ++ " | panes "
+        ++ String.join " "
+            (Array.map
+                (\id ->
+                    "%"
+                        ++ String.fromInt id
+                        ++ (if id == w.active then
+                                "*"
+
+                            else
+                                ""
+                           )
+                )
+                (Array.sort (Array.map .id w.panes))
+            )
 
 
 {-| Once no event or action is left, the rest is one way: tmux answers in
@@ -399,11 +635,44 @@ finish budget node =
     else if not (Array.isEmpty node.inbox) then
         finish (budget - 1) (runs node)
 
-    else if Array.isEmpty node.tmux.expecting then
-        { node = node, broken = Nothing }
+    else if not (Array.isEmpty node.tmux.expecting) then
+        { node = node, broken = Just ("tmux owes nothing, and puritty waits for " ++ String.fromInt (Array.length node.tmux.expecting)) }
 
     else
-        { node = node, broken = Just ("tmux owes nothing, and puritty waits for " ++ String.fromInt (Array.length node.tmux.expecting)) }
+        -- all said and read: what puritty shows must be tmux's (TK11)
+        let
+            -- the tabs, the window and its panes: the fake's sizes are its
+            -- own, the harness holds the rest to real tmuxes (TK12)
+            shows =
+                TmuxMode.viewLine node.tmux |> String.split " | " |> Array.takeFirst 3 |> String.join " | "
+
+            has =
+                worldView node.world
+        in
+        if shows /= has then
+            { node = node, broken = Just ("puritty shows " ++ shows ++ ", where tmux has " ++ has) }
+
+        else
+            -- and tmux's window the size puritty's window asks for, and
+            -- the size puritty's layout says (TK10.10)
+            let
+                wanted =
+                    TmuxMode.wantedSize node.tmux
+
+                layoutSize =
+                    TmuxMode.viewLine node.tmux |> String.split " | " |> Array.get 3 |> Maybe.withDefault ""
+
+                tmuxSize =
+                    String.fromInt node.world.cols ++ "x" ++ String.fromInt node.world.rows
+            in
+            if wanted.cols /= node.world.cols || wanted.rows /= node.world.rows then
+                { node = node, broken = Just ("puritty's window asks for " ++ String.fromInt wanted.cols ++ "x" ++ String.fromInt wanted.rows ++ ", where tmux's window is " ++ tmuxSize) }
+
+            else if not (String.contains tmuxSize layoutSize) then
+                { node = node, broken = Just ("puritty's layout says " ++ layoutSize ++ ", where tmux's window is " ++ tmuxSize) }
+
+            else
+                { node = node, broken = Nothing }
 
 
 begin : Scenario -> Node
@@ -458,9 +727,28 @@ replay s choices =
                 went
 
 
-{-| The choices open at a node. -}
+{-| The choices open at a node, but for orders that cannot differ: with
+no world event left, tmux running its next line commutes with puritty's
+reading and the user's acting (it takes the head of the lines, which they
+only add to), so it is taken at once; with no user action left, puritty's
+reading the next thing tmux wrote commutes with tmux's running and the
+world's events (it takes the head of what was written, which they only
+add to), so it is taken at once (TK10.7). Every order left out reaches a
+state one taken reaches. -}
 open : Node -> Array Choice
 open node =
+    if Array.isEmpty node.events && not (Array.isEmpty node.inbox) then
+        [ Run ]
+
+    else if Array.isEmpty node.actions && not (Array.isEmpty node.outbox) then
+        [ Read ]
+
+    else
+        every node
+
+
+every : Node -> Array Choice
+every node =
     (if Array.isEmpty node.inbox then
         []
 
@@ -483,7 +771,7 @@ key node =
         ++ "|"
         ++ String.join "\n" node.inbox
         ++ "|"
-        ++ String.fromInt (digest 7 (String.join "" node.outbox))
+        ++ String.fromInt (digest 7 (String.join "" (Array.map .text node.outbox)))
         ++ "|"
         ++ String.join "," (Array.map .name node.events)
         ++ "|"
@@ -498,7 +786,11 @@ explore : Int -> Scenario -> { broken : Maybe { steps : Array String, what : Str
 explore limit s =
     let
         level frontier seen count =
-            if Array.isEmpty frontier || count > limit then
+            if count > limit then
+                -- not explored to the end: said, not passed
+                { broken = Just { steps = [], what = "more than " ++ String.fromInt limit ++ " states; not explored to the end" }, states = count }
+
+            else if Array.isEmpty frontier then
                 { broken = Nothing, states = count }
 
             else
@@ -565,25 +857,76 @@ explore limit s =
 -- THE SCENARIOS
 
 
-{-| A tmux's rules for each kind of line that differs, as measured
-(TK10): 2.7 to 2.9a, 3.0 to 3.1c, 3.2 to 3.3a, 3.4 to 3.7c, and 3.8. -}
+{-| The tmuxes whose rules for a line the scenarios run on (TK10): 2.7
+(2.7 to 3.1c: a command at a pane or window not there fails, and what a
+command runs is not this client's), 3.2 (3.2 to 3.7c) and 3.8
+(notifications after each command's block). 3.0 differs from 2.7, and
+3.4 from 3.2, only in a blank line and a `%message` in a block, which no
+scenario sends; the fake's rules for all five are held to every dumped
+tmux (`lineShapesDiffer`). -}
 eras : Array String
 eras =
-    [ "2.7", "3.0", "3.2", "3.4", "3.8" ]
+    [ "2.7", "3.2", "3.8" ]
 
 
-{-| A window of two panes side by side, on the fake 3.8 (whose questions
-and answers are recorded, TM68) following `rules`' lines. -}
+{-| The recorded tmux that answers as an era's (TM68, docs/tmux-versions.md
+TV10): its own release, 3.2a for 3.2. -}
+versionOf : String -> String
+versionOf rules =
+    if rules == "3.2" then
+        "3.2a"
+
+    else
+        rules
+
+
+{-| A window of two panes side by side, on the fake answering as the
+era's own tmux (`versionOf`, whose questions and answers are recorded,
+TM68) following `rules`' lines. -}
 twoPanes : String -> World
 twoPanes rules =
+    twoPanesOn (versionOf rules) rules
+
+
+{-| `twoPanes` answering as `version`, following `rules`' lines. -}
+twoPanesOn : String -> String -> World
+twoPanesOn version rules =
     let
         made =
-            FakeTmux.world { version = "3.8", cols = 80, rows = 24, lines = [ "line 1", "line 2" ] }
+            FakeTmux.world { version = version, cols = 80, rows = 24, lines = [ "line 1", "line 2" ] }
 
         first =
             Array.first made.panes |> Maybe.withDefault { id = 0, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
     in
     { made | rules = rules, panes = [ first, { first | id = 1 } ], number = 2 }
+
+
+{-| `twoPanes`, and another window, `@1`, with one pane, `%2`. -}
+twoWindows : String -> World
+twoWindows rules =
+    let
+        w =
+            twoPanes rules
+
+        first =
+            Array.first w.panes |> Maybe.withDefault { id = 0, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
+    in
+    { w | others = [ { id = 1, index = 1, name = "two", panes = [ { first | id = 2 } ], active = 2 } ], number = 3 }
+
+
+windowCloses : Int -> Event
+windowCloses id =
+    { name = "window @" ++ String.fromInt id ++ " closes", happen = FakeTmux.closeWindow id }
+
+
+windowAdded : Int -> Int -> Event
+windowAdded id pane =
+    { name = "another client opens window @" ++ String.fromInt id, happen = FakeTmux.addWindow id pane }
+
+
+windowShown : Int -> Event
+windowShown id =
+    { name = "another client shows window @" ++ String.fromInt id, happen = FakeTmux.switchWindow id }
 
 
 paneExits : Int -> Event
@@ -679,30 +1022,36 @@ pointed held e acc =
 
 scenarios : String -> Array Scenario
 scenarios rules =
-    [ { name = "attaching to two panes, one of whose programs exits"
-      , world = twoPanes rules
-      , events = [ paneExits 1 ]
-      , actions = []
-      , settled = False
-      }
-    , { name = "a file sourced at the prompt"
-      , world =
-            let
-                w =
-                    twoPanes rules
-            in
-            { w | files = Dict.singleton "/p.conf" "display-message -p one\ndisplay-message -p two\n" }
-      , events = []
-      , actions = [ promptRuns "source-file /p.conf" ]
-      , settled = True
-      }
-    , { name = "an if-shell run at the prompt"
-      , world = twoPanes rules
-      , events = []
-      , actions = [ promptRuns "if-shell true 'display-message -p yes'" ]
-      , settled = True
-      }
-    ]
+    windowScenarios rules
+        ++ keyScenarios rules
+        ++ menuScenarios rules
+        ++ pauseScenarios rules
+        ++ pollScenarios rules
+        ++ resizeScenarios rules
+        ++ [ { name = "attaching to two panes, one of whose programs exits"
+             , world = twoPanes rules
+             , events = [ paneExits 1 ]
+             , actions = []
+             , settled = False
+             }
+           , { name = "a file sourced at the prompt"
+             , world =
+                let
+                    w =
+                        twoPanes rules
+                in
+                { w | files = Dict.singleton "/p.conf" "display-message -p one\ndisplay-message -p two\n" }
+             , events = []
+             , actions = [ promptRuns "source-file /p.conf" ]
+             , settled = True
+             }
+           , { name = "an if-shell run at the prompt"
+             , world = twoPanes rules
+             , events = []
+             , actions = [ promptRuns "if-shell true 'display-message -p yes'" ]
+             , settled = True
+             }
+           ]
         ++ (if rules == "3.8" then
                 -- floating panes are 3.7's, and puritty drags them on 3.8
                 [ { name = "a floating pane dragged by its left edge"
@@ -723,6 +1072,240 @@ scenarios rules =
            )
 
 
+{-| Windows coming and going (TK10.6). -}
+windowScenarios : String -> Array Scenario
+windowScenarios rules =
+    [ { name = "attaching while the window shown closes"
+      , world = twoWindows rules
+      , events = [ windowCloses 0 ]
+      , actions = []
+      , settled = False
+      }
+    , { name = "another client opens, closes and shows windows"
+      , world = twoWindows rules
+      , events = [ windowAdded 2 3, windowCloses 1, windowShown 1 ]
+      , actions = []
+      , settled = True
+      }
+    ]
+
+
+{-| `prefix` then a key, as the user types them. -}
+prefixThen : String -> Action
+prefixThen letter =
+    { name = "the user types the prefix, then " ++ letter
+    , act = pressAll [ { mods = 2, key = "b" }, { mods = 0, key = letter } ]
+    }
+
+
+{-| A key with a letter on it typed. -}
+typesKey : String -> Action
+typesKey letter =
+    { name = "the user types " ++ letter, act = pressAll [ { mods = 0, key = letter } ] }
+
+
+{-| A pane put in copy mode by tmux (`prefix [`, or another client). -}
+copyEntered : Int -> Event
+copyEntered id =
+    { name = "pane %" ++ String.fromInt id ++ " goes into copy mode", happen = FakeTmux.enterCopy id }
+
+
+{-| Keys typed while replies are pending (TK10.7). -}
+keyScenarios : String -> Array Scenario
+keyScenarios rules =
+    [ { name = "the tree opened while attaching"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ prefixThen "w" ]
+      , settled = False
+      }
+    , { name = "the window menu opened while attaching"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ prefixThen "<" ]
+      , settled = False
+      }
+    , { name = "the tree opened as a pane exits"
+      , world = twoPanes rules
+      , events = [ paneExits 1 ]
+      , actions = [ prefixThen "w" ]
+      , settled = True
+      }
+    , { name = "copy mode's keys while its pane exits"
+      , world = twoPanes rules
+      , events = [ copyEntered 0, paneExits 0 ]
+      , actions = [ typesKey "k", typesKey "k" ]
+      , settled = True
+      }
+    ]
+
+
+{-| Menus and popups as their pane exits (TK10.8): the pane menu
+(`prefix >`) asks tmux to expand its title, names and commands at the
+pane; an item's key may come before the menu is shown; a popup opened at
+the prompt is five commands on one line (3.8; before it, puritty says
+so and sends nothing). The pane is `%0`, the active one. -}
+menuScenarios : String -> Array Scenario
+menuScenarios rules =
+    [ { name = "the pane menu opened as its pane exits"
+      , world = twoPanes rules
+      , events = [ paneExits 0 ]
+      , actions = [ prefixThen ">" ]
+      , settled = True
+      }
+    , { name = "the pane menu opened and an item's key typed before it is shown, as its pane exits"
+      , world = twoPanes rules
+      , events = [ paneExits 0 ]
+      , actions =
+            [ { name = "the user types the prefix, >, then m"
+              , act = pressAll [ { mods = 2, key = "b" }, { mods = 0, key = ">" }, { mods = 0, key = "m" } ]
+              }
+            ]
+      , settled = True
+      }
+    , { name = "a popup opened at the prompt as its pane exits"
+      , world = twoPanes rules
+      , events = [ paneExits 0 ]
+      , actions = [ promptRuns "display-popup -E true" ]
+      , settled = True
+      }
+    ]
+
+
+{-| A pane paused (`%pause`, from 3.2: puritty asks `pause-after`) and
+continued on one line with its state and captures, while it exits
+(TK10.7). -}
+pauseScenarios : String -> Array Scenario
+pauseScenarios rules =
+    if rules == "2.7" then
+        []
+
+    else
+        [ { name = "a pane paused as it exits"
+          , world = twoPanes rules
+          , events = [ { name = "tmux pauses pane %1", happen = \w -> { world = w, notices = [ "%pause %1" ] } }, paneExits 1 ]
+          , actions = []
+          , settled = True
+          }
+        ]
+
+
+{-| The status line's timer firing (TM72): before 3.2 puritty asks what
+3.2's subscriptions would tell, once a second (`TmuxMode.tick`), a
+question a subscription, those before 2.9 in two steps, each option's
+text, then the format with it in place of `#{T:…}`. -}
+timerFires : Action
+timerFires =
+    { name = "the status line's timer fires"
+    , act =
+        \s ->
+            TmuxMode.tick
+                (if s.pollAt >= 0 then
+                    s.pollAt
+
+                 else
+                    s.clock
+                )
+                s
+    }
+
+
+{-| The poll's timer among the world's changes, before 3.2 only, on 2.7
+(two steps) and 3.0 (`#{T:…}` asked at once), both on 2.7's rules for a
+line (TK10.6: 3.0's differ only where no scenario goes). -}
+pollScenarios : String -> Array Scenario
+pollScenarios rules =
+    if rules /= "2.7" then
+        []
+
+    else
+        [ "2.7", "3.0" ]
+            |> Array.mapAndFlatten
+                (\version ->
+                    [ { name = "the timer fires while attaching, on " ++ version ++ "'s answers"
+                      , world = twoPanesOn version rules
+                      , events = []
+                      , actions = [ timerFires ]
+                      , settled = False
+                      }
+                    , { name = "the timer fires as a pane exits, on " ++ version ++ "'s answers"
+                      , world = twoPanesOn version rules
+                      , events = [ paneExits 1 ]
+                      , actions = [ timerFires ]
+                      , settled = True
+                      }
+                    , { name = "the timer fires again before the first poll is answered, on " ++ version ++ "'s answers"
+                      , world = twoPanesOn version rules
+                      , events = []
+                      , actions = [ timerFires, timerFires ]
+                      , settled = True
+                      }
+                    , { name = "the timer fires as another client closes a window and opens one, on " ++ version ++ "'s answers"
+                      , world =
+                            let
+                                w =
+                                    twoPanesOn version rules
+
+                                first =
+                                    Array.first w.panes |> Maybe.withDefault { id = 0, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
+                            in
+                            { w | others = [ { id = 1, index = 1, name = "two", panes = [ { first | id = 2 } ], active = 2 } ], number = 3 }
+                      , events = [ windowCloses 1, windowAdded 2 3 ]
+                      , actions = [ timerFires ]
+                      , settled = True
+                      }
+                    ]
+                )
+
+
+{-| The user makes puritty's window `cols` by `rows` cells of tmux's (one
+row more for puritty's own, as `size` gives it): puritty tells tmux
+(`refresh-client -C`), and tmux tells a new layout for every window. -}
+resizes : Int -> Int -> Action
+resizes cols rows =
+    { name = "the user makes puritty's window " ++ String.fromInt cols ++ "x" ++ String.fromInt rows
+    , act = TmuxMode.resized { cols = cols, rows = rows + 1 }
+    }
+
+
+{-| Resizes (TK10.10): while attaching, to the session's first window and
+to its second (whose layout comes after the first's); as a pane exits;
+twice before tmux answers; and as another client shows another window. -}
+resizeScenarios : String -> Array Scenario
+resizeScenarios rules =
+    [ { name = "puritty's window resized while attaching"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ resizes 90 20 ]
+      , settled = False
+      }
+    , { name = "puritty's window resized while attaching to the session's second window"
+      , world = (FakeTmux.switchWindow 1 (twoWindows rules)).world
+      , events = []
+      , actions = [ resizes 90 20 ]
+      , settled = False
+      }
+    , { name = "puritty's window resized as a pane exits"
+      , world = twoPanes rules
+      , events = [ paneExits 1 ]
+      , actions = [ resizes 90 20 ]
+      , settled = True
+      }
+    , { name = "puritty's window resized twice before tmux answers"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ resizes 90 20, resizes 100 30 ]
+      , settled = True
+      }
+    , { name = "puritty's window resized as another client shows another window"
+      , world = twoWindows rules
+      , events = [ windowShown 1 ]
+      , actions = [ resizes 90 20 ]
+      , settled = True
+      }
+    ]
+
+
 {-| Each scenario on each era's rules that broke something: what, and the
 steps to it. -}
 violations : Array String
@@ -733,7 +1316,7 @@ violations =
                 scenarios rules
                     |> Array.mapAndKeepJust
                         (\s ->
-                            (explore 20000 s).broken
+                            (explore 5000 s).broken
                                 |> Maybe.map (\b -> rules ++ ", " ++ s.name ++ ": " ++ b.what ++ ", after:\n    " ++ String.join "\n    " b.steps)
                         )
             )
@@ -751,6 +1334,9 @@ explorer =
             Array.map (\c -> U.test c.name (\_ -> Task.succeed (c.test {})))
                 [ { name = "the fake answers a line of several commands as every dumped tmux does (TK10)"
                   , test = \_ -> Expect.equal [] lineShapesDiffer
+                  }
+                , { name = "the fake tells windows' changes as every dumped tmux does (TK11)"
+                  , test = \_ -> Expect.equal [] noticesDiffer
                   }
                 , { name = "puritty's questions and tmux's answers stay in step, in every order, on every tmux's rules (TK4)"
                   , test = \_ -> Expect.equal [] violations

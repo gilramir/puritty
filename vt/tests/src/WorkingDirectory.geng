@@ -1,0 +1,31 @@
+module WorkingDirectory exposing (suite)
+
+{-| OSC 7, the folder the shell says it is in (puritty `docs/sftp.md`
+FT29): kept as it came, the last one said, and cleared by RIS. -}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+suite : U.Suite
+suite =
+    Support.run "WorkingDirectory"
+        [ { name = "OSC 7 kept as it came, ended by BEL or by ST"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "", "file://nene/home/me/a%20b", "file:///tmp" ]
+                        [ Vt.workingDirectory (term 20 4)
+                        , Vt.workingDirectory (feed "x\u{001B}]7;file://nene/home/me/a%20b\u{0007}y" (term 20 4))
+                        , Vt.workingDirectory (feed "\u{001B}]7;file:///tmp\u{001B}\\" (term 20 4))
+                        ]
+          }
+        , { name = "the last one said is the folder"
+          , test = \_ -> Expect.equal "file://h/b" (Vt.workingDirectory (feed "\u{001B}]7;file://h/a\u{0007}\u{001B}]7;file://h/b\u{0007}" (term 20 4)))
+          }
+        , { name = "RIS clears it, as it does the title"
+          , test = \_ -> Expect.equal "" (Vt.workingDirectory (feed "\u{001B}]7;file://h/a\u{0007}\u{001B}c" (term 20 4)))
+          }
+        ]

@@ -44,6 +44,7 @@ import Array.Builder as Builder exposing (Builder)
 import Backend exposing (Backend, Incoming(..))
 import Bitwise
 import Bytes exposing (Bytes)
+import Chooser
 import Chord
 import Clock
 import Config exposing (Config)
@@ -51,10 +52,15 @@ import Console
 import Diag
 import Dialog
 import Dict exposing (Dict)
+import Drop
 import Hosts
+import ImageFile
 import Int64
 import Keys
 import LastWindow
+import Links
+import Notify
+import Open
 import Os.Directory as Directory
 import Os.Env
 import Os.Error exposing (Error)
@@ -62,28 +68,35 @@ import Os.File as File
 import Os.Net as Net
 import Os.Path as Path
 import Os.Process as Process exposing (Connection(..))
+import Os.Random
 import Outbox exposing (Outbox)
 import Platform
 import Process as Sleep
 import Reason
 import Recent exposing (Recent)
 import RecentFile
+import Remembered
 import Restore
 import RestoreFile exposing (TabColor(..))
 import Schema
 import Search
+import SecretStore
+import Sending
 import SessionFile
 import SettingsGui
 import SettingsProgram
 import SettingsSource exposing (Given, Read(..), Settings, overridden, readSettings, reloadDelayMs, settingsFile, watchSettings)
 import Source exposing (Source)
+import Ssh.Connection as Connection
 import Ssh.Session as Session
+import Ssh.Transfer as Transfer
 import SshAgents
 import TabOrder
 import Task exposing (Task)
 import Text
 import Time
 import TmuxMode
+import UInt8
 import Vt
 import Vt.Base64 as Base64
 import Vt.Charset as Charset exposing (Charset)
@@ -104,6 +117,11 @@ type alias Model =
     , urgent : Bool
     , blinkAt : Int
     , syncSince : Int
+    , upload : Maybe Upload
+    , imagePaste : ImagePaste
+    , dropGather : Array Bytes
+    , note : Maybe Note
+    , uploads : Int
     , title : String
     , closed : Bool
     , lost : Bool
@@ -123,6 +141,16 @@ type alias Model =
     -- every terminal's bells added up when the bell last sounded, so
     -- that a turn whose total rose rings it (docs/sounds.md SN6)
     , bellsHeard : Int
+    -- each tab's Program Status Protocol state when last looked at, and
+    -- whether the window asked for attention for one (OSC 7501,
+    -- docs/claude-code.md CL7)
+    , statusSeen : Dict Int String
+    , attentionAsked : Bool
+    -- when the next desktop notification may be shown (CL8): at most one
+    -- every 3 s; -1 any time
+    , noticeAt : Int
+    -- an OSC 8 link Ctrl+clicked, to open in the turn's end (CL9)
+    , toOpen : Maybe String
     -- the pointer shown (the arrow while the program takes the mouse, a
     -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
     -- last place over the window, and whether Shift is held, which takes
@@ -165,6 +193,9 @@ type alias Model =
     -- the items of the one the platform shows, and of its system menu
     , menu : Maybe Menu
     , shownItems : Array MenuItem
+    -- the recent connections the menus offer, read again when the window
+    -- gains the focus (docs/settings-gui.md SG19)
+    , recents : Array Recent
     -- the built-in ssh client's session (docs/ssh-client.md SC18): what
     -- puritty's own screen shows until the session runs, a question it
     -- asks, how the session ended
@@ -198,6 +229,14 @@ type alias Model =
     , renaming : Maybe { id : Int, typed : String }
     , coloring : Maybe Int
     , closing : Maybe { id : Int, why : String, window : Bool }
+    -- a pasted picture waiting for the user's yes before it is written
+    -- (docs/sftp.md FT16)
+    , pasteAsk : Maybe PasteAsk
+    , dropAsk : Maybe { folder : Bytes, files : Array Bytes, tab : Int }
+    , choosing : Maybe Choosing
+    , shellHost : Maybe Bytes
+    , sending : Maybe Sending.Sending
+    , pendingSend : Maybe { folder : Bytes, files : Array Bytes }
     -- why a new tab did not start, said in a box until it is
     -- dismissed (docs/tabs.md TB16)
     , startFailed : Maybe String
@@ -260,7 +299,61 @@ type alias Tab =
     , tmux : TmuxMode.State
     , search : Maybe Search.State
     , syncSince : Int
+    , upload : Maybe Upload
+    -- files dropped on the tab, on their way to its host, and the folder
+    -- chooser for them (docs/sftp.md FT24, FT25, FT26): the tab's, kept
+    -- with it when another is shown, since each talks to its own session
+    , sending : Maybe Sending.Sending
+    , choosing : Maybe Choosing
+    -- the host the tab's first OSC 7 named, the login shell's: one naming
+    -- another comes from a nested ssh, and its folder is not this host's
+    -- (docs/sftp.md FT29)
+    , shellHost : Maybe Bytes
     }
+
+
+{-| A picture pasted into a tab's ssh session (`docs/sftp.md` FT13), on its
+way to the host over a channel beside the session: the channel's number,
+the picture's size, and what the command on the host wrote and how it
+ended. -}
+type alias Upload =
+    { ref : Int, size : Int, out : Bytes, err : Bytes, status : Maybe Int, asking : Maybe { png : Bytes, name : String } }
+
+
+{-| A pasted picture to be written once the user says yes
+(`[clipboard] paste_images = "ask"`, docs/sftp.md FT16): its bytes, the
+path it will have, shown in the question, where it goes, `on` that place
+as the question says it, and the tab it was pasted in. -}
+type alias PasteAsk =
+    { png : Bytes, path : String, to : PasteTo, on : String, tab : Int }
+
+
+{-| The folder chooser for files dropped on an ssh tab (docs/sftp.md
+FT24): its SFTP channel's reference, the tab it is for, whether the
+channel is opened yet, and the bytes it waits to send. -}
+type alias Choosing =
+    { ref : Int, tab : Int, chooser : Chooser.Chooser, opened : Bool, toSend : Bytes }
+
+
+{-| Where an asked-about picture goes: to the ssh host's paste folder,
+by the file's name there, or to a file on this computer. -}
+type PasteTo
+    = ToHost String
+    | ToLocal Path.Path
+
+
+{-| A picture pasted from the clipboard (FT13), gathered as its pieces
+come. -}
+type ImagePaste
+    = NoImagePaste
+    | Gathering (Array Bytes)
+
+
+{-| A line at the window's bottom right saying what puritty did or could
+not do (FT13), until `until`, or until it is replaced when `until` is -1.
+-}
+type alias Note =
+    { text : String, failed : Bool, until : Int }
 
 
 {-| A tab's own: an id the loop's reads are told apart by, the name the
@@ -282,22 +375,30 @@ type alias TabInfo =
 {-| How a tab is started: a local program at a size, with the character set
 of a local tab; or a session to a host, as the window's first was. -}
 type alias Starter =
-    { local : { columns : Int, rows : Int, directory : Maybe Path.Path } -> Task String Backend
+    { local : { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, directory : Maybe Path.Path } -> Task String Backend
     , ssh : Config.Host -> Task String { remote : Backend, problems : Array String }
     , charset : Charset
     }
 
 
-{-| puritty's own screen for an ssh session: the host, what has happened,
+{-| puritty's own screen for an ssh session: the host, the command run
+there if one was given, what has happened,
 the question asked and what has been typed for it, whether the session
-runs, why it failed, and its exit status. -}
+runs, why it failed, and its exit status. A question that may be
+remembered says whether it is to be (`remember`, the box's checkbox) and
+whether a saved answer was refused; `tried` are the names answered from
+the store on this connection, `changes` what the store is to get once the
+session has logged in (`docs/saved-secrets.md` PW8). -}
 type alias SshScreen =
     { host : String
+    , command : Maybe String
     , lines : Array String
-    , asking : Maybe { ask : Session.Ask, typed : String, given : Array String }
+    , asking : Maybe { ask : Session.Ask, typed : String, given : Array String, offer : Bool, remember : Bool, onCheck : Bool, refused : Bool }
     , started : Bool
     , failed : Maybe String
     , exitStatus : Maybe Int
+    , tried : Array String
+    , changes : Array Remembered.Change
     }
 
 
@@ -437,11 +538,19 @@ main =
             )
 
 
+{-| puritty's version: what `--version` and XTVERSION say. A release's tag
+must be it (`scripts/prerelease.sh` refuses one that is not; 0.1.1 went
+out saying 0.1.0, `docs/releasing.md` RL10). -}
+purittyVersion : String
+purittyVersion =
+    "0.2.1"
+
+
 settingsMain : Os.Env.Environment -> Task Never {}
 settingsMain env =
     Argparse.Program.runRootWithContext env
         { name = "puritty settings"
-        , version = "0.1.0"
+        , version = purittyVersion
         , command = settingsCli
         , init =
             \_ ->
@@ -488,7 +597,7 @@ terminalMain : Mode -> Os.Env.Environment -> Task Never {}
 terminalMain mode env =
     Argparse.Program.runRootWithContext env
         { name = "puritty"
-        , version = "0.1.0"
+        , version = purittyVersion
         , command = cli
         , init =
             \_ ->
@@ -754,7 +863,11 @@ becomeSession cp fs vars given asked got chosen =
                                                                 -- the first window: the settings' size
                                                                 meant Reason.NotSet config
                                                 in
-                                                Window.resize { cols = sized.columns, rows = sized.rows }
+                                                -- the terminal's gap around its cells, which the
+                                                -- settings window has none of (docs/renderer.md R20),
+                                                -- before the size, which counts it
+                                                Window.setPadding { x = sized.padding, y = sized.paddingVertical }
+                                                    |> Task.andThen (\_ -> Window.resize { cols = sized.columns, rows = sized.rows })
                                                     |> Task.andThen (\_ -> Window.setMaximized (Maybe.map .maximized last |> Maybe.withDefault (meant Reason.NotSet False)))
                                                     |> Task.andThen (\_ -> Text.ligatures sized.ligatures)
                                                     |> Task.andThen (\_ -> begin cp vars given got.problems locale sized cell { dir = Nothing, claimed = Nothing })
@@ -813,6 +926,7 @@ openWindow cp vars given problems locale config restoring =
         , lang = Maybe.withDefault (meant Reason.NotSet locale.language) config.language
         , glyphCap = config.glyphCacheMb * 1024 * 1024
         , title = config.title
+        , padding = { x = config.padding, y = config.paddingVertical }
         }
         |> Task.andThen
             (\opened ->
@@ -893,7 +1007,7 @@ begin cp vars given problems locale config cell restoring =
         options =
             -- the pty's IUTF8 says whether the program's bytes are UTF-8;
             -- a restored local tab in its directory (TB10)
-            Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 })
+            Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, widthInPixels = pixelsOf config.columns cell.width, heightInPixels = pixelsOf config.rows cell.height, utf8 = charset == Charset.Utf8 })
                 |> (\o -> { o | workingDirectory = firstDirectory restoring })
 
         charset =
@@ -927,21 +1041,12 @@ begin cp vars given problems locale config cell restoring =
                 in
                 (when config.remote is
                     Just host ->
-                        sshBackend vars config charset host
+                        sshBackend vars config cell charset host
 
                     Nothing ->
                         meant Reason.NotSet
-                            spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
-                                |> Task.mapError Os.Error.toString
-                                |> Task.andThen
-                                    (\child ->
-                                        when Backend.pty child is
-                                            Nothing ->
-                                                Task.fail "the program has no terminal"
-
-                                            Just remote ->
-                                                Task.succeed { remote = remote, problems = [] }
-                                    )
+                            ptyBackend cp vars config commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "FORCE_HYPERLINK" "1" (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty))) }
+                                |> Task.map (\remote -> { remote = remote, problems = [] })
                 )
                     |> Task.andThen
                         (\started ->
@@ -955,22 +1060,14 @@ begin cp vars given problems locale config cell restoring =
                                 starter =
                                     { local =
                                         \size ->
-                                            spawnFirst cp
+                                            ptyBackend cp
+                                                vars
+                                                config
                                                 commands
-                                                (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, utf8 = localCharset == Charset.Utf8 })
-                                                    |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) })
+                                                (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, widthInPixels = size.widthInPixels, heightInPixels = size.heightInPixels, utf8 = localCharset == Charset.Utf8 })
+                                                    |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "FORCE_HYPERLINK" "1" (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty))) })
                                                 )
-                                                |> Task.mapError Os.Error.toString
-                                                |> Task.andThen
-                                                    (\child ->
-                                                        when Backend.pty child is
-                                                            Nothing ->
-                                                                Task.fail "the program has no terminal"
-
-                                                            Just remote ->
-                                                                Task.succeed remote
-                                                    )
-                                    , ssh = \host -> sshBackend vars config charset host
+                                    , ssh = \host -> sshBackend vars config cell charset host
                                     , charset = localCharset
                                     }
                             in
@@ -982,12 +1079,28 @@ begin cp vars given problems locale config cell restoring =
 {-| The built-in ssh client's session to a host (`docs/ssh-client.md`
 SC18): its options from `~/.ssh/config` with the host entry's over them,
 the home, the local user and the agent's socket from the environment. -}
-sshBackend : Dict String String -> Config -> Charset -> Config.Host -> Task String { remote : Backend, problems : Array String }
-sshBackend vars config charset host =
-    Task.map2 (\net fs -> { net = net, fs = fs }) Net.initialize File.initialize
+sshBackend : Dict String String -> Config -> Window.Cell -> Charset -> Config.Host -> Task String { remote : Backend, problems : Array String }
+sshBackend vars config cell charset host =
+    -- the host's command in its character set (docs/sftp.md FT20)
+    (when host.command is
+        Just text ->
+            when inHostCharset (Maybe.withDefault (meant Reason.NotSet charset) (Maybe.map Charset.fromName host.charset)) text is
+                Just bytes ->
+                    Task.succeed (Just bytes)
+
+                Nothing ->
+                    meant Reason.FromOutside (Task.fail ("the host's command has characters " ++ charsetName (Maybe.withDefault (meant Reason.NotSet charset) (Maybe.map Charset.fromName host.charset)) ++ " cannot write"))
+
+        Nothing ->
+            meant Reason.NotSet (Task.succeed Nothing)
+    )
+        |> Task.andThen (\command -> Task.map2 (\net fs -> { permissions = { net = net, fs = fs }, command = command }) Net.initialize File.initialize)
         |> Task.andThen
-            (\permissions ->
+            (\given ->
                 let
+                    permissions =
+                        given.permissions
+
                     -- an empty local user is let through: the host, the
                     -- config or a Match may give the user, and one that
                     -- is still empty is refused below
@@ -1006,11 +1119,11 @@ sshBackend vars config charset host =
                                             , port = host.port
                                             , identity = host.identity
                                             , jump = Hosts.jumpSpec config host
-                                            , command = host.command
+                                            , command = given.command
                                             , home = home
                                             , localUser = localUser
                                             , agents = agents
-                                            , terminal = Just { term = "xterm-256color", columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 }
+                                            , terminal = Just { term = "xterm-256color", columns = config.columns, rows = config.rows, widthInPixels = pixelsOf config.columns cell.width, heightInPixels = pixelsOf config.rows cell.height, utf8 = charset == Charset.Utf8 }
                                             }
                                             |> Task.andThen
                                                 (\resolved ->
@@ -1057,6 +1170,126 @@ homeOf vars =
                         meant Reason.FromOutside (Task.fail "neither HOME nor USERPROFILE is set, so ~/.ssh cannot be found")
 
 
+{-| A program on a terminal as its tab's backend; for a host of OpenSSH's
+`ssh` on Linux, with side channels through its connection (`controlled`,
+docs/sftp.md FT31). -}
+ptyBackend : Process.Permission -> Dict String String -> Config -> Array (Array String) -> Process.SpawnOptions -> Task String Backend
+ptyBackend cp vars config commands options =
+    controlled cp vars config commands
+        |> Task.mapError Os.Error.toString
+        |> Task.andThen
+            (\c ->
+                spawnFirst cp c.commands options
+                    |> Task.mapError Os.Error.toString
+                    |> Task.andThen
+                        (\child ->
+                            when Backend.pty child is
+                                Nothing ->
+                                    -- started with no terminal, which a spawn with one never is
+                                    meant Reason.FromOutside (Task.fail "the program has no terminal")
+
+                                Just remote ->
+                                    when c.via is
+                                        Just via ->
+                                            Backend.withSshHelpers cp via remote
+
+                                        Nothing ->
+                                            -- a program on this computer, or ssh on Windows
+                                            meant Reason.NotSet (Task.succeed remote)
+                        )
+            )
+
+
+{-| The command of a tab of a host that OpenSSH's `ssh` connects to (FT31),
+made a `ControlMaster` on a socket of puritty's, one a tab, so that files
+can go through its connection with no second login; and the options of
+the helpers that do. A host whose own `~/.ssh/config` sets a master up
+already (`ssh -G` says `controlmaster` is not `no`, and a `controlpath`)
+keeps it: the helpers go through the user's socket, and the tab is not
+changed, since another socket would be a second login, a second factor
+included. Not on Windows, whose OpenSSH has no `ControlMaster`; not for a
+program that is not a host's `ssh`. -}
+controlled : Process.Permission -> Dict String String -> Config -> Array (Array String) -> Task Os.Error.Error { commands : Array (Array String), via : Maybe { options : Array Bytes, host : Bytes } }
+controlled cp vars config commands =
+    let
+        host =
+            config.hostName |> Maybe.andThen (\n -> Array.findFirst (\h -> h.name == n) config.hosts |> Maybe.map .value)
+
+        none =
+            Task.succeed { commands = commands, via = Nothing }
+    in
+    when { host = host, first = Array.first commands } is
+        { host = Just h, first = Just command } ->
+            if Platform.pathSeparator == "\\" || Maybe.isJust config.remote || Array.first command /= Just "ssh" then
+                none
+
+            else
+                let
+                    options =
+                        Hosts.sshOptions config h
+
+                    shared =
+                        [ "-o", "ControlMaster=no", "-o", "BatchMode=yes" ]
+                in
+                Process.run cp "ssh" ([ "-G" ] ++ options ++ [ h.host ]) Process.defaultRunOptions
+                    |> Task.map (\r -> userMaster (Bytes.toStringLossy r.stdout))
+                    |> Task.onError (\_ -> Task.succeed False)
+                    |> Task.andThen
+                        (\own ->
+                            if own then
+                                Task.succeed { commands = commands, via = Just { options = Array.map Bytes.fromString (shared ++ options), host = Bytes.fromString h.host } }
+
+                            else
+                                Os.Random.bytes 5
+                                    |> Task.map
+                                        (\random ->
+                                            let
+                                                name =
+                                                    "/puritty-" ++ Bytes.toHexString { padding = False } random
+
+                                                -- OpenSSH adds 17 characters to the path while it
+                                                -- makes the socket, and Linux takes 108 in all
+                                                -- (FT11): a runtime folder too deep for that, /tmp
+                                                socket =
+                                                    when Dict.get "XDG_RUNTIME_DIR" vars is
+                                                        Just dir ->
+                                                            if String.count dir + String.count name > 88 then
+                                                                "/tmp" ++ name
+
+                                                            else
+                                                                dir ++ name
+
+                                                        Nothing ->
+                                                            meant Reason.NotSet ("/tmp" ++ name)
+                                            in
+                                            { commands = [ [ "ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=" ++ socket, "-o", "ControlPersist=no" ] ++ Array.dropFirst 1 command ]
+                                            , via = Just { options = Array.map Bytes.fromString ([ "-S", socket ] ++ shared ++ options), host = Bytes.fromString h.host }
+                                            }
+                                        )
+                        )
+
+        _ ->
+            none
+
+
+{-| Whether `ssh -G`'s answer has the user's own master: `controlmaster`
+not `no` or `false`, and a `controlpath` not `none`. -}
+userMaster : String -> Bool
+userMaster said =
+    let
+        value name =
+            String.lines said
+                |> Array.findFirst (\l -> String.startsWith (name ++ " ") l)
+                |> Maybe.map (\f -> String.trim (String.dropFirst (String.count name + 1) f.value))
+    in
+    when { master = value "controlmaster", path = value "controlpath" } is
+        { master = Just m, path = Just p } ->
+            m /= "no" && m /= "false" && p /= "none" && p /= ""
+
+        _ ->
+            False
+
+
 {-| The first of the commands that starts: one that is not found gives way
 to the next, and the last one's failure is the answer. -}
 spawnFirst : Process.Permission -> Array (Array String) -> Process.SpawnOptions -> Task Os.Error.Error Process.Child
@@ -1086,12 +1319,64 @@ drawn is written to its file as a picture, for the reload gate
 starts over (RE11). -}
 run : Bool -> Maybe String -> Int -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
 run imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir =
+    -- the recent connections, for the menus and the taskbar's jump list
+    -- (docs/settings-gui.md SG19), this window's own among them
+    loadRecents settings.given.fs logDir config
+        |> Task.andThen
+            (\recents ->
+                RecentFile.jumpList recents
+                    |> Task.andThen (\jumped -> runWith { recents = recents, jumped = jumped } imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir)
+            )
+
+
+{-| The recent connections in the state folder, as many as the settings
+keep (`[connections] recent`); none without a state folder. -}
+loadRecents : File.Permission -> Maybe String -> Config -> Task x (Array Recent)
+loadRecents fs logDir config =
+    when stateFolder logDir is
+        Just dir ->
+            RecentFile.load fs dir |> Task.map (Array.takeFirst (max 0 config.recentConnections))
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed []
+
+
+{-| The jump list not taken, said in the diagnostic log with Windows'
+reason, an HRESULT (E_ACCESSDENIED, 0x80070005, when Windows is set not
+to show recently opened items). -}
+noteJumpList : Int -> (taken m : Model) -> Model
+noteJumpList code m =
+    if code == 0 then
+        m
+
+    else
+        logLine "window" ("the jump list was not taken: HRESULT 0x" ++ hex8 code) m
+
+
+{-| A 32-bit value in eight hexadecimal digits, as Windows writes an
+HRESULT. -}
+hex8 : Int -> String
+hex8 n =
+    Array.range 0 7
+        |> Array.map
+            (\i ->
+                let
+                    digit =
+                        Bitwise.and 15 (Bitwise.shiftRightZfBy (4 * (7 - i)) n)
+                in
+                String.slice digit (digit + 1) "0123456789ABCDEF"
+            )
+        |> String.join ""
+
+
+runWith : { recents : Array Recent, jumped : Int } -> Bool -> Maybe String -> Int -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
+runWith started imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir =
     -- puritty's own text (its questions, the search bar, the tab
     -- bar) in the interface font, as the settings window's is, apart
     -- from the terminal's (docs/tabs.md TB5)
     Text.interfaceFont Platform.interfaceFont
         -- the system menu's items, where the platform has one (ST26)
-        |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config)))
+        |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config started.recents)))
         -- this window counted among those open, a session begun when it is
         -- the only one (SG16)
         |> Task.andThen (\_ -> sessionMark SessionFile.begin settings.given.fs logDir)
@@ -1103,9 +1388,9 @@ run imeLog shotPath startAt charset config cell remote starter settings problems
                         Clock.after 0 startAt
                 in
                 restoreInto restoring
-                    { config = config
-                    , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
-                    , term =
+                    ({ config = config
+                     , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
+                     , term =
                         Vt.new
                             { cols = config.columns
                             , rows = config.rows
@@ -1117,81 +1402,100 @@ run imeLog shotPath startAt charset config cell remote starter settings problems
                             }
                             |> Vt.withPalette config.palette
                             |> Vt.withEmbedder (embedderOf config)
+                            |> Vt.withImageLimit imageLimit
                             -- what was wrong in the settings, before the
                             -- program's first output (settings-ui.md §5)
                             |> Vt.feed (Bytes.fromString (String.join "" (Array.map notice problems)))
-                    , shadow = View.shadow config.columns config.rows
-                    , focus = View.focused
-                    , last = t0
-                    , pending = -1
-                    , urgent = True
-                    , blinkAt = -1
-                    , syncSince = -1
-                    , title = ""
-                    , closed = False
-                    , lost = False
-                    , out = Outbox.empty
-                    , preedit = { points = [], feedback = [], caret = 0 }
-                    , imeLog = imeLog
-                    , points = config.points
-                    , charset = charset
-                    , decoder = Charset.decoder
-                    , replaced = 0
-                    , held = 0
-                    , mouseLast = Nothing
-                    , allMotion = False
-                    , bellsHeard = 0
-                    , pointerShown = Window.TextPointer
-                    , hover = Nothing
-                    , shiftHeld = False
-                    , back = 0
-                    , selection = Nothing
-                    , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
-                    , toOwn = Nothing
-                    , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
-                    , toPaste = Nothing
-                    , pasting = Nothing
-                    , clips = []
-                    , clipRead = Nothing
-                    , settings = settings
-                    , shotPath = shotPath
-                    , troubles = problems
-                    , settingsWindow = opener
-                    , menu = Nothing
-                    , shownItems = []
-                    , ssh =
+                     , shadow = View.shadow config.columns config.rows
+                     , focus = View.focused
+                     , last = t0
+                     , pending = -1
+                     , urgent = True
+                     , blinkAt = -1
+                     , syncSince = -1
+                     , upload = Nothing
+                     , imagePaste = NoImagePaste
+                     , dropGather = []
+                     , note = Nothing
+                     , uploads = 0
+                     , title = ""
+                     , closed = False
+                     , lost = False
+                     , out = Outbox.empty
+                     , preedit = { points = [], feedback = [], caret = 0 }
+                     , imeLog = imeLog
+                     , points = config.points
+                     , charset = charset
+                     , decoder = Charset.decoder
+                     , replaced = 0
+                     , held = 0
+                     , mouseLast = Nothing
+                     , allMotion = False
+                     , bellsHeard = 0
+                     , statusSeen = Dict.empty
+                     , attentionAsked = False
+                     , noticeAt = -1
+                     , toOpen = Nothing
+                     , pointerShown = Window.TextPointer
+                     , hover = Nothing
+                     , shiftHeld = False
+                     , back = 0
+                     , selection = Nothing
+                     , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
+                     , toOwn = Nothing
+                     , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
+                     , toPaste = Nothing
+                     , pasting = Nothing
+                     , clips = []
+                     , clipRead = Nothing
+                     , settings = settings
+                     , shotPath = shotPath
+                     , troubles = problems
+                     , settingsWindow = opener
+                     , menu = Nothing
+                     , shownItems = []
+                     , ssh =
                         Maybe.map
-                            (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
+                            (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] })
                             config.remote
-                    , tmux = TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
-                    , overlaid = False
-                    , search = Nothing
-                    , barDrag = False
-                    , remote = remote
-                    , tab = { id = 0, name = "", host = config.remote, hostName = config.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
-                    , tabs = Builder.empty 4
-                    , order = [ 0 ]
-                    , shown = 0
-                    , nextTabId = 1
-                    , starter = starter
-                    , windowRows = config.rows
-                    , renaming = Nothing
-                    , coloring = Nothing
-                    , closing = Nothing
-                    , startFailed = Nothing
-                    , barClick = { at = -1000, id = -1 }
-                    , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
-                    , byButton = False
-                    , quietUntil = -1
-                    , closedTabs = Builder.empty closedSlots
-                    , diag = Diag.off
-                    , logDir = logDir
-                    , turnMs = t0
-                    , loggedTab = -1
-                    , clockStart = began - Int64.fromInt startAt
-                    , maximized = False
-                    , normalSize = { columns = config.columns, rows = config.rows }
-                    }
+                     , tmux = TmuxMode.setEmbedder (embedderOf config) <| TmuxMode.setCell (paneCell cell) (TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {}))))
+                     , overlaid = False
+                     , search = Nothing
+                     , barDrag = False
+                     , remote = remote
+                     , tab = { id = 0, name = "", host = config.remote, hostName = config.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
+                     , tabs = Builder.empty 4
+                     , order = [ 0 ]
+                     , shown = 0
+                     , nextTabId = 1
+                     , starter = starter
+                     , windowRows = config.rows
+                     , renaming = Nothing
+                     , coloring = Nothing
+                     , closing = Nothing
+                     , pasteAsk = Nothing
+                     , dropAsk = Nothing
+                     , choosing = Nothing
+                     , shellHost = Nothing
+                     , sending = Nothing
+                     , pendingSend = Nothing
+                     , startFailed = Nothing
+                     , barClick = { at = -1000, id = -1 }
+                     , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
+                     , byButton = False
+                     , quietUntil = -1
+                     , closedTabs = Builder.empty closedSlots
+                     , diag = Diag.off
+                     , logDir = logDir
+                     , turnMs = t0
+                     , loggedTab = -1
+                     , clockStart = began - Int64.fromInt startAt
+                     , maximized = False
+                     , normalSize = { columns = config.columns, rows = config.rows }
+                     , recents = started.recents
+                     }
+                        |> noteJumpList started.jumped
+                    )
                     |> Task.mapError Os.Error.toString
             )
         |> Task.andThen (\m -> finish m.remote m)
@@ -1347,7 +1651,7 @@ nextAt m =
             else
                 -1
     in
-    Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)
+    Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)) (noteDue m)
 
 
 {-| What the program is sent, queued: keys, replies, focus reports, a
@@ -1413,10 +1717,31 @@ version, as tmux matches a name followed by a space. -}
 embedderOf : Config -> Vt.Embedder
 embedderOf config =
     { look = Just { foreground = config.foreground, background = config.background }
-    , attributes = "\u{001B}[?62;21;22;52c"
-    , version = "puritty 0.1.0"
+    -- 4: Sixel (`docs/images-sixel.md` SX2), which chafa and timg look for
+    , attributes = "\u{001B}[?62;4;21;22;52c"
+    , version = "puritty " ++ purittyVersion
     , listening = listeningOf config
+    , extraImages = True
+    , kittyErases = False
+    -- Kitty's pictures from files a program names (`[images]
+    -- read_files`, `docs/images-kitty.md` KG9); read for a local
+    -- program only (`filesRead`)
+    , kittyFiles = config.imageFiles
     }
+
+
+{-| A terminal's size for the program on it: its cells, and its pixels as
+the cell size gives them (`docs/images.md` IM21), 0 while it is not
+known, at most 65,535 as a pty holds them. -}
+ptySize : Int -> Int -> Vt.Term -> Backend.Size
+ptySize cols rows term =
+    { columns = cols, rows = rows, widthInPixels = pixelsOf cols term.config.cellWidth, heightInPixels = pixelsOf rows term.config.cellHeight }
+
+
+{-| `cells` cells of `cell` pixels, at most 65,535. -}
+pixelsOf : Int -> Int -> Int
+pixelsOf cells cell =
+    clamp 0 65535 (clamp 0 32767 cells * clamp 0 4096 cell)
 
 
 {-| What the terminals tell the diagnostic log of the programs
@@ -1696,7 +2021,10 @@ loop remote m00 =
     )
         |> Task.andThen pointerShape
         |> Task.andThen bellRung
+        |> Task.andThen statusNoticed
+        |> Task.andThen noticesShown
         |> Task.andThen clipboardRequests
+        |> Task.andThen linkOpened
         |> Task.andThen (writeLog False)
         |> Task.andThen (flush remote)
         |> Task.andThen (\m0 -> race remote m0)
@@ -1757,6 +2085,203 @@ bellRung m =
         Task.succeed { m | bellsHeard = total }
 
 
+{-| Each tab's Program Status Protocol state (OSC 7501), the shown tab's
+and the others': what the most pressing of its records says, empty for
+none (docs/claude-code.md CL7). -}
+tabStates : Model -> Array { id : Int, state : String }
+tabStates m =
+    let
+        statusOf term =
+            Vt.programStatus term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet "")
+    in
+    Array.range 0 (Builder.length m.tabs - 1)
+        |> Array.foldl
+            (\i acc ->
+                when Builder.get i m.tabs is
+                    Just (Just t) ->
+                        Array.pushLast { id = t.info.id, state = statusOf t.term } acc
+
+                    _ ->
+                        meant Reason.Gone acc
+            )
+            [ { id = m.tab.id, state = statusOf m.term } ]
+
+
+{-| A tab that has come to wait on the user, or finished or failed
+(OSC 7501's `blocked`, `done`, `error`), while the user is not looking at
+it (the window not focused, or the tab not shown): the window asks for
+attention and the bell's sound rings, once for that change. The window
+stops asking once it has the focus (docs/claude-code.md CL7). -}
+statusNoticed : (taken m : Model) -> Task Error Model
+statusNoticed m =
+    let
+        states =
+            tabStates m
+
+        pressing s =
+            s == "blocked" || s == "done" || s == "error"
+
+        news =
+            Array.keepIf (\t -> pressing t.state && Dict.get t.id m.statusSeen /= Just t.state && (not m.focus.focused || t.id /= m.tab.id)) states
+
+        seen =
+            Array.foldl (\t d -> Dict.set t.id t.state d) Dict.empty states
+
+        noted =
+            { m | statusSeen = seen }
+    in
+    when Array.first news is
+        Just first ->
+            Window.attention True
+                |> Task.andThen
+                    (\_ ->
+                        when Config.bellSound m.config.soundBell is
+                            Just id ->
+                                Window.sound id |> Task.map (\_ -> {})
+
+                            Nothing ->
+                                meant Reason.NotSet Task.succeed {}
+                    )
+                |> Task.map (\_ -> logLine "status" ("tab " ++ String.fromInt first.id ++ " is " ++ first.state ++ ": attention asked") { noted | attentionAsked = True })
+
+        Nothing ->
+            -- nothing new: the attention asked for taken back once the
+            -- window has the focus
+            meant Reason.NoMore
+                (if m.attentionAsked && m.focus.focused then
+                    Window.attention False |> Task.map (\_ -> { noted | attentionAsked = False })
+
+                 else
+                    Task.succeed noted
+                )
+
+
+{-| The desktop notifications programs asked for (OSC 9, 777, 99;
+docs/claude-code.md CL8), taken from every tab's terminal, one with no
+title given its tab's; the newest shown, at most one every 3 s, the others
+dropped and said in the log. -}
+noticesShown : (taken m : Model) -> Task Error Model
+noticesShown m0 =
+    let
+        own =
+            Vt.takeNotices m0.term
+
+        label =
+            tabLabel m0.tab own.term.title
+
+        titled tab ns =
+            Array.map
+                (\n ->
+                    if n.title == "" then
+                        { n | title = tab }
+
+                    else
+                        n
+                )
+                ns
+
+        others =
+            noticesFrom 0 m0.tabs []
+
+        m =
+            { m0 | term = own.term, tabs = others.tabs }
+
+        all =
+            titled label own.notices ++ others.notices
+    in
+    when Array.last all is
+        Just newest ->
+            if not m.config.desktopNotifications then
+                -- `[notifications] desktop = false`: taken, not shown
+                Task.succeed (logLine "notice" (String.fromInt (Array.length all) ++ " not shown: desktop notifications are off") m)
+
+            else if m.noticeAt < 0 || Clock.reached m.noticeAt m.turnMs then
+                Notify.show (Maybe.map .cp m.settingsWindow) newest
+                    |> Task.map
+                        (\shown ->
+                            let
+                                said =
+                                    when shown is
+                                        Ok _ ->
+                                            "shown: " ++ String.fromInt (String.count newest.title) ++ " and " ++ String.fromInt (String.count newest.body) ++ " characters"
+
+                                        Err why ->
+                                            meant Reason.Refused ("not shown: " ++ why)
+                            in
+                            logLine "notice"
+                                (said
+                                    ++ (if Array.length all > 1 then
+                                            ", " ++ String.fromInt (Array.length all - 1) ++ " older dropped"
+
+                                        else
+                                            ""
+                                       )
+                                )
+                                { m | noticeAt = Clock.after m.turnMs 3000 }
+                        )
+
+            else
+                Task.succeed (logLine "notice" (String.fromInt (Array.length all) ++ " dropped: one was shown less than 3 s ago") m)
+
+        Nothing ->
+            meant Reason.NoMore Task.succeed m
+
+
+{-| The hidden tabs' notices taken, from tab `i` on, each titled with its
+tab's label where it has none. -}
+noticesFrom : Int -> (taken tabs : Builder (Maybe Tab)) -> Array { title : String, body : String } -> { tabs : Builder (Maybe Tab), notices : Array { title : String, body : String } }
+noticesFrom i tabs acc =
+    if i >= Builder.length tabs then
+        { tabs = tabs, notices = acc }
+
+    else
+        when Builder.get i tabs is
+            Just (Just t) ->
+                let
+                    taken =
+                        Vt.takeNotices t.term
+
+                    label =
+                        tabLabel t.info taken.term.title
+
+                    titled =
+                        Array.map
+                            (\n ->
+                                if n.title == "" then
+                                    { n | title = label }
+
+                                else
+                                    n
+                            )
+                            taken.notices
+                in
+                noticesFrom (i + 1) (Builder.set i (Just { t | term = taken.term }) tabs) (acc ++ titled)
+
+            _ ->
+                meant Reason.Gone noticesFrom (i + 1) tabs acc
+
+
+{-| The mark a Program Status Protocol state puts before a title: working,
+waiting on the user, done, failed (docs/claude-code.md CL7). -}
+statusMark : String -> String
+statusMark state =
+    when state is
+        "working" ->
+            "◔ "
+
+        "blocked" ->
+            "◉ "
+
+        "done" ->
+            "✓ "
+
+        "error" ->
+            "✗ "
+
+        _ ->
+            ""
+
+
 {-| The key sound for a key that sends something (`[sound] keys`,
 `feature-plan.md` §3): Enter's own, any other key's; none for a release or
 a key that sends nothing (a modifier alone). -}
@@ -1794,7 +2319,7 @@ pointerShape m =
                 Window.TextPointer
 
         shape =
-            if m.startFailed /= Nothing || m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing then
+            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || Maybe.isJust m.dropAsk || m.coloring /= Nothing || m.menu /= Nothing then
                 Window.ArrowPointer
 
             else
@@ -1825,7 +2350,40 @@ so that the window sends every motion: under tmux control mode, with the tab
 bar or the scroll bar shown, or a menu or a question up. -}
 hoverShapes : Model -> Bool
 hoverShapes m =
-    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing
+    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || Maybe.isJust m.dropAsk || m.coloring /= Nothing || m.menu /= Nothing
+
+
+{-| The window's events waiting, taken after a turn the session's output
+or notice won (docs/sftp.md FT25): which of a race's ready tasks wins is
+not said, and while a transfer keeps the session's notices coming, the
+window's clicks and keys could wait for its end. -}
+windowToo : Backend -> Int -> (taken m : Model) -> Task Error Model
+windowToo remote ms m =
+    Window.take
+        |> Task.andThen
+            (\evs ->
+                if Array.isEmpty evs then
+                    Task.succeed m
+
+                else
+                    handle remote ms evs m
+            )
+
+
+{-| A notice of the session's in the log, but a side channel's output and
+how much of its data waits: a transfer has one of each for every piece,
+which would be most of the log. -}
+noticeLogged : Session.Notice -> (taken m : Model) -> Model
+noticeLogged told m =
+    when told is
+        Session.Side { ref = _, event = Connection.Output _ } ->
+            m
+
+        Session.Side { ref = _, event = Connection.Sent _ } ->
+            m
+
+        _ ->
+            logLine "ssh" (sshLine told) m
 
 
 race : Backend -> (taken m0 : Model) -> Task Error Model
@@ -1902,14 +2460,14 @@ race remote m0 =
                                                         Task.succeed m
 
                                                 else
-                                                    feed remote chunk ms m |> Task.andThen (\next -> step remote ms next)
+                                                    feed remote chunk ms m |> Task.andThen (windowToo remote ms) |> Task.andThen (\next -> step remote ms next)
 
                                             Read (Notice told) ->
                                                 if endsSession told m.ssh then
                                                     closeShown (sshNoticed told (logLine "ssh" (sshLine told) { m | turnMs = ms })) |> Task.andThen (\next -> step next.remote ms next)
 
                                                 else
-                                                    sshTold told (logLine "ssh" (sshLine told) { m | turnMs = ms }) |> Task.andThen (\next -> step remote ms next)
+                                                    sshTold told (noticeLogged told { m | turnMs = ms }) |> Task.andThen (windowToo remote ms) |> Task.andThen (\next -> step remote ms next)
 
                                             Events up ->
                                                 if not up then
@@ -1921,7 +2479,7 @@ race remote m0 =
                                                         |> Task.andThen (\next -> step remote ms next)
 
                                             Due ->
-                                                reloadIfDue ms (expireClosed ms (blink ms (tmuxTick ms m))) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
+                                                reloadIfDue ms (expireNote ms (expireClosed ms (blink ms (tmuxTick ms m)))) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
 
                                             Writable ->
                                                 step remote ms m
@@ -2510,6 +3068,26 @@ windowState m =
 
                   else
                     ""
+                , if m.pasteAsk /= Nothing then
+                    "the paste question"
+
+                  else
+                    ""
+                , if Maybe.isJust m.choosing then
+                    "the folder chooser"
+
+                  else
+                    ""
+                , if sendingAsks m then
+                    "the conflict question"
+
+                  else
+                    ""
+                , if Maybe.isJust m.dropAsk then
+                    "the question before dropped files are sent"
+
+                  else
+                    ""
                 , if m.startFailed /= Nothing then
                     "the box saying a tab did not start"
 
@@ -2654,19 +3232,65 @@ sshLine n =
         Session.Ended ->
             "ended"
 
+        Session.Side side ->
+            "side channel " ++ String.fromInt side.ref ++ ": " ++ sideLine side.event
+
+
+{-| A side channel's event, as the log says it. -}
+sideLine : Connection.Event -> String
+sideLine e =
+    when e is
+        Connection.Started ->
+            "started"
+
+        Connection.Refused why ->
+            "refused: " ++ why
+
+        Connection.Output b ->
+            "output " ++ String.fromInt (Bytes.length b) ++ " bytes"
+
+        Connection.ErrorOutput b ->
+            "error output " ++ String.fromInt (Bytes.length b) ++ " bytes"
+
+        Connection.Exited code ->
+            "exited, status " ++ String.fromInt code
+
+        Connection.Killed k ->
+            "killed by " ++ k.signal
+
+        Connection.Ended ->
+            "ended"
+
+        Connection.KeepaliveUnanswered n ->
+            String.fromInt n ++ " keepalives unanswered"
+
+        Connection.Sent waiting ->
+            "sent; " ++ String.fromInt waiting ++ " bytes wait"
+
 
 {-| tmux commands written, each a line in the log (redacted, `Diag.command`). -}
 sendCommands : Array String -> (taken m : Model) -> Model
-sendCommands commands m =
-    if Array.isEmpty commands then
-        m
+sendCommands commands m0 =
+    if TmuxMode.isEnding m0.tmux then
+        -- the client is detaching: tmux reads nothing more, and what was
+        -- written would be typed into the shell it leaves (docs/tmux.md TM92)
+        { m0 | diag = Diag.addAll m0.turnMs "tmux-" (Array.map Diag.command commands) m0.diag }
 
     else
         let
-            logged =
-                { m | diag = Diag.addAll m.turnMs "tmux>" (Array.map Diag.command commands) m.diag }
+            -- the batch that detaches the client is the last to go
+            m =
+                { m0 | tmux = TmuxMode.afterSent m0.tmux }
         in
-        sendRaw (commandLines commands) logged
+        if Array.isEmpty commands then
+            m
+
+        else
+            let
+                logged =
+                    { m | diag = Diag.addAll m.turnMs "tmux>" (Array.map Diag.command commands) m.diag }
+            in
+            sendRaw (commandLines commands) logged
 
 
 {-| `[tabs] restore` turned on while the window runs: its tabs are saved
@@ -2743,7 +3367,7 @@ applyLook new m =
         applied =
             { m
                 | config = new
-                , tmux = TmuxMode.setBackground new.background (TmuxMode.setLook (new.tmuxLook == "tmux") (TmuxMode.setBar (new.tmuxTabs == "top") m.tmux))
+                , tmux = TmuxMode.setEmbedder (embedderOf new) <| TmuxMode.setBackground new.background (TmuxMode.setLook (new.tmuxLook == "tmux") (TmuxMode.setBar (new.tmuxTabs == "top") m.tmux))
                 , look = { foreground = new.foreground, background = new.background, boldIsBright = new.boldIsBright }
                 , term = term
                 , back = shape.back
@@ -2765,12 +3389,22 @@ applyLook new m =
             new.tabsBar /= old.tabsBar
     in
     (if new.hosts /= old.hosts then
-        Window.systemMenu (Array.map .label (menuItems new))
+        Window.systemMenu (Array.map .label (menuItems new m.recents))
 
      else
         Task.succeed {}
     )
         |> Task.andThen (\_ -> Text.ligatures new.ligatures)
+        |> Task.andThen
+            (\_ ->
+                -- the gap around the cells (docs/renderer.md R20); a
+                -- Resized follows with the cells that now fit
+                if new.padding /= old.padding || new.paddingVertical /= old.paddingVertical then
+                    Window.setPadding { x = new.padding, y = new.paddingVertical }
+
+                else
+                    Task.succeed {}
+            )
         |> Task.andThen (\_ -> refontOr new old language applied)
         |> Task.andThen
             (\next ->
@@ -2780,6 +3414,23 @@ applyLook new m =
                 else
                     Task.succeed next
             )
+
+
+{-| The window's cell size after a zoom or a font change, told to the
+terminal and every tab's, which answer `CSI 14 t` and `CSI 16 t` from it
+and size images by it (`docs/images.md` IM3); a tab made later copies it. -}
+cellSized : { width : Int, height : Int } -> (taken m : Model) -> Model
+cellSized cell m =
+    { m | term = Vt.withCellSize cell m.term, tmux = TmuxMode.setCell (paneCell cell) m.tmux, tabs = tabsSized cell 0 m.tabs }
+
+
+tabsSized : { width : Int, height : Int } -> Int -> (taken tabs : Builder (Maybe Tab)) -> Builder (Maybe Tab)
+tabsSized cell i tabs =
+    if i < Builder.length tabs then
+        tabsSized cell (i + 1) (Builder.update i (Maybe.map (\t -> { t | term = Vt.withCellSize cell t.term, tmux = TmuxMode.setCell (paneCell cell) t.tmux })) tabs)
+
+    else
+        tabs
 
 
 {-| The font opened again, or sized again, when the settings ask (ST4). -}
@@ -2794,8 +3445,8 @@ refontOr new old language applied =
             |> Task.andThen
                 (\done ->
                     when done is
-                        Ok _ ->
-                            Task.succeed { applied | points = new.points }
+                        Ok cell ->
+                            Task.succeed (cellSized cell { applied | points = new.points })
 
                         Err why ->
                             meant Reason.Refused
@@ -2804,7 +3455,7 @@ refontOr new old language applied =
                 )
 
     else if new.points /= old.points then
-        Window.zoom new.points |> Task.map (\_ -> { applied | points = new.points })
+        Window.zoom new.points |> Task.map (\cell -> cellSized cell { applied | points = new.points })
 
     else
         Task.succeed applied
@@ -2893,10 +3544,11 @@ type MenuDoes
 
 
 {-| The menu's items: the settings window, the host list, a new tab, a
-window of its own, the shown tab's name and color, then each host of the
-settings. -}
-menuItems : Config -> Array MenuItem
-menuItems config =
+window of its own, the shown tab's name and color, then the recent
+connections, newest first, and each host of the settings not among them
+(docs/settings-gui.md SG19). -}
+menuItems : Config -> Array Recent -> Array MenuItem
+menuItems config recents =
     [ { label = "Settings…", does = Starts [ "settings" ] }
     , { label = "Hosts…", does = Starts [ "hosts" ] }
     , { label = "New tab", does = OpensTab }
@@ -2911,7 +3563,11 @@ menuItems config =
             else
                 []
            )
-        ++ Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] }) config.hosts
+        ++ Array.map (\r -> { label = "Connect to " ++ Recent.name r, does = Starts (Recent.arguments r) }) recents
+        ++ (config.hosts
+                |> Array.keepIf (\h -> not (Array.member (Recent.Saved h.name) recents))
+                |> Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] })
+           )
 
 
 {-| The pop-up menu's items: the menu's, and under tmux -CC "Customize
@@ -2922,7 +3578,7 @@ popupItems : Model -> Array MenuItem
 popupItems m =
     let
         items =
-            menuItems m.config
+            menuItems m.config m.recents
     in
     if TmuxMode.isOn m.tmux then
         when Array.findFirst (\i -> i.label == "New window") items is
@@ -2934,6 +3590,22 @@ popupItems m =
 
     else
         items
+
+
+{-| The recent connections read again, as another window may have made
+one: the system menu made again when they changed. -}
+refreshRecents : (taken m : Model) -> Task x Model
+refreshRecents m =
+    loadRecents m.settings.given.fs m.logDir m.config
+        |> Task.andThen
+            (\recents ->
+                if recents == m.recents then
+                    Task.succeed m
+
+                else
+                    Window.systemMenu (Array.map .label (menuItems m.config recents))
+                        |> Task.map (\_ -> { m | recents = recents })
+            )
 
 
 {-| What a chosen item does. -}
@@ -3006,7 +3678,7 @@ menuChosen c m =
     let
         items =
             if c.menu == 1 then
-                menuItems m.config
+                menuItems m.config m.recents
 
             else
                 m.shownItems
@@ -3186,11 +3858,22 @@ feed remote chunk ms m =
 
         -- what tmux said, or else the bytes read, in the log
         traced =
-            if Array.isEmpty r.trace && not on then
+            (if Array.isEmpty r.trace && not on then
                 Diag.add ms "read" (String.fromInt (Bytes.length chunk) ++ " bytes") m.diag
 
-            else
+             else
                 Diag.addAll ms "tmux<" r.trace m.diag
+            )
+                -- what puritty shows of tmux, when it changed (docs/tmux-checks.md
+                -- TK11): what a test holds to tmux's own, and a stale tab is seen
+                |> (\d ->
+                        when r.view is
+                            Just v ->
+                                Diag.add ms "tmux=" v d
+
+                            Nothing ->
+                                meant Reason.NoMore d
+                   )
     in
     feedTerm remote
         r.outside
@@ -3199,7 +3882,10 @@ feed remote chunk ms m =
             | tmux = r.state
             , turnMs = ms
             , diag = traced
-            , urgent = m.urgent || on
+            -- tmux's output paced as a program's own, a frame at most
+            -- every frameMs: a pane that prints a burst (an app redrawing its
+            -- whole transcript) is drawn as it ends, not chunk by chunk
+            , urgent = m.urgent
             , pending =
                 if on && m.pending < 0 then
                     ms
@@ -3207,7 +3893,7 @@ feed remote chunk ms m =
                 else
                     m.pending
         }
-        |> Task.map (\fed -> sendCommands r.commands fed)
+        |> Task.map (\fed -> shellHostSeen (sendCommands r.commands fed))
 
 
 {-| Whether a private mode is set for what keys and pastes reach: the
@@ -3244,9 +3930,59 @@ feedTerm remote chunk0 ms m =
         pushedBefore =
             Vt.rowsPushed m.term
 
+        decoder =
+            decoded.decoder
+
         -- listening as the diagnostic log is set (DG6), whatever tab
+        fed =
+            { m | term = Vt.feed decoded.bytes (Vt.listen (listeningOf m.config) m.term) }
+    in
+    -- a Kitty picture's file read, for a local program only (KG9)
+    filesRead fed []
+        |> Task.map (\r -> fedTerm r.said decoder pushedBefore ms r.model)
+
+
+{-| The files the terminal's Kitty commands wait for, read and given, until
+none waits (`docs/images-kitty.md` KG9); for an ssh session's program,
+refused as before, since its paths name another machine's files. What
+was read or refused, for the log. -}
+filesRead : (taken m : Model) -> Array String -> Task x { model : Model, said : Array String }
+filesRead m said =
+    when Vt.fileWanted m.term is
+        Just want ->
+            (if not (isRemoteTab m) then
+                ImageFile.read m.settings.given.fs want
+
+             else
+                Task.succeed (Err "EINVAL: unsupported medium")
+            )
+                |> Task.andThen
+                    (\result ->
+                        let
+                            line =
+                                want.path
+                                    ++ (when result is
+                                            Ok bytes ->
+                                                ": " ++ String.fromInt (Bytes.length bytes) ++ " bytes read"
+
+                                            Err why ->
+                                                meant Reason.Refused (": " ++ why)
+                                       )
+                        in
+                        filesRead { m | term = Vt.fileGiven result m.term } (Array.pushLast line said)
+                    )
+
+        Nothing ->
+            meant Reason.NoMore Task.succeed { model = m, said = said }
+
+
+{-| The rest of a read once the core has it: its replies queued, what it
+asked for taken, and the view kept where it was. -}
+fedTerm : Array String -> Charset.Decoder -> Int -> Int -> (taken m : Model) -> Model
+fedTerm said decoder pushedBefore ms m =
+    let
         replied =
-            Vt.takeReplies (Vt.feed decoded.bytes (Vt.listen (listeningOf m.config) m.term))
+            Vt.takeReplies m.term
 
         taken =
             let
@@ -3273,40 +4009,39 @@ feedTerm remote chunk0 ms m =
             else
                 0
     in
-    Task.succeed
-        (Array.foldl
-            (\r acc ->
-                if Outbox.size acc.out >= replyCap then
-                    acc
+    Array.foldl
+        (\r acc ->
+            if Outbox.size acc.out >= replyCap then
+                acc
+
+            else
+                send r acc
+        )
+        { m
+            | term = taken.term
+            , clips = m.clips ++ taken.clips
+            , back = back
+            , selection = selection
+            , decoder = decoder
+            , pending =
+                if m.pending < 0 then
+                    ms
 
                 else
-                    send r acc
-            )
-            { m
-                | term = taken.term
-                , clips = m.clips ++ taken.clips
-                , back = back
-                , selection = selection
-                , decoder = decoded.decoder
-                , pending =
-                    if m.pending < 0 then
-                        ms
+                    m.pending
+            , syncSince =
+                if not held then
+                    -1
 
-                    else
-                        m.pending
-                , syncSince =
-                    if not held then
-                        -1
+                else if m.syncSince < 0 then
+                    ms
 
-                    else if m.syncSince < 0 then
-                        ms
-
-                    else
-                        m.syncSince
-            }
-            taken.replies
-            |> logHeard taken.heard
-        )
+                else
+                    m.syncSince
+        }
+        taken.replies
+        |> logHeard taken.heard
+        |> (\done -> Array.foldl (\line acc -> logLine "image file" line acc) done said)
 
 
 {-| The window's events: a key sent to the program, a new size given to the
@@ -3389,11 +4124,1545 @@ sshTold : Session.Notice -> (taken m : Model) -> Task Error Model
 sshTold told m =
     when told is
         Session.Started ->
-            m.remote.resize { columns = m.term.cols, rows = m.term.rows }
+            m.remote.resize (ptySize m.term.cols m.term.rows m.term)
                 |> Task.map (\_ -> sshNoticed told m)
+                |> Task.andThen rememberChanges
+
+        Session.Asking (Session.HostKeyChanged k) ->
+            -- asked by the platform's own dialog where there is one, which
+            -- nothing the server prints can pass for (docs/ssh-client.md
+            -- SC28); else in puritty's box, by its keys
+            Window.warning { title = "puritty: " ++ cleanText k.host ++ "'s key has changed", text = String.join "\n" (changedLines k) ++ "\n\nYes: trust the new key, and put it in place of the old one.\nNo: trust it for this connection only.\nCancel: do not connect. If you did not expect the change, this is the safe choice." }
+                |> Task.andThen
+                    (\got ->
+                        let
+                            asked =
+                                sshNoticed told m
+                        in
+                        when { got = got, ssh = asked.ssh } is
+                            { got = 1, ssh = Just screen } ->
+                                sshAnswered asked.remote (Session.Trust { remember = True }) "the changed key is trusted, in place of the old one" screen asked
+
+                            { got = 2, ssh = Just screen } ->
+                                sshAnswered asked.remote (Session.Trust { remember = False }) "the changed key is trusted this once" screen asked
+
+                            { got = 3, ssh = Just screen } ->
+                                sshAnswered asked.remote Session.Decline "the changed key is not trusted" screen asked
+
+                            _ ->
+                                Task.succeed asked
+                    )
+
+        Session.Asking ask ->
+            sshAsked ask m
+
+        Session.Side side ->
+            sideEvent side m
+
+        Session.Ended ->
+            Task.succeed (sshNoticed told (sendingLost (uploadLost m)))
+
+        Session.Failed _ ->
+            Task.succeed (sshNoticed told (uploadLost m))
 
         _ ->
             Task.succeed (sshNoticed told m)
+
+
+-- A PICTURE PASTED (docs/sftp.md FT13)
+
+
+{-| How long a note stays up. -}
+noteMs : Int
+noteMs =
+    6000
+
+
+{-| A note put up, and the same in the log. A note kept (`kept`) stays
+until another replaces it. -}
+noteUp : { text : String, failed : Bool, kept : Bool } -> (taken m : Model) -> Model
+noteUp n m =
+    logLine "paste"
+        n.text
+        { m
+            | note =
+                Just
+                    { text = n.text
+                    , failed = n.failed
+                    , until =
+                        if n.kept then
+                            -1
+
+                        else
+                            Clock.after m.turnMs noteMs
+                    }
+            , urgent = True
+        }
+
+
+{-| The note gone when its time has come. -}
+expireNote : Int -> (taken m : Model) -> Model
+expireNote ms m =
+    when m.note is
+        Just n ->
+            if n.until >= 0 && Clock.reached n.until ms then
+                { m | note = Nothing, urgent = True }
+
+            else
+                m
+
+        Nothing ->
+            meant Reason.NotOpen m
+
+
+noteDue : Model -> Int
+noteDue m =
+    when m.note is
+        Just n ->
+            n.until
+
+        Nothing ->
+            meant Reason.NotOpen -1
+
+
+{-| A size as a person reads it: bytes, KB or MB. -}
+sizeText : Int -> String
+sizeText n =
+    if n < 1024 then
+        String.fromInt n ++ " bytes"
+
+    else if n < 1048576 then
+        String.fromInt (n // 1024) ++ " KB"
+
+    else
+        String.fromInt (n // 1048576) ++ "." ++ String.fromInt (modBy 1048576 n * 10 // 1048576) ++ " MB"
+
+
+{-| The clipboard's picture, PNG, pasted as a file's name where the tab's
+program runs: over a channel beside an ssh session, to the host's paste
+folder; on Linux, for a local tab, to a folder of puritty's
+(`Platform.pasteDirectory`); on Windows, for a local tab, an empty
+bracketed paste, which Claude Code in WSL takes as the cue to read the
+clipboard itself, as Windows Terminal sends it. A tab on OpenSSH's `ssh`
+has no channel puritty can use, and says so. No picture: nothing. With
+`[clipboard] paste_images = "deny"`, nothing written and that said; with
+"ask", the file's path asked about first (docs/sftp.md FT16).
+-}
+imagePasted : Bytes -> (taken m : Model) -> Task Error Model
+imagePasted png m =
+    if Bytes.isEmpty png then
+        Task.succeed (logLine "paste" "the clipboard holds no text and no picture" m)
+
+    else if m.config.pasteImages == "deny" then
+        Task.succeed (noteUp { text = "The clipboard holds a picture, which is not pasted: paste_images is \"deny\"", failed = True, kept = False } m)
+
+    else
+        when m.remote.side is
+            Just side ->
+                uploadImage side png m
+
+            Nothing ->
+                -- a tab with no ssh session of puritty's: on this computer, or
+                -- OpenSSH's ssh
+                meant Reason.NotOpen
+                    if isRemoteTab m then
+                        Task.succeed (noteUp { text = "The picture can't be pasted: this tab's ssh is OpenSSH's, which puritty can't send a file through here (set client = \"built-in\")", failed = True, kept = False } m)
+
+                    else
+                        Os.Env.getEnvironmentVariables
+                            |> Task.andThen
+                                (\vars ->
+                                    when Platform.pasteDirectory vars is
+                                        Just dir ->
+                                            localImage dir png m
+
+                                        Nothing ->
+                                            meant Reason.NotSet Task.succeed (emptyPaste m)
+                                )
+
+
+{-| The paste folder as the host's `sh` reads it, in double quotes: `~/`
+the home there; empty for `~/.cache/puritty/paste`, `$XDG_CACHE_HOME`'s
+when set; whatever else it holds as it is (docs/sftp.md FT15). -}
+folderWord : String -> String
+folderWord folder =
+    if folder == "" then
+        "\"${XDG_CACHE_HOME:-$HOME/.cache}/puritty/paste\""
+
+    else if folder == "~" then
+        "\"$HOME\""
+
+    else if String.startsWith "~/" folder then
+        "\"$HOME/" ++ doubleQuoted (String.dropFirst 2 folder) ++ "\""
+
+    else
+        "\"" ++ doubleQuoted folder ++ "\""
+
+
+{-| A script run under `sh -c`, whatever the user's shell is: in single
+quotes, each `'` in it closed and opened again. -}
+underSh : String -> String
+underSh script =
+    "sh -c '" ++ String.replace "'" "'\\''" script ++ "'"
+
+
+{-| What the host runs to say where its paste folder is, before the user is
+asked (FT16): the folder's path written back, nothing made or changed. -}
+folderCommand : String -> String
+folderCommand folder =
+    underSh ("d=" ++ folderWord folder ++ "; printf \"%s\" \"$d\"")
+
+
+{-| What the host runs to keep a pasted picture (docs/sftp.md FT13, FT15,
+FT16): in `folder`, made if it is not there, the file `name`, chosen by
+puritty so that it can be shown before anything is written, mode 0600.
+Its bytes come from standard input to `NAME.part`, made only if it is not
+there, and it is renamed to `name` once all are there, if nothing has that
+name; its path is written back. puritty's own pictures there more than a
+day old are removed first, those whose names begin `puritty-paste.`, in
+the folder itself, and nothing else, so that a folder of the user's
+choosing is safe. -}
+uploadCommand : String -> String -> String
+uploadCommand folder name =
+    underSh
+        ("umask 077; d="
+            ++ folderWord folder
+            ++ "; mkdir -p \"$d\" || exit 1; find \"$d\" -maxdepth 1 -type f -name \"puritty-paste.*\" -mmin +1440 -exec rm -f {} + 2>/dev/null; f=\"$d/"
+            ++ name
+            ++ "\"; p=\"$f.part\"; set -C; cat > \"$p\" || exit 1; if [ -e \"$f\" ]; then rm -f \"$p\"; echo \"$f is there already\" >&2; exit 1; fi; mv \"$p\" \"$f\" && printf \"%s\" \"$f\""
+        )
+
+
+{-| Text inside a shell's double quotes as it is: `\`, `"`, `$` and a
+backquote escaped. -}
+doubleQuoted : String -> String
+doubleQuoted text =
+    text
+        |> String.replace "\\" "\\\\"
+        |> String.replace "\"" "\\\""
+        |> String.replace "$" "\\$"
+        |> String.replace "`" "\\`"
+
+
+{-| Whether the shown tab's ssh session is up, so that a channel can be
+opened beside it. -}
+sideUp : Model -> Bool
+sideUp m =
+    when m.ssh is
+        Just screen ->
+            screen.started && screen.failed == Nothing && screen.exitStatus == Nothing
+
+        Nothing ->
+            -- a tab of OpenSSH's ssh with helpers (FT31): up while its ssh
+            -- runs; a helper that finds no master fails, and says so
+            meant Reason.NotSet (Maybe.isJust m.remote.side)
+
+
+{-| A picture for an ssh session's host, under a name of puritty's
+(`puritty-paste.` and ten random hex digits): sent at once with
+`paste_images = "allow"`; with "ask", the host asked for its folder's path
+first, so that the question can name the file (FT16). -}
+uploadImage : (Session.Input -> Task Error {}) -> Bytes -> (taken m : Model) -> Task Error Model
+uploadImage side png m =
+    if m.upload /= Nothing then
+        Task.succeed (noteUp { text = "A picture is still being sent to the host; paste again when it is done", failed = True, kept = False } m)
+
+    else if not (sideUp m) then
+        Task.succeed (noteUp { text = "The picture can't be pasted: the tab is not connected", failed = True, kept = False } m)
+
+    else
+        Os.Random.bytes 5
+            |> Task.andThen
+                (\random ->
+                    let
+                        name =
+                            "puritty-paste." ++ Bytes.toHexString { padding = False } random ++ ".png"
+
+                        ref =
+                            m.uploads + 1
+                    in
+                    if m.config.pasteImages == "allow" then
+                        sendImage side png name m
+
+                    else
+                        when inHostCharset m.charset (folderCommand (pasteFolderOf m)) is
+                            Nothing ->
+                                meant Reason.FromOutside (Task.succeed (noteUp { text = unwritable m, failed = True, kept = False } m))
+
+                            Just command ->
+                                side (Session.OpenExec { ref = ref, command = command })
+                                    |> Task.andThen (\_ -> side (Session.SideEof ref))
+                                    |> Task.map
+                                        (\_ ->
+                                            logLine "paste"
+                                                "the host asked where its paste folder is"
+                                                { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Just { png = png, name = name } }, uploads = ref }
+                                        )
+                )
+
+
+{-| The picture sent to the host as `name` in its paste folder, over a
+new channel beside the session. -}
+sendImage : (Session.Input -> Task Error {}) -> Bytes -> String -> (taken m : Model) -> Task Error Model
+sendImage side png name m =
+    let
+        ref =
+            m.uploads + 1
+    in
+    when inHostCharset m.charset (uploadCommand (pasteFolderOf m) name) is
+        Nothing ->
+            meant Reason.FromOutside (Task.succeed (noteUp { text = unwritable m, failed = True, kept = False } m))
+
+        Just command ->
+            sendCommand side ref command png m
+
+
+sendCommand : (Session.Input -> Task Error {}) -> Int -> Bytes -> Bytes -> (taken m : Model) -> Task Error Model
+sendCommand side ref command png m =
+    side (Session.OpenExec { ref = ref, command = command })
+        |> Task.andThen (\_ -> side (Session.SideWrite { ref = ref, bytes = png }))
+        |> Task.andThen (\_ -> side (Session.SideEof ref))
+        |> Task.map
+            (\_ ->
+                noteUp { text = "Sending the picture (" ++ sizeText (Bytes.length png) ++ ") to the host", failed = False, kept = True }
+                    { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Nothing }, uploads = ref }
+            )
+
+
+{-| Where the shown tab's host keeps pasted pictures: the host's own
+`paste_folder`, else the settings'. -}
+pasteFolderOf : Model -> String
+pasteFolderOf m =
+    m.tab.host
+        |> Maybe.andThen .pasteFolder
+        |> Maybe.withDefault (meant Reason.NotSet m.config.pasteFolder)
+
+
+{-| What the channel carrying a picture told: its output kept, and at its
+end the file's path pasted, or why it could not be. -}
+uploaded : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Model
+uploaded side m =
+    when m.upload is
+        Just u ->
+            if u.ref /= side.ref then
+                m
+
+            else
+                when side.event is
+                    Connection.Output b ->
+                        { m | upload = Just { u | out = Bytes.flatten [ u.out, b ] } }
+
+                    Connection.ErrorOutput b ->
+                        { m | upload = Just { u | err = Bytes.flatten [ u.err, b ] } }
+
+                    Connection.Refused why ->
+                        { m | upload = Just { u | err = Bytes.flatten [ u.err, Bytes.fromString why ] } }
+
+                    Connection.Exited status ->
+                        { m | upload = Just { u | status = Just status } }
+
+                    Connection.Killed _ ->
+                        { m | upload = Just { u | status = Just 255 } }
+
+                    Connection.Ended ->
+                        uploadDone u { m | upload = Nothing }
+
+                    _ ->
+                        m
+
+        Nothing ->
+            meant Reason.NotOpen m
+
+
+uploadDone : Upload -> (taken m : Model) -> Model
+uploadDone u m =
+    let
+        -- in the host's character set, as the tab reads it (FT20)
+        path =
+            String.trim (fromHost m.charset u.out)
+
+        said =
+            String.trim (fromHost m.charset u.err)
+    in
+    if u.status == Just 0 && path /= "" then
+        when u.asking is
+            Just a ->
+                -- the folder's path: the question, naming the file
+                -- (docs/sftp.md FT16)
+                askPaste
+                    { png = a.png
+                    , path =
+                        (if String.endsWith "/" path then
+                            path
+
+                         else
+                            path ++ "/"
+                        )
+                            ++ a.name
+                    , to = ToHost a.name
+                    , on = "on " ++ hostLabel m
+                    , tab = m.tab.id
+                    }
+                    m
+
+            Nothing ->
+                meant Reason.NotOpen pasteIn False (Bytes.fromString (quotedPath path)) (noteUp { text = "Pasted the picture as " ++ path, failed = False, kept = False } m)
+
+    else
+        noteUp
+            { text =
+                "The picture could not be sent to the host: "
+                    ++ (if said /= "" then
+                            String.join " " (String.lines said)
+
+                        else
+                            when u.status is
+                                Just status ->
+                                    "its command ended with status " ++ String.fromInt status
+
+                                Nothing ->
+                                    meant Reason.FromOutside "the channel closed"
+                       )
+            , failed = True
+            , kept = False
+            }
+            m
+
+
+{-| Text for a command on the host, in the tab's character set, as typed
+keys are sent (docs/sftp.md FT20): `Nothing` when a character has no form
+there, rather than a `?` in a folder's name. -}
+inHostCharset : Charset -> String -> Maybe Bytes
+inHostCharset charset text =
+    let
+        encoded =
+            Charset.encode charset (Bytes.fromString text)
+    in
+    if encoded.replaced == 0 then
+        Just encoded.bytes
+
+    else
+        Nothing
+
+
+{-| What the host's command printed, in the tab's character set, as text. -}
+fromHost : Charset -> Bytes -> String
+fromHost charset bytes =
+    when charset is
+        Charset.Utf8 ->
+            Bytes.toStringLossy bytes
+
+        Charset.EucKr ->
+            Bytes.toStringLossy (Charset.decode Charset.decoder bytes).bytes
+
+        Charset.Cp949 ->
+            Bytes.toStringLossy (Charset.decode Charset.decoder bytes).bytes
+
+
+charsetName : Charset -> String
+charsetName charset =
+    when charset is
+        Charset.Utf8 ->
+            "UTF-8"
+
+        Charset.EucKr ->
+            "EUC-KR"
+
+        Charset.Cp949 ->
+            "CP949"
+
+
+unwritable : Model -> String
+unwritable m =
+    "The picture can't be pasted: the paste folder's name has characters " ++ charsetName m.charset ++ " cannot write"
+
+
+{-| Files dropped on the window (docs/sftp.md FT22): in a tab on this
+computer, their paths pasted, quoted for its shell, as other terminals do
+(FT5 question 6). Each must be there first: a name a file manager spoiled
+(FT21: Dolphin's U+FFFD for an EUC-KR name) names no file, and is said, as
+given, not pasted. A name not UTF-8 is read in the tab's character set, so
+that the paste gives the shell the name's own bytes; one that set can't
+carry is not pasted. A drop with no file on disk (FT21: a file inside a
+zip, an attachment) says so. -}
+filesDropped : Bytes -> (taken m : Model) -> Task Error Model
+filesDropped list m =
+    let
+        dropped =
+            Drop.paths list
+
+        fs =
+            m.settings.given.fs
+    in
+    dropped.paths
+        |> Array.map
+            (\p ->
+                File.exists fs (Path.fromBytes p)
+                    |> Task.onError (\_ -> Task.succeed False)
+                    |> Task.map (\there -> { path = p, there = there })
+            )
+        |> Task.sequence
+        |> Task.map (\checked -> droppedChecked dropped.others checked m)
+
+
+{-| Files dropped on an ssh tab: on a tmux pane whose folder is known,
+that folder; else the folder chooser, over an SFTP channel of its own
+(FT24), from the host's home. Sending them is item 4's: until then the
+note says where they would have gone. -}
+sshDropped : Array Bytes -> (taken m : Model) -> Model
+sshDropped files m0 =
+    let
+        known =
+            when TmuxMode.dropTarget m0.tmux |> Maybe.map .folder is
+                Just (TmuxMode.Folder path) ->
+                    Just path
+
+                Just (TmuxMode.NoFolder _) ->
+                    Nothing
+
+                Just (TmuxMode.Asking _) ->
+                    Nothing
+
+                Nothing ->
+                    -- no tmux pane marked: a tab without tmux -CC, whose
+                    -- shell may have said its folder (FT29)
+                    meant Reason.NotOpen (shellFolder m0)
+
+        why =
+            dropWhere m0
+
+        m =
+            { m0 | tmux = TmuxMode.dragLeft m0.tmux, urgent = True }
+    in
+    if m.config.dropUploads == "deny" then
+        noteUp { text = "Dropped files are not sent to the host: [files] drop_uploads is \"deny\"", failed = True, kept = False } m
+
+    else
+        when known is
+            Just folder ->
+                if m.config.dropUploads == "allow" then
+                    -- sent when this drop's handling is done (`startPending`)
+                    { m | pendingSend = Just { folder = folder, files = files } }
+
+                else
+                    -- asked first (docs/sftp.md FT28): the folder is
+                    -- puritty's choice, not the user's
+                    logLine "drop" ("asked: send " ++ String.fromInt (Array.length files) ++ " items to the folder found?") { m | dropAsk = Just { folder = folder, files = files, tab = m.tab.id } }
+
+            Nothing ->
+                -- no folder known: the chooser asks
+                meant Reason.NotYet
+                    (if not (Maybe.isJust m.remote.side) then
+                        noteUp { text = "Files can't be sent to this host: this tab's ssh is OpenSSH's (set client = \"built-in\")", failed = True, kept = False } m
+
+                     else if Maybe.isJust m.choosing then
+                        noteUp { text = "The folder chooser is open already", failed = True, kept = False } m
+
+                     else
+                        chooserOpened files Bytes.empty m
+                    )
+
+
+{-| Files sent once their folder is known (docs/sftp.md FT25): the jobs
+made from them, and the batch begun. -}
+startPending : (taken m : Model) -> Task Error Model
+startPending m0 =
+    when m0.pendingSend is
+        Just p ->
+            let
+                m =
+                    { m0 | pendingSend = Nothing }
+            in
+            if Maybe.isJust m.sending then
+                Task.succeed (noteUp { text = "Files are still being sent; drop these again when they are done", failed = True, kept = False } m)
+
+            else
+                Sending.jobsFor m.settings.given.fs { folder = p.folder, paths = p.files, name = hostName m.charset }
+                    |> Task.andThen
+                        (\j ->
+                            let
+                                ref =
+                                    m.uploads + 1
+
+                                st =
+                                    Sending.begin { ref = ref, tab = m.tab.id, folder = p.folder, jobs = j.jobs, refused = j.refused, allowShell = m.config.uploadThroughShell, ms = m.turnMs }
+                            in
+                            -- the shell's channels, should SFTP be refused, are
+                            -- numbered after `ref`: a block of them kept
+                            sendingStep st (logLine "drop" ("sending " ++ String.fromInt (Array.length j.jobs) ++ " items, " ++ String.fromInt (Array.length j.refused) ++ " refused") { m | uploads = ref + 100000 })
+                        )
+
+        Nothing ->
+            meant Reason.NotSet (Task.succeed m0)
+
+
+{-| A local file's name as the host's (FT21's answers): UTF-8 in the
+host's character set; a name not UTF-8 as its bytes to a host in EUC-KR
+or CP949, and refused for a UTF-8 one. -}
+hostName : Charset -> Bytes -> Result String Bytes
+hostName charset local =
+    when Bytes.toString local is
+        Just text ->
+            when inHostCharset charset text is
+                Just b ->
+                    Ok b
+
+                Nothing ->
+                    meant Reason.FromOutside (Err ("its name has characters " ++ charsetName charset ++ " cannot write"))
+
+        Nothing ->
+            -- not UTF-8: already in the host's set, or no name it can take
+            meant Reason.FromOutside
+                (if charset == Charset.Utf8 then
+                    Err "its name is not UTF-8, which this host's UTF-8 can't take"
+
+                 else
+                    Ok local
+                )
+
+
+{-| A step of the batch: its outs done in order, each local read told back
+as it is done; the progress shown, and at the end what was sent. -}
+sendingStep : { sending : Sending.Sending, out : Array Sending.Out } -> (taken m : Model) -> Task Error Model
+sendingStep taken m =
+    when m.remote.side is
+        Just side ->
+            Array.foldl
+                (\o acc -> acc |> Task.andThen (sendingOut side o))
+                -- a frame only for what the screen shows: the question,
+                -- and the progress a few times a second (`sendingShown`);
+                -- a frame each reply held a shown tab's upload to a fifth
+                -- of a hidden one's (FT27)
+                (Task.succeed { m | sending = Just taken.sending, urgent = m.urgent || Sending.isAsking taken.sending })
+                taken.out
+                |> Task.map sendingShown
+
+        Nothing ->
+            meant Reason.Gone (Task.succeed (sendingShown { m | sending = Just taken.sending }))
+
+
+sendingOut : (Session.Input -> Task Error {}) -> Sending.Out -> (taken m : Model) -> Task Error Model
+sendingOut side o m =
+    when o is
+        Sending.Input i ->
+            side i |> Task.map (\_ -> m)
+
+        Sending.Read r ->
+            File.withHandle m.settings.given.fs File.ForRead r.path (\h -> File.seek (File.FromStart r.offset) h |> Task.andThen (\_ -> readUpTo r.length h []))
+                |> Task.map Ok
+                |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
+                |> Task.andThen
+                    (\got ->
+                        when m.sending is
+                            Just s ->
+                                when got is
+                                    Ok bytes ->
+                                        sendingStep (Sending.localRead { job = r.job, offset = r.offset, bytes = bytes } s) m
+
+                                    Err why ->
+                                        -- the file can't be read here now
+                                        meant Reason.Refused (sendingStep (Sending.localFailed { job = r.job, why = why } s) m)
+
+                            Nothing ->
+                                meant Reason.Gone (Task.succeed m)
+                    )
+
+
+{-| Up to `n` bytes from a handle's place, fewer at the file's end. -}
+readUpTo : Int -> File.Handle -> Array Bytes -> Task Os.Error.Error Bytes
+readUpTo n h pieces =
+    let
+        have =
+            Array.foldl (\p acc -> acc + Bytes.length p) 0 pieces
+    in
+    if have >= n then
+        Task.succeed (Bytes.slice 0 n (Bytes.flatten pieces))
+
+    else
+        File.read h
+            |> Task.andThen
+                (\b ->
+                    if Bytes.isEmpty b then
+                        Task.succeed (Bytes.flatten pieces)
+
+                    else
+                        readUpTo n h (Array.pushLast b pieces)
+                )
+
+
+{-| The batch's progress in the note bar, kept while it runs; at its end
+what was sent, and the batch gone. -}
+sendingShown : (taken m : Model) -> Model
+sendingShown m =
+    when m.sending is
+        Just s ->
+            when s.over is
+                Just said ->
+                    noteUp
+                        { text =
+                            if isShownTab m then
+                                said
+
+                            else
+                                -- a tab not shown: which one it was
+                                "In the tab " ++ tabLabel m.tab m.term.title ++ ": " ++ said
+                        , failed = not (Array.isEmpty s.failed && Array.isEmpty s.refused) || s.done == 0
+                        , kept = False
+                        }
+                        { m | sending = Nothing, urgent = True }
+
+                Nothing ->
+                    -- still sending: its progress
+                    meant Reason.NotYet
+                        (when Sending.progressText m.turnMs s is
+                            Just text ->
+                                -- over its own tab only: a tab not shown has
+                                -- its mark in the bar
+                                if isShownTab m && (s.shownAt < 0 || m.turnMs - s.shownAt >= 250) then
+                                    { m | note = Just { text = text, failed = False, until = -1 }, sending = Just { s | shownAt = m.turnMs }, urgent = True }
+
+                                else
+                                    m
+
+                            Nothing ->
+                                -- under a second in: no progress shown
+                                meant Reason.NotYet m
+                        )
+
+        Nothing ->
+            meant Reason.NotOpen m
+
+
+{-| Whether the model's tab is the one on the screen, not one `atTab` has
+swapped in to handle what its session said. -}
+isShownTab : Model -> Bool
+isShownTab m =
+    Array.get m.shown m.order == Just m.tab.id
+
+
+{-| The session ended under a batch: said, and forgotten. -}
+sendingLost : (taken m : Model) -> Model
+sendingLost m =
+    if Maybe.isJust m.sending then
+        noteUp { text = "The connection ended before the files were sent", failed = True, kept = False } { m | sending = Nothing }
+
+    else
+        m
+
+
+{-| A key while the conflict question is up (FT4): R replace, K keep both,
+S skip, N replace if newer, Enter replace, Esc cancels the batch. -}
+conflictKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Sending.Sending -> (taken m : Model) -> Task Error Model
+conflictKey k s m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x72 || k.sym == 0x52 then
+        sendingStep (Sending.answer Transfer.Replace s) { m | urgent = True }
+
+    else if k.sym == 0x6B || k.sym == 0x4B then
+        sendingStep (Sending.answer Transfer.KeepBoth s) { m | urgent = True }
+
+    else if k.sym == 0x73 || k.sym == 0x53 then
+        sendingStep (Sending.answer Transfer.Skip s) { m | urgent = True }
+
+    else if k.sym == 0x6E || k.sym == 0x4E then
+        sendingStep (Sending.answer Transfer.ReplaceIfNewer s) { m | urgent = True }
+
+    else if k.sym == 0xFF1B then
+        sendingStep (Sending.cancel s) { m | urgent = True }
+
+    else
+        Task.succeed m
+
+
+conflictPress : Window.PointerEvent -> Sending.Sending -> (taken m : Model) -> Task Error Model
+conflictPress p s m =
+    let
+        hit =
+            if p.button == 1 then
+                Maybe.andThen (\cs -> Dialog.buttonAt (overlaySize m) (Sending.conflictBox (fromHost m.charset) cs) { x = p.x, y = p.y }) s.asking
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            sendingStep (Sending.answer Transfer.Replace s) { m | urgent = True }
+
+        Just 1 ->
+            sendingStep (Sending.answer Transfer.KeepBoth s) { m | urgent = True }
+
+        Just 2 ->
+            sendingStep (Sending.answer Transfer.Skip s) { m | urgent = True }
+
+        Just _ ->
+            sendingStep (Sending.answer Transfer.ReplaceIfNewer s) { m | urgent = True }
+
+        Nothing ->
+            meant Reason.OutOfRange (Task.succeed m)
+
+
+{-| Whether the conflict question is up. -}
+sendingAsks : Model -> Bool
+sendingAsks m =
+    Maybe.map Sending.isAsking m.sending == Just True
+
+
+{-| The folder chooser for `files`, at `at` (the host's home when empty);
+its channel is opened by `chooserIo`. -}
+chooserOpened : Array Bytes -> Bytes -> (taken m : Model) -> Model
+chooserOpened files at m =
+    let
+        begun =
+            Chooser.start { files = files, at = at }
+    in
+    logLine "drop"
+        ("the folder chooser opened for " ++ String.fromInt (Array.length files) ++ " files")
+        { m | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, chooser = begun.chooser, opened = False, toSend = begun.send }, uploads = m.uploads + 1 }
+
+
+{-| The chooser's channel opened and its bytes sent, when it has any. -}
+chooserIo : (taken m : Model) -> Task Error Model
+chooserIo m =
+    when { c = m.choosing, side = m.remote.side } is
+        { c = Just c, side = Just side } ->
+            (if c.opened then
+                Task.succeed {}
+
+             else
+                side (Session.OpenSubsystem { ref = c.ref, name = "sftp" })
+            )
+                |> Task.andThen
+                    (\_ ->
+                        if Bytes.isEmpty c.toSend then
+                            Task.succeed {}
+
+                        else
+                            side (Session.SideWrite { ref = c.ref, bytes = c.toSend })
+                    )
+                |> Task.map (\_ -> { m | choosing = Just { c | opened = True, toSend = Bytes.empty } })
+
+        _ ->
+            Task.succeed m
+
+
+{-| A side channel's event: the chooser's, or the picture's upload. -}
+sideEvent : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Task Error Model
+sideEvent side m =
+    when m.sending is
+        Just s ->
+            if Sending.owns side.ref s then
+                sendingStep (Sending.side side s) m
+
+            else
+                chooserEvent side m
+
+        Nothing ->
+            meant Reason.NotOpen (chooserEvent side m)
+
+
+chooserEvent : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Task Error Model
+chooserEvent side m =
+    when m.choosing is
+        Just c ->
+            if c.ref /= side.ref then
+                Task.succeed (uploaded side m)
+
+            else
+                when side.event is
+                    Connection.Output b ->
+                        let
+                            r =
+                                Chooser.received b c.chooser
+                        in
+                        chooserIo { m | choosing = Just { c | chooser = r.chooser, toSend = Bytes.flatten [ c.toSend, r.send ] }, urgent = True }
+
+                    Connection.Refused why ->
+                        Task.succeed { m | choosing = Just { c | chooser = Chooser.refused why c.chooser }, urgent = True }
+
+                    Connection.Ended ->
+                        Task.succeed { m | choosing = Just { c | chooser = Chooser.refused "the channel closed" c.chooser }, urgent = True }
+
+                    _ ->
+                        Task.succeed m
+
+        Nothing ->
+            meant Reason.NotOpen (Task.succeed (uploaded side m))
+
+
+{-| A key in the folder chooser: the chooser's, and what came of it. -}
+chooserKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Choosing -> (taken m : Model) -> Task Error Model
+chooserKey k c m =
+    let
+        r =
+            Chooser.key { sym = k.sym, mods = k.mods, text = Bytes.toStringLossy k.text } { decode = fromHost m.charset, encode = inHostCharset m.charset } c.chooser
+    in
+    when r.outcome is
+        Chooser.Stay ->
+            chooserIo { m | choosing = Just { c | chooser = r.chooser, toSend = Bytes.flatten [ c.toSend, r.send ] }, urgent = True }
+
+        Chooser.Chosen folder ->
+            chooserClosed c { m | pendingSend = Just { folder = folder, files = c.chooser.files } }
+                |> Task.andThen startPending
+
+        Chooser.Cancelled ->
+            chooserClosed c (logLine "drop" "the folder chooser cancelled" m)
+
+
+{-| The chooser gone, its channel closed. -}
+chooserClosed : Choosing -> (taken m : Model) -> Task Error Model
+chooserClosed c m =
+    (when m.remote.side is
+        Just side ->
+            side (Session.SideClose c.ref)
+
+        Nothing ->
+            meant Reason.Gone (Task.succeed {})
+    )
+        |> Task.map (\_ -> { m | choosing = Nothing, urgent = True })
+
+
+{-| A press while the chooser is up: Send here chooses the folder listed,
+Cancel cancels; nothing reaches the terminal under it. -}
+chooserPress : Window.PointerEvent -> Choosing -> (taken m : Model) -> Task Error Model
+chooserPress p c m =
+    let
+        hit =
+            if p.button == 1 then
+                Dialog.buttonAt (overlaySize m) (Chooser.dialog (fromHost m.charset) c.chooser) { x = p.x, y = p.y }
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            -- Enter's answer
+            chooserKey { action = 1, keycode = 0, mods = 0, consumed = 0, unshifted = 0, sym = 0xFF0D, text = Bytes.empty } c m
+
+        Just _ ->
+            chooserClosed c (logLine "drop" "the folder chooser cancelled" m)
+
+        Nothing ->
+            meant Reason.OutOfRange Task.succeed m
+
+
+{-| The question before dropped files are sent to a folder puritty chose
+(`[files] drop_uploads = "ask"`, docs/sftp.md FT28): what, where, and on
+which host. -}
+dropBox : Model -> { folder : Bytes, files : Array Bytes, tab : Int } -> Dialog.Dialog
+dropBox m a =
+    let
+        names =
+            Array.map (\p -> Bytes.toStringLossy (Path.filenameAsBytes (Path.fromBytes p))) a.files
+
+        shown =
+            Array.takeFirst 5 names |> Array.map (\n -> "  " ++ n)
+
+        more =
+            if Array.length names > 5 then
+                [ "  and " ++ String.fromInt (Array.length names - 5) ++ " more" ]
+
+            else
+                []
+
+        host =
+            hostLabel m
+    in
+    { title =
+        if Array.length names == 1 then
+            "Send this to " ++ host ++ "?"
+
+        else
+            "Send these " ++ String.fromInt (Array.length names) ++ " to " ++ host ++ "?"
+    , lines = shown ++ more ++ [ "into" ] ++ wrapPath 56 (fromHost m.charset a.folder) ++ [ "Nothing is sent unless you say yes." ]
+    , field = Nothing
+    , swatches = []
+    , check = Nothing
+    , buttons = [ { label = "Send", primary = True }, { label = "Another folder…", primary = False }, { label = "Don't send", primary = False } ]
+    , hint = "Enter: send    C: choose    Esc: don't"
+    }
+
+
+dropKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
+dropKey k a m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+        dropAnswer True a m
+
+    else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
+        dropAnswer False a m
+
+    else if k.sym == 0x63 || k.sym == 0x43 then
+        dropElsewhere a m
+
+    else
+        Task.succeed m
+
+
+{-| Another folder than the one puritty found: the chooser, at that one
+(FT29). -}
+dropElsewhere : { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
+dropElsewhere a m0 =
+    let
+        m =
+            logLine "drop" "question answered: another folder" { m0 | dropAsk = Nothing, urgent = True }
+    in
+    if a.tab /= m.tab.id || Maybe.isJust m.choosing then
+        Task.succeed (noteUp { text = "The dropped files were not sent", failed = False, kept = False } m)
+
+    else
+        chooserIo (chooserOpened a.files a.folder m)
+
+
+dropPress : Window.PointerEvent -> { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
+dropPress p a m =
+    let
+        hit =
+            if p.button == 1 then
+                Dialog.buttonAt (overlaySize m) (dropBox m a) { x = p.x, y = p.y }
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            dropAnswer True a m
+
+        Just 1 ->
+            dropElsewhere a m
+
+        Just _ ->
+            dropAnswer False a m
+
+        Nothing ->
+            meant Reason.OutOfRange (Task.succeed m)
+
+
+{-| The question answered: on yes the files sent, if their tab is still
+the one shown; on no, nothing. -}
+dropAnswer : Bool -> { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
+dropAnswer yes a m0 =
+    let
+        m =
+            logLine "drop"
+                ("question answered: "
+                    ++ (if yes then
+                            "send"
+
+                        else
+                            "don't"
+                       )
+                )
+                { m0 | dropAsk = Nothing, urgent = True }
+    in
+    if not yes then
+        Task.succeed (noteUp { text = "The dropped files were not sent", failed = False, kept = False } m)
+
+    else if a.tab /= m.tab.id then
+        Task.succeed (noteUp { text = "The dropped files were not sent: their tab is not the one shown now", failed = True, kept = False } m)
+
+    else
+        startPending { m | pendingSend = Just { folder = a.folder, files = a.files } }
+
+
+{-| Whether the tab's program runs on a host, by puritty's own ssh or
+OpenSSH's (a host of the settings started either way, docs/sftp.md FT31),
+not on this computer. -}
+isRemoteTab : Model -> Bool
+isRemoteTab m =
+    m.tab.host /= Nothing || m.tab.hostName /= Nothing
+
+
+{-| The tab's host as a question names it: its address, else its name in
+the settings. -}
+hostLabel : Model -> String
+hostLabel m =
+    when m.tab.host is
+        Just h ->
+            h.host
+
+        Nothing ->
+            -- a tab of OpenSSH's ssh: its host's name in the settings
+            meant Reason.NotSet (Maybe.withDefault (meant Reason.NotSet "the host") m.tab.hostName)
+
+
+{-| The tab's host, by the first OSC 7 it read (FT29), once one has come. -}
+shellHostSeen : (taken m : Model) -> Model
+shellHostSeen m =
+    if Maybe.isJust m.shellHost || not (isRemoteTab m) then
+        m
+
+    else
+        when Drop.fileUri (Bytes.fromString (Vt.workingDirectory m.term)) is
+            Just u ->
+                { m | shellHost = Just u.host }
+
+            Nothing ->
+                -- no OSC 7 yet
+                meant Reason.NotYet m
+
+
+{-| The folder the shell of an ssh tab without tmux -CC says it is in, by
+OSC 7, when it names the tab's host (FT29): its path's bytes. -}
+shellFolder : Model -> Maybe Bytes
+shellFolder m =
+    when { said = Drop.fileUri (Bytes.fromString (Vt.workingDirectory m.term)), host = m.shellHost } is
+        { said = Just u, host = Just h } ->
+            if u.host == h && not (Bytes.isEmpty u.path) then
+                Just u.path
+
+            else
+                -- another host's: a nested ssh's
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Where a drop on a tmux pane would have gone, for the note. -}
+dropWhere : Model -> String
+dropWhere m =
+    when TmuxMode.dropTarget m.tmux |> Maybe.map .folder is
+        Just (TmuxMode.Folder path) ->
+            "; they would go to " ++ Bytes.toStringLossy path
+
+        Just (TmuxMode.NoFolder why) ->
+            "; " ++ why ++ ", so a folder would be asked"
+
+        Just (TmuxMode.Asking _) ->
+            "; tmux had not yet said the pane's folder"
+
+        Nothing ->
+            -- no tmux pane marked
+            meant Reason.NotOpen ""
+
+
+droppedChecked : Int -> Array { path : Bytes, there : Bool } -> (taken m : Model) -> Model
+droppedChecked others checked m =
+    let
+        names =
+            Array.map
+                (\c ->
+                    when Bytes.toString c.path is
+                        Just text ->
+                            Just text
+
+                        Nothing ->
+                            -- a name not UTF-8: in the tab's character set
+                            meant Reason.FromOutside
+                                (if m.charset == Charset.Utf8 then
+                                    Nothing
+
+                                 else
+                                    Just (fromHost m.charset c.path)
+                                )
+                )
+                checked
+
+        readable =
+            Array.mapAndKeepJust identity names
+
+        pasted =
+            Drop.quoted (Platform.pathSeparator == "\\") readable
+    in
+    if Array.isEmpty checked then
+        noteUp
+            { text =
+                if others > 0 then
+                    "What was dropped is not a file on this computer"
+
+                else
+                    "The program it was dragged from gave no file on disk to send: a file inside a zip, or an attachment, must be saved first"
+            , failed = True
+            , kept = False
+            }
+            m
+
+    else
+        when Array.findFirst (\c -> not c.there) checked is
+            Just missing ->
+                noteUp { text = "A dropped file is not there, by the name it was given as: " ++ Bytes.toStringLossy missing.value.path, failed = True, kept = False } m
+
+            Nothing ->
+                -- every file there
+                meant Reason.NoMore
+                    (if isRemoteTab m then
+                        sshDropped (Array.map .path checked) m
+
+                     else if Array.length readable < Array.length names || (Charset.encode m.charset (Bytes.fromString pasted)).replaced > 0 then
+                        noteUp { text = "A dropped file's name is not in this tab's character set, " ++ charsetName m.charset ++ ", and was not pasted", failed = True, kept = False } m
+
+                     else
+                        logLine "drop" (String.fromInt (Array.length readable) ++ " paths pasted") (pasteIn False (Bytes.fromString pasted) m)
+                    )
+
+
+{-| A path pasted whole: in double quotes when it has a space, which Claude
+Code takes off. -}
+quotedPath : String -> String
+quotedPath path =
+    if String.contains " " path then
+        "\"" ++ path ++ "\""
+
+    else
+        path
+
+
+{-| A picture on its way when the session ended: said, and forgotten. -}
+uploadLost : (taken m : Model) -> Model
+uploadLost m =
+    if m.upload /= Nothing then
+        noteUp { text = "The connection ended before the picture was sent", failed = True, kept = False } { m | upload = Nothing }
+
+    else
+        m
+
+
+{-| A picture pasted in a local tab on Linux: written to a file of its own
+in `dir`, its path pasted; with `paste_images = "ask"`, the file's path
+asked about first (FT16). -}
+localImage : String -> Bytes -> (taken m : Model) -> Task Error Model
+localImage dir png m0 =
+    let
+        n =
+            m0.uploads + 1
+
+        m =
+            { m0 | uploads = n }
+
+        file =
+            Path.append (Path.fromString ("paste-" ++ String.fromInt m.turnMs ++ "-" ++ String.fromInt n ++ ".png")) (Path.fromString dir)
+    in
+    if m.config.pasteImages == "allow" then
+        writeLocal file png m
+
+    else
+        Task.succeed (askPaste { png = png, path = Path.toString file, to = ToLocal file, on = "on this computer", tab = m.tab.id } m)
+
+
+{-| A local tab's picture written to `file`, its folder made first, and
+its path pasted. -}
+writeLocal : Path.Path -> Bytes -> (taken m : Model) -> Task Error Model
+writeLocal file png m =
+    let
+        fs =
+            m.settings.given.fs
+    in
+    Directory.createAll fs (Path.parent file |> Maybe.withDefault (meant Reason.NotSet file))
+        |> Task.andThen (\_ -> File.writeFile fs png file)
+        |> Task.map (\_ -> Ok {})
+        |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
+        |> Task.map
+            (\written ->
+                when written is
+                    Ok _ ->
+                        pasteIn False (Bytes.fromString (quotedPath (Path.toString file))) (noteUp { text = "Pasted the picture as " ++ Path.toString file, failed = False, kept = False } m)
+
+                    Err why ->
+                        meant Reason.Refused noteUp { text = "The picture could not be written: " ++ why, failed = True, kept = False } m
+            )
+
+
+{-| The question before a pasted picture is written (docs/sftp.md FT16):
+up, and in the log with the path it names. -}
+askPaste : PasteAsk -> (taken m : Model) -> Model
+askPaste a m =
+    logLine "paste" ("asked: write " ++ a.path ++ " " ++ a.on ++ "?") { m | pasteAsk = Just a, urgent = True }
+
+
+{-| The question: where the picture is to be written, by the file's whole
+path, and the buttons that answer. -}
+pasteBox : PasteAsk -> Dialog.Dialog
+pasteBox a =
+    { title = "Paste the picture as a file?"
+    , lines =
+        [ "The picture (" ++ sizeText (Bytes.length a.png) ++ ") is to be written " ++ a.on ++ " as" ]
+            ++ wrapPath 56 a.path
+            ++ [ "and that file's name pasted. Nothing is written unless you say yes." ]
+    , field = Nothing
+    , swatches = []
+    , check = Nothing
+    , buttons = [ { label = "Paste", primary = True }, { label = "Don't paste", primary = False } ]
+    , hint = "Enter: paste it    Esc: don't"
+    }
+
+
+{-| A path in lines of at most `most` characters, broken after a `/`
+where it can be, so that the end of it, the file's name, is never what a
+box's edge cuts off (the box holds about 60). -}
+wrapPath : Int -> String -> Array String
+wrapPath most path =
+    let
+        parts =
+            String.split "/" path
+
+        n =
+            Array.length parts
+
+        pieces =
+            Array.indexedMap
+                (\i part ->
+                    if i < n - 1 then
+                        part ++ "/"
+
+                    else
+                        part
+                )
+                parts
+
+        out =
+            Array.foldl
+                (\piece acc ->
+                    if acc.line == "" || String.count acc.line + String.count piece <= most then
+                        { done = acc.done, line = acc.line ++ piece }
+
+                    else
+                        { done = acc.done ++ [ acc.line ], line = piece }
+                )
+                { done = [], line = "" }
+                pieces
+    in
+    Array.flatten (Array.map (chunked most) (out.done ++ [ out.line ]))
+
+
+{-| Text in pieces of `most` characters, the last shorter. -}
+chunked : Int -> String -> Array String
+chunked most text =
+    if most < 1 || String.count text <= most then
+        [ text ]
+
+    else
+        [ String.takeFirst most text ] ++ chunked most (String.dropFirst most text)
+
+
+{-| A key while the paste question is up: Enter or y writes the picture,
+Escape or n does not; any other key, nothing. -}
+pasteKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> PasteAsk -> (taken m : Model) -> Task Error Model
+pasteKey k a m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+        pasteAnswer True a m
+
+    else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
+        pasteAnswer False a m
+
+    else
+        Task.succeed m
+
+
+{-| A press while the paste question is up: its buttons answer it, and
+nothing reaches the terminal under it. -}
+pastePress : Window.PointerEvent -> PasteAsk -> (taken m : Model) -> Task Error Model
+pastePress p a m =
+    let
+        hit =
+            if p.button == 1 then
+                Dialog.buttonAt (overlaySize m) (pasteBox a) { x = p.x, y = p.y }
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            pasteAnswer True a m
+
+        Just _ ->
+            pasteAnswer False a m
+
+        Nothing ->
+            meant Reason.OutOfRange Task.succeed m
+
+
+{-| The paste question answered: on yes the picture written where the
+question said, if its tab is still the one shown and, for a host, still
+connected; on no, nothing written. -}
+pasteAnswer : Bool -> PasteAsk -> (taken m : Model) -> Task Error Model
+pasteAnswer yes a m0 =
+    let
+        m =
+            logLine "paste"
+                ("question answered: "
+                    ++ (if yes then
+                            "paste"
+
+                        else
+                            "don't paste"
+                       )
+                )
+                { m0 | pasteAsk = Nothing, urgent = True }
+    in
+    if not yes then
+        Task.succeed (noteUp { text = "The picture was not pasted", failed = False, kept = False } m)
+
+    else if a.tab /= m.tab.id then
+        Task.succeed (noteUp { text = "The picture was not pasted: its tab is no longer the one shown", failed = True, kept = False } m)
+
+    else
+        when a.to is
+            ToLocal file ->
+                writeLocal file a.png m
+
+            ToHost name ->
+                when m.remote.side is
+                    Just side ->
+                        if sideUp m && m.upload == Nothing then
+                            sendImage side a.png name m
+
+                        else
+                            Task.succeed (noteUp { text = "The picture was not pasted: the tab is no longer connected", failed = True, kept = False } m)
+
+                    Nothing ->
+                        meant Reason.NotOpen Task.succeed (noteUp { text = "The picture was not pasted: the tab is no longer connected", failed = True, kept = False } m)
+
+
+{-| A picture pasted in a local tab on Windows: an empty bracketed paste,
+where the program asked for bracketed pastes. -}
+emptyPaste : (taken m : Model) -> Model
+emptyPaste m =
+    if modeOn 2004 m && not (TmuxMode.isOn m.tmux) then
+        logLine "paste" "a picture: an empty bracketed paste sent, for the program to read the clipboard" (send (Bytes.flatten [ Paste.bracketStart, Paste.bracketEnd ]) m)
+
+    else
+        logLine "paste" "a picture, and the program asked for no bracketed paste: nothing sent" m
+
+
+{-| A question that may be remembered (`docs/saved-secrets.md` PW8):
+answered from the store when it holds the answer and it has not been
+given on this connection; asked again with a note, "Remember" checked,
+when it was given and refused; else asked, the box offering to remember
+it. A change waiting for the same name is dropped, since being asked
+again means the answer given was refused. -}
+sshAsked : Session.Ask -> (taken m : Model) -> Task Error Model
+sshAsked ask m =
+    let
+        asked =
+            sshNoticed (Session.Asking ask) m
+    in
+    when { kept = Remembered.offered { available = SecretStore.available, setting = m.config.rememberSecrets } (questionOf ask), ssh = asked.ssh } is
+        { kept = Just k, ssh = Just screen0 } ->
+            let
+                screen =
+                    { screen0 | changes = Array.keepIf (\c -> c.target /= k.target) screen0.changes }
+
+                offering refused model =
+                    when screen.asking is
+                        Just a ->
+                            { model | ssh = Just { screen | asking = Just { a | offer = True, remember = refused, refused = refused } } }
+
+                        Nothing ->
+                            meant Reason.NotOpen model
+            in
+            if Array.member k.target screen.tried then
+                Task.succeed (offering True asked)
+
+            else
+                SecretStore.read k.target
+                    |> Task.andThen
+                        (\got ->
+                            when got is
+                                Ok secret ->
+                                    let
+                                        answer =
+                                            when ask is
+                                                Session.Responses _ ->
+                                                    Session.GiveAll [ secret ]
+
+                                                _ ->
+                                                    Session.Give secret
+                                    in
+                                    sshAnswered asked.remote answer "the remembered one given, from Windows' Credential Manager" { screen | tried = Array.pushLast k.target screen.tried } asked
+
+                                Err _ ->
+                                    -- none kept, or the store could not be read
+                                    meant Reason.NotSet Task.succeed (offering False asked)
+                        )
+
+        _ ->
+            Task.succeed asked
+
+
+{-| A question of the session, as `Remembered` takes it. -}
+questionOf : Session.Ask -> Remembered.Question
+questionOf ask =
+    when ask is
+        Session.Password p ->
+            Remembered.Password { account = p.account }
+
+        Session.Passphrase p ->
+            Remembered.Passphrase { file = p.file }
+
+        Session.Responses r ->
+            Remembered.Responses { prompts = r.prompts, account = r.account }
+
+        Session.TrustHostKey _ ->
+            Remembered.NotSecret
+
+        Session.HostKeyChanged _ ->
+            Remembered.NotSecret
+
+
+{-| What the store is to get, now that the session has logged in: each
+answer the box was told to remember written, each refused one not
+replaced taken away; what happened said on the screen. -}
+rememberChanges : (taken m : Model) -> Task Error Model
+rememberChanges m =
+    when m.ssh is
+        Just screen ->
+            if Array.isEmpty screen.changes then
+                Task.succeed m
+
+            else
+                screen.changes
+                    |> Array.map
+                        (\c ->
+                            when c.secret is
+                                Just secret ->
+                                    SecretStore.write { target = c.target, user = c.user, secret = secret }
+                                        |> Task.map
+                                            (\written ->
+                                                when written is
+                                                    Ok _ ->
+                                                        "remembered in Windows' Credential Manager as " ++ c.target
+
+                                                    Err why ->
+                                                        meant Reason.Refused ("not remembered: Windows' Credential Manager said error " ++ why)
+                                            )
+
+                                Nothing ->
+                                    meant Reason.NotSet
+                                        (SecretStore.forget c.target
+                                            |> Task.map (\_ -> "the remembered one, refused, is forgotten: " ++ c.target)
+                                        )
+                        )
+                    |> Task.sequence
+                    |> Task.map (\said -> { m | ssh = Just { screen | changes = [], lines = Array.takeLast 200 (screen.lines ++ said) }, urgent = True })
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed m
+
+
+{-| tmux control mode not running, with the settings' look, bar and
+background. -}
+freshTmux : Config -> Vt.Term -> TmuxMode.State
+freshTmux config like =
+    TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
+        |> TmuxMode.setCell (paneCell { width = like.config.cellWidth, height = like.config.cellHeight })
+        |> TmuxMode.setEmbedder (embedderOf config)
+
+
+{-| What a tmux pane's terminal is given (`docs/images.md` IM18): the
+window's cell size and the image limit. -}
+paneCell : { width : Int, height : Int } -> { width : Int, height : Int, limit : Int }
+paneCell cell =
+    { width = cell.width, height = cell.height, limit = imageLimit }
+
+
+{-| What a changed host key is said with, in the platform's dialog, the box
+and the screen alike (SC28). -}
+changedLines : { host : String, algorithm : String, fingerprint : String, lineNumbers : Array Int } -> Array String
+changedLines k =
+    [ "Its " ++ k.algorithm ++ " key is not the one known for it,"
+    , "which is on line " ++ String.join ", " (Array.map String.fromInt k.lineNumbers) ++ " of known_hosts."
+    , "Someone may be pretending to be the host, or the host was rebuilt."
+    , "The new key's fingerprint:"
+    , "    " ++ k.fingerprint
+    ]
 
 
 {-| A notice from the session, taken into the screen's state. A session
@@ -3420,7 +5689,7 @@ sshNoticed told m =
                             { screen | lines = Array.takeLast 200 (screen.lines ++ Array.map (\l -> "| " ++ cleanText l) (String.lines (String.trimRight text))) }
 
                         Session.Asking ask ->
-                            { screen | asking = Just { ask = ask, typed = "", given = [] } }
+                            { screen | asking = Just { ask = ask, typed = "", given = [], offer = False, remember = False, onCheck = False, refused = False } }
 
                         Session.Started ->
                             { screen | started = True }
@@ -3433,7 +5702,9 @@ sshNoticed told m =
 
                         Session.Ended ->
                             if screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing then
-                                screen
+                                -- a command that failed keeps its screen, with
+                                -- the last lines it wrote (SC29)
+                                { screen | failed = commandFailed screen |> Maybe.map (\why -> String.join "\n" (lastWritten 4 m.term ++ [ why ])) }
 
                             else
                                 -- a session that ends without its shell's exit status
@@ -3443,24 +5714,77 @@ sshNoticed told m =
 
                         Session.Output _ ->
                             screen
+
+                        Session.Side _ ->
+                            -- the side channels' own users read them
+                            screen
             in
-            { m | ssh = Just updated, urgent = True }
+            when told is
+                Session.Side _ ->
+                    m
+
+                _ ->
+                    { m | ssh = Just updated, urgent = True }
 
 
 {-| Whether a notice ends a session that went as it should, its shell's
 `exit`, which the server says with an exit status before the end: its tab
 then closes as a local tab's does when its program ends, and the window
 with its last tab, its exit status the window's (TB8). A session that
-failed, never started, or dropped without an exit status keeps its screen
+failed, never started, dropped without an exit status, or whose command
+ended with a status other than 0 (`commandFailed`) keeps its screen
 and its tab, to reconnect. -}
 endsSession : Session.Notice -> Maybe SshScreen -> Bool
 endsSession told ssh =
     when ssh is
         Just screen ->
-            told == Session.Ended && screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing
+            told == Session.Ended && screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing && commandFailed screen == Nothing
 
         Nothing ->
             meant Reason.NotSet False
+
+
+{-| The last `n` lines a session's program left on its terminal, not
+blank, each cleaned of what could not be shown: the screen and a few rows
+of scrollback above it, which is where a command's last words are when it
+fails (SC29). -}
+lastWritten : Int -> Vt.Term -> Array String
+lastWritten n term =
+    let
+        top =
+            Vt.rowsPushed term
+    in
+    Vt.selectionText { row = max 0 (top - n), col = 0 } { row = top + 100000, col = 0 } term
+        |> String.lines
+        |> Array.map (\l -> cleanText (String.trimRight l))
+        |> Array.keepIf (\l -> String.trim l /= "")
+        |> Array.takeLast n
+
+
+{-| Why a session's command failed, when one was given and its exit status
+is not 0 (`docs/ssh-client.md` SC29): `tmux -CC attach` that finds no
+session, or a command its shell cannot find, said in the program's own
+words on the terminal behind. A login shell's status is its last
+command's, so a shell closes its window whatever its status. -}
+commandFailed : SshScreen -> Maybe String
+commandFailed screen =
+    when screen.command is
+        Just command ->
+            when screen.exitStatus is
+                Just status ->
+                    if status /= 0 then
+                        Just ("the command \"" ++ cleanText command ++ "\"\nended with status " ++ String.fromInt status)
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    -- the session has not said its status
+                    meant Reason.NotYet Nothing
+
+        Nothing ->
+            -- a login shell, no command given
+            meant Reason.NotSet Nothing
 
 
 {-| Text from the server or the network made safe to show: control
@@ -3497,6 +5821,9 @@ sshKey remote k m =
         backspace =
             k.sym == 0xFF08
 
+        tab =
+            k.sym == 0xFF09
+
         letter =
             String.toLower (Bytes.toStringLossy k.text)
     in
@@ -3510,8 +5837,36 @@ sshKey remote k m =
                     let
                         answered answer line model =
                             sshAnswered remote answer line screen model
+
+                        -- an answer the box offered to remember: what the
+                        -- store is to get at the login, by its checkbox
+                        answeredKeeping secret answer line model =
+                            when Remembered.offered { available = SecretStore.available, setting = model.config.rememberSecrets } (questionOf asking.ask) is
+                                Just name ->
+                                    if asking.offer then
+                                        sshAnswered remote answer line { screen | changes = Remembered.changesAt { kept = name, remember = asking.remember, refused = asking.refused, secret = secret } screen.changes } model
+
+                                    else
+                                        sshAnswered remote answer line screen model
+
+                                Nothing ->
+                                    meant Reason.NotSet sshAnswered remote answer line screen model
                     in
                     when asking.ask is
+                        Session.HostKeyChanged _ ->
+                            -- Enter does nothing: only a letter trusts it
+                            if letter == "a" then
+                                answered (Session.Trust { remember = True }) "the changed key is trusted, in place of the old one" m
+
+                            else if letter == "o" then
+                                answered (Session.Trust { remember = False }) "the changed key is trusted this once" m
+
+                            else if escape || letter == "n" then
+                                answered Session.Decline "the changed key is not trusted" m
+
+                            else
+                                Task.succeed m
+
                         Session.TrustHostKey _ ->
                             if letter == "a" then
                                 answered (Session.Trust { remember = True }) "the key is trusted and remembered" m
@@ -3529,13 +5884,22 @@ sshKey remote k m =
                             if escape then
                                 answered Session.Decline "the prompts are not answered" m
 
+                            else if tab && asking.offer then
+                                -- Tab moves between the field and the
+                                -- checkbox (PW10)
+                                Task.succeed { m | ssh = Just { screen | asking = Just { asking | onCheck = not asking.onCheck } }, urgent = True }
+
+                            else if asking.onCheck && k.sym == 0x20 then
+                                -- Space ticks the checkbox it is on
+                                Task.succeed { m | ssh = Just { screen | asking = Just { asking | remember = not asking.remember } }, urgent = True }
+
                             else if enter then
                                 let
                                     given =
                                         Array.pushLast asking.typed asking.given
                                 in
                                 if Array.length given >= Array.length r.prompts then
-                                    answered (Session.GiveAll given) "answered" m
+                                    answeredKeeping asking.typed (Session.GiveAll given) "answered" m
 
                                 else
                                     Task.succeed { m | ssh = Just { screen | asking = Just { asking | typed = "", given = given } }, urgent = True }
@@ -3548,7 +5912,16 @@ sshKey remote k m =
                                 answered Session.Decline "not given" m
 
                             else if enter then
-                                answered (Session.Give asking.typed) "given" m
+                                answeredKeeping asking.typed (Session.Give asking.typed) "given" m
+
+                            else if tab && asking.offer then
+                                -- Tab moves between the field and the
+                                -- checkbox (PW10)
+                                Task.succeed { m | ssh = Just { screen | asking = Just { asking | onCheck = not asking.onCheck } }, urgent = True }
+
+                            else if asking.onCheck && k.sym == 0x20 then
+                                -- Space ticks the checkbox it is on
+                                Task.succeed { m | ssh = Just { screen | asking = Just { asking | remember = not asking.remember } }, urgent = True }
 
                             else
                                 Task.succeed (editTyped backspace k m)
@@ -3556,8 +5929,15 @@ sshKey remote k m =
                 Nothing ->
                     meant Reason.NotOpen
                         if screen.failed /= Nothing && letter == "r" then
-                            remote.reconnect { columns = m.term.cols, rows = m.term.rows }
-                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, urgent = True })
+                            -- the new connection starts outside tmux: one
+                            -- attached with -CC when the old dropped never said
+                            -- %exit, and its state would take the new shell's
+                            -- output and send it the keys as tmux's commands
+                            -- (docs/tmux.md TM93); and none of the old
+                            -- session's modes kept, its screen left in place
+                            -- (docs/tabs.md TB19)
+                            remote.reconnect (ptySize m.term.cols m.term.rows m.term)
+                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing, tried = [], changes = [] }, tmux = freshTmux m.config m.term, term = Vt.restarted m.term, back = 0, selection = Nothing, urgent = True })
 
                         else if (screen.failed /= Nothing && enter) || escape then
                             -- this tab's session given up: the tab closed, and
@@ -3596,7 +5976,12 @@ updateTyped f m =
         Just screen ->
             when screen.asking is
                 Just asking ->
-                    { m | ssh = Just { screen | asking = Just { asking | typed = f asking.typed } }, urgent = True }
+                    if asking.onCheck then
+                        -- the checkbox has the keys: nothing typed
+                        m
+
+                    else
+                        { m | ssh = Just { screen | asking = Just { asking | typed = f asking.typed } }, urgent = True }
 
                 Nothing ->
                     meant Reason.NotOpen m
@@ -3610,9 +5995,57 @@ screen (docs/ssh-client.md SC23): what `ownTerm` writes on the screen
 without one. -}
 dialogOf : SshScreen -> Maybe Dialog.Dialog
 dialogOf screen =
+    questionDialog screen
+        |> Maybe.map
+            (\d ->
+                when screen.asking is
+                    Just asking ->
+                        remembering asking d
+
+                    Nothing ->
+                        meant Reason.NotOpen d
+            )
+
+
+{-| A question's box with "Remember" (`docs/saved-secrets.md` PW8, PW10),
+where the question may be remembered: its checkbox, which a click ticks,
+or Tab to it and Space, and a note when a remembered answer was
+refused. -}
+remembering : { ask : Session.Ask, typed : String, given : Array String, offer : Bool, remember : Bool, onCheck : Bool, refused : Bool } -> Dialog.Dialog -> Dialog.Dialog
+remembering asking d =
+    if asking.offer then
+        { d
+            | lines =
+                (if asking.refused then
+                    [ "The remembered one was refused." ]
+
+                 else
+                    []
+                )
+                    ++ d.lines
+            , check = Just { label = "Remember it in Windows' Credential Manager", checked = asking.remember, focused = asking.onCheck }
+        }
+
+    else
+        d
+
+
+questionDialog : SshScreen -> Maybe Dialog.Dialog
+questionDialog screen =
     when screen.asking is
         Just asking ->
             when asking.ask is
+                Session.HostKeyChanged k ->
+                    Just
+                        { title = "THE KEY OF " ++ cleanText k.host ++ " HAS CHANGED"
+                        , lines = changedLines k
+                        , field = Nothing
+                        , swatches = []
+                        , check = Nothing
+                        , buttons = []
+                        , hint = "Esc: don't connect (safe)    O: trust once    A: trust, in place of the old key"
+                        }
+
                 Session.TrustHostKey k ->
                     Just
                         { title = "The host " ++ cleanText k.host ++ " is not known"
@@ -3626,12 +6059,13 @@ dialogOf screen =
                                    )
                         , field = Nothing
                         , swatches = []
+                        , check = Nothing
                         , buttons = []
                         , hint = "A: trust and remember    O: trust once    Esc: don't connect"
                         }
 
                 Session.Password p ->
-                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], hint = "Enter: log in    Esc: do not use a password", buttons = [] }
+                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], check = Nothing, hint = "Enter: log in    Esc: do not use a password", buttons = [] }
 
                 Session.Passphrase p ->
                     let
@@ -3642,7 +6076,7 @@ dialogOf screen =
                         name =
                             String.split "/" file |> Array.last |> Maybe.withDefault file |> String.split "\\" |> Array.last |> Maybe.withDefault file
                     in
-                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], hint = "Enter: unlock the key    Esc: skip this key", buttons = [] }
+                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], check = Nothing, hint = "Enter: unlock the key    Esc: skip this key", buttons = [] }
 
                 Session.Responses r ->
                     when Array.get (Array.length asking.given) r.prompts is
@@ -3664,6 +6098,7 @@ dialogOf screen =
                                         ++ [ cleanText prompt.text ]
                                 , field = Just { typed = asking.typed, hidden = not prompt.echo, caret = String.count asking.typed }
                                 , swatches = []
+                                , check = Nothing
                                 , buttons = []
                                 , hint = "Enter: answer    Esc: do not answer"
                                 }
@@ -3675,7 +6110,7 @@ dialogOf screen =
             meant Reason.NotOpen
                 when screen.failed is
                     Just why ->
-                        Just { title = "The session could not go on", lines = [ why ], field = Nothing, swatches = [], hint = "Enter: close    R: connect again", buttons = [] }
+                        Just { title = "The session could not go on", lines = String.lines why, field = Nothing, swatches = [], check = Nothing, hint = "Enter: close    R: connect again", buttons = [] }
 
                     Nothing ->
                         meant Reason.NotOpen Nothing
@@ -3710,6 +6145,11 @@ ownTerm m boxed screen =
             when screen.asking is
                 Just asking ->
                     when asking.ask is
+                        Session.HostKeyChanged k ->
+                            [ line "", line (bold ("THE KEY OF " ++ cleanText k.host ++ " HAS CHANGED.")) ]
+                                ++ Array.map (\l -> line ("  " ++ l)) (changedLines k)
+                                ++ [ line "", line "  Esc: do not connect (the safe choice)    O: trust it this once    A: trust it, in place of the old key" ]
+
                         Session.TrustHostKey k ->
                             [ line ""
                             , line (bold ("The host " ++ cleanText k.host ++ " is not known."))
@@ -3772,7 +6212,7 @@ ownTerm m boxed screen =
                     meant Reason.NotOpen
                         when screen.failed is
                             Just why ->
-                                [ line "", line (bold "The session could not go on:"), line ("  " ++ why), line "", line "  Enter: close    R: connect again" ]
+                                [ line "", line (bold "The session could not go on:") ] ++ Array.map (\l -> line ("  " ++ l)) (String.lines why) ++ [ line "", line "  Enter: close    R: connect again" ]
 
                             Nothing ->
                                 meant Reason.NotOpen []
@@ -3783,6 +6223,9 @@ ownTerm m boxed screen =
                 Just asking ->
                     when asking.ask is
                         Session.TrustHostKey _ ->
+                            False
+
+                        Session.HostKeyChanged _ ->
                             False
 
                         _ ->
@@ -3844,6 +6287,67 @@ handleOne remote ms rest ev m =
                 -- the box saying a tab did not start takes the keys
                 (if k.action /= 0 then
                     startFailedKey k m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if Maybe.isJust m.dropAsk then
+                -- the question before dropped files are sent (FT28)
+                (if k.action /= 0 then
+                    when m.dropAsk is
+                        Just a ->
+                            dropKey k a m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if sendingAsks m then
+                -- the conflict question takes the keys (docs/sftp.md FT25)
+                (if k.action /= 0 then
+                    when m.sending is
+                        Just s ->
+                            conflictKey k s m
+
+                        Nothing ->
+                            meant Reason.NotOpen (Task.succeed m)
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if Maybe.isJust m.choosing then
+                -- the folder chooser takes the keys (docs/sftp.md FT24)
+                (if k.action /= 0 then
+                    when m.choosing is
+                        Just c ->
+                            chooserKey k c m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if m.pasteAsk /= Nothing then
+                -- the question before a picture is written takes the keys
+                -- (docs/sftp.md FT16)
+                (if k.action /= 0 then
+                    when m.pasteAsk is
+                        Just a ->
+                            pasteKey k a m
+
+                        Nothing ->
+                            Task.succeed m
 
                  else
                     Task.succeed m
@@ -3946,9 +6450,9 @@ handleOne remote ms rest ev m =
                     Just points ->
                         Window.zoom points
                             |> Task.andThen
-                                (\_ ->
+                                (\cell ->
                                     -- every cell is drawn again at the new size
-                                    handle remote ms rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
+                                    handle remote ms rest (cellSized cell { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True })
                                 )
 
                     Nothing ->
@@ -4047,7 +6551,13 @@ handleOne remote ms rest ev m =
                     else
                         Bytes.empty
             in
-            handle remote ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
+            (if on then
+                refreshRecents m
+
+             else
+                Task.succeed m
+            )
+                |> Task.andThen (\next -> handle remote ms rest (send report { next | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 }))
 
         Window.Close ->
             -- asked first when a tab is busy (docs/tabs.md TB7)
@@ -4167,6 +6677,78 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if Maybe.isJust m.dropAsk then
+                -- the question before dropped files are sent
+                (if p.action == 0 then
+                    when m.dropAsk is
+                        Just a ->
+                            dropPress p a m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if sendingAsks m then
+                -- the conflict question takes the pointer
+                (if p.action == 0 then
+                    when m.sending is
+                        Just s ->
+                            conflictPress p s m
+
+                        Nothing ->
+                            meant Reason.NotOpen (Task.succeed m)
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if Maybe.isJust m.sending && p.action == 0 && p.button == 1 && Dialog.noteBarAt (overlaySize m) (Maybe.map .text m.note |> Maybe.withDefault (meant Reason.NotOpen "")) { x = p.x, y = p.y } && Maybe.isJust m.note then
+                -- a click on the progress cancels the batch (FT25)
+                (when m.sending is
+                    Just s ->
+                        sendingStep (Sending.cancel s) { m | urgent = True }
+
+                    Nothing ->
+                        Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if Maybe.isJust m.choosing then
+                -- the folder chooser takes the pointer
+                (if p.action == 0 then
+                    when m.choosing is
+                        Just c ->
+                            chooserPress p c m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if m.pasteAsk /= Nothing then
+                -- the paste question takes the pointer, as the close
+                -- question does
+                (if p.action == 0 then
+                    when m.pasteAsk is
+                        Just a ->
+                            pastePress p a m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if m.closing /= Nothing then
                 -- the close question takes the pointer: its buttons
                 -- answer it, and nothing reaches the terminal (TB12)
@@ -4197,6 +6779,12 @@ handleOne remote ms rest ev m =
                     Task.succeed m
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if p.action == 0 && p.button == 1 && ownScreenUp m && rememberOffered m then
+                -- the ssh question's box: a click on its checkbox ticks it
+                -- and gives it the keys, one elsewhere gives them back to
+                -- the field (docs/saved-secrets.md PW10)
+                handle remote ms rest (rememberPress p m)
 
             else if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
                 -- a press on the tab bar (docs/tabs.md TB1)
@@ -4232,8 +6820,8 @@ handleOne remote ms rest ev m =
                 else
                     Window.zoom points
                         |> Task.andThen
-                            (\_ ->
-                                handle remote ms steps.rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
+                            (\cell ->
+                                handle remote ms steps.rest (cellSized cell { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True })
                             )
 
             else
@@ -4253,6 +6841,62 @@ handleOne remote ms rest ev m =
                                 Nothing ->
                                     meant Reason.NotOpen pasteIn more text m
                             )
+                    )
+
+        Window.PastedImage more ->
+            Window.pasted
+                |> Task.andThen
+                    (\bytes ->
+                        let
+                            got =
+                                when m.imagePaste is
+                                    Gathering pieces ->
+                                        Array.pushLast bytes pieces
+
+                                    _ ->
+                                        [ bytes ]
+                        in
+                        if more then
+                            handle remote ms rest { m | imagePaste = Gathering got }
+
+                        else
+                            imagePasted (Bytes.flatten got) { m | imagePaste = NoImagePaste, turnMs = ms }
+                                |> Task.andThen (handle remote ms rest)
+                    )
+
+        Window.DragOver d ->
+            -- in an ssh tab under tmux -CC, the pane under the pointer is
+            -- marked with the folder the files would go to (docs/sftp.md
+            -- FT6, FT23)
+            if TmuxMode.isOn m.tmux && isRemoteTab m then
+                let
+                    r =
+                        TmuxMode.dragOver { col = d.x // max 1 d.cellWidth, row = d.y // max 1 d.cellHeight, ms = ms } m.tmux
+                in
+                handle remote ms rest (sendCommands r.commands { m | tmux = r.state, urgent = r.changed || m.urgent })
+
+            else
+                handle remote ms rest m
+
+        Window.DragLeft ->
+            if TmuxMode.dropTarget m.tmux /= Nothing then
+                handle remote ms rest { m | tmux = TmuxMode.dragLeft m.tmux, urgent = True }
+
+            else
+                handle remote ms rest m
+
+        Window.Dropped more ->
+            Window.dropped
+                |> Task.andThen
+                    (\bytes ->
+                        if more then
+                            handle remote ms rest { m | dropGather = Array.pushLast bytes m.dropGather }
+
+                        else
+                            filesDropped (Bytes.flatten (Array.pushLast bytes m.dropGather)) { m | dropGather = [], turnMs = ms }
+                                |> Task.andThen chooserIo
+                                |> Task.andThen startPending
+                                |> Task.andThen (handle remote ms rest)
                     )
 
         Window.SelectionLost which ->
@@ -4292,7 +6936,14 @@ owned remote ms rest m =
             meant Reason.NoMore
                 when m.toPaste is
                     Just which ->
-                        Window.paste which
+                        -- the clipboard's text, or its picture when it holds
+                        -- no text (docs/sftp.md FT13)
+                        (if which == Window.Clipboard && m.clipRead == Nothing then
+                            Window.pasteOrImage
+
+                         else
+                            Window.paste which
+                        )
                             |> Task.andThen
                                 (\_ ->
                                     handle remote
@@ -4307,12 +6958,42 @@ owned remote ms rest m =
                                                         "the clipboard"
                                                    )
                                             )
-                                            { m | toPaste = Nothing }
+                                            { m | toPaste = Nothing, imagePaste = NoImagePaste }
                                         )
                                 )
 
                     Nothing ->
                         meant Reason.NoMore handle remote ms rest m
+
+
+{-| An OSC 8 link Ctrl+clicked, opened as the desktop opens one (Open: xdg-open,
+the shell's "open"), if it is a web, mail or local file link (`Links`);
+what happened said in the log (docs/claude-code.md CL9). -}
+linkOpened : (taken m : Model) -> Task x Model
+linkOpened m =
+    when m.toOpen is
+        Just uri ->
+            let
+                cleared =
+                    { m | toOpen = Nothing }
+            in
+            if Links.openable uri then
+                Open.link (Maybe.map .cp m.settingsWindow) uri
+                    |> Task.map
+                        (\opened ->
+                            when opened is
+                                Ok _ ->
+                                    logLine "link" ("opened, " ++ String.fromInt (String.count uri) ++ " characters") cleared
+
+                                Err why ->
+                                    meant Reason.Refused (logLine "link" ("not opened: " ++ why) cleared)
+                        )
+
+            else
+                Task.succeed (logLine "link" "not opened: not a web, mail or local file link" cleared)
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed m
 
 
 {-| The OSC 52 requests the core made (docs/phase3-select.md §16): a write
@@ -4415,6 +7096,43 @@ pasteIn more text m =
         pasteInto more text m
 
 
+{-| A paste's line ends as Enter sends them, CR, bracketed or not, as
+xterm, VTE, PuTTY and Windows Terminal paste them; CRLF one CR (docs/tmux.md
+TM95). Ghostty's encoder (`Vt.Paste`, held to it by the paste gate) keeps LF
+in a bracketed paste, and a program that never asked for brackets gets it
+through tmux, which brackets a paste only for the programs that asked: LF is
+Ctrl-J to it, Justify to an older nano, which joined the pasted lines. -}
+lineEnds : Bytes -> Bytes
+lineEnds bytes =
+    Bytes.fromUInt8s (lineEndsFrom bytes 0 (Bytes.length bytes) -1 [])
+
+
+lineEndsFrom : Bytes -> Int -> Int -> Int -> Array UInt8 -> Array UInt8
+lineEndsFrom bytes i n last out =
+    if i >= n then
+        out
+
+    else
+        when Bytes.get i bytes is
+            Just u ->
+                let
+                    b =
+                        UInt8.toInt u
+                in
+                if b == 0x0A then
+                    if last == 0x0D then
+                        lineEndsFrom bytes (i + 1) n b out
+
+                    else
+                        lineEndsFrom bytes (i + 1) n b (Array.pushLast (UInt8.fromInt 0x0D) out)
+
+                else
+                    lineEndsFrom bytes (i + 1) n b (Array.pushLast u out)
+
+            Nothing ->
+                out
+
+
 pasteInto : Bool -> Bytes -> (taken m : Model) -> Model
 pasteInto more text m =
     let
@@ -4438,7 +7156,7 @@ pasteInto more text m =
 
                       else
                         Bytes.empty
-                    , Paste.piece bracketed text
+                    , lineEnds (Paste.piece bracketed text)
                     , if not more && bracketed then
                         Paste.bracketEnd
 
@@ -4458,7 +7176,7 @@ pasteInto more text m =
                 Bytes.empty
 
             else
-                Paste.piece True text
+                lineEnds (Paste.piece True text)
 
         updated =
             { m
@@ -4561,8 +7279,34 @@ pointer ms p m =
 
         taken =
             Bitwise.and p.mods 1 /= 0 && not wheel && (p.action /= 2 || held /= 0)
+
+        -- Ctrl and the left button on an OSC 8 link opens it (CL9): with
+        -- Shift too where the program takes the mouse, whose own a plain
+        -- Ctrl+click then is
+        linkPress =
+            p.action == 0 && p.button == 1 && Bitwise.and p.mods 2 /= 0 && Bitwise.and p.mods 12 == 0
+
+        link =
+            if not linkPress then
+                Nothing
+
+            else if TmuxMode.isOn m.tmux then
+                TmuxMode.linkAt p m.tmux
+
+            else if modes.tracking == Mouse.none || Bitwise.and p.mods 1 /= 0 then
+                Vt.linkAt (viewBack m)
+                    { row = clamp 0 (m.term.rows - 1) (p.y // max 1 p.cellHeight)
+                    , col = clamp 0 (m.term.cols - 1) (p.x // max 1 p.cellWidth)
+                    }
+                    m.term
+
+            else
+                Nothing
     in
-    if TmuxMode.isOn m.tmux then
+    if link /= Nothing then
+        { m | toOpen = link }
+
+    else if TmuxMode.isOn m.tmux then
         -- tmux's panes, their programs and selections in them
         -- (docs/tmux.md TM16, TM17); Shift selects
         let
@@ -5279,6 +8023,18 @@ draw ms m =
             else if m.closing /= Nothing then
                 Maybe.map closeBox m.closing
 
+            else if Maybe.isJust m.dropAsk then
+                Maybe.map (dropBox m) m.dropAsk
+
+            else if sendingAsks m then
+                Maybe.andThen (\s -> Maybe.map (Sending.conflictBox (fromHost m.charset)) s.asking) m.sending
+
+            else if Maybe.isJust m.choosing then
+                Maybe.map (\c -> Chooser.dialog (fromHost m.charset) c.chooser) m.choosing
+
+            else if m.pasteAsk /= Nothing then
+                Maybe.map pasteBox m.pasteAsk
+
             else if m.renaming /= Nothing then
                 Maybe.map renameBox m.renaming
 
@@ -5302,6 +8058,7 @@ draw ms m =
                                 else
                                     Nothing
                             , swatches = []
+                            , check = Nothing
                             , buttons = []
                             , hint = p.hint
                             }
@@ -5352,10 +8109,19 @@ draw ms m =
                     )
                     m.search
 
+        -- a note of what puritty did (docs/sftp.md FT13)
+        noteDrawn =
+            when m.note is
+                Just n ->
+                    Dialog.noteBar overlay { text = n.text, failed = n.failed }
+
+                Nothing ->
+                    meant Reason.NotOpen Bytes.empty
+
         -- every cell drawn while anything is over them, and in the frame
         -- the last of it goes: a scroll's copy would carry it along
         over =
-            boxed || not (Bytes.isEmpty bar) || searchDrawn /= Nothing
+            boxed || not (Bytes.isEmpty bar) || searchDrawn /= Nothing || not (Bytes.isEmpty noteDrawn)
 
         shadow0 =
             if over || m.overlaid then
@@ -5388,19 +8154,25 @@ draw ms m =
                 )
 
         title =
-            (if tmuxOn then
-                TmuxMode.title tmux
-
-             else if ownUp then
-                -- puritty's own while its screen is up, which no server can set
-                "puritty: ssh to " ++ (m.ssh |> Maybe.map .host |> Maybe.withDefault "")
-
-             else if m.term.title == "" then
-                m.config.title
+            (if tmuxOn || ownUp then
+                ""
 
              else
-                m.term.title
+                statusMark (Vt.programStatus m.term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet ""))
             )
+                ++ (if tmuxOn then
+                        TmuxMode.title tmux
+
+                    else if ownUp then
+                        -- puritty's own while its screen is up, which no server can set
+                        "puritty: ssh to " ++ (m.ssh |> Maybe.map .host |> Maybe.withDefault "")
+
+                    else if m.term.title == "" then
+                        m.config.title
+
+                    else
+                        m.term.title
+                   )
                 ++ (if m.replaced > 0 then
                         " [" ++ String.fromInt m.replaced ++ " characters sent as ?]"
 
@@ -5443,7 +8215,7 @@ draw ms m =
                         else
                             View.frameWith m.look m.focus preedit highlight m.term shadow0
     in
-    Window.draw (Bytes.flatten [ f.list, tabsDrawn, bar, Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list searchDrawn), Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list boxDrawn) ])
+    Window.draw (Bytes.flatten [ f.list, tabsDrawn, bar, noteDrawn, Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list searchDrawn), Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list boxDrawn) ])
         |> Task.andThen (\up -> Window.spot (Maybe.withDefault (meant Reason.NotOpen Maybe.withDefault (meant Reason.NotOpen spot) (Maybe.map .spot searchDrawn)) (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
@@ -5719,7 +8491,7 @@ labelsOf i m acc =
             m
             (when Builder.get i m.tabs |> Maybe.andThen identity is
                 Just t ->
-                    Array.pushLast { id = t.info.id, label = tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh, color = tabColorOf m.config t.info } acc
+                    Array.pushLast { id = t.info.id, label = statusMark (Vt.programStatus t.term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet "")) ++ sendingMark t.sending ++ tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh, color = tabColorOf m.config t.info } acc
 
                 Nothing ->
                     meant Reason.Gone acc
@@ -5752,6 +8524,10 @@ swapTab t m =
         , tmux = m.tmux
         , search = m.search
         , syncSince = m.syncSince
+        , upload = m.upload
+        , sending = m.sending
+        , choosing = m.choosing
+        , shellHost = m.shellHost
         }
     , model =
         { m
@@ -5771,6 +8547,10 @@ swapTab t m =
             , tmux = t.tmux
             , search = t.search
             , syncSince = t.syncSince
+            , upload = t.upload
+            , sending = t.sending
+            , choosing = t.choosing
+            , shellHost = t.shellHost
         }
     }
 
@@ -5798,6 +8578,15 @@ afterSwitch m =
         , shadow = View.shadowIn m.term.cols m.term.rows m.windowRows
         , urgent = True
         , menu = Nothing
+        -- a note kept for work going on, such as a transfer's progress, is
+        -- the tab's that was shown: its mark in the bar says it goes on
+        -- (docs/sftp.md FT26)
+        , note =
+            if Maybe.map .until m.note == Just -1 then
+                Nothing
+
+            else
+                m.note
     }
 
 
@@ -5922,6 +8711,15 @@ freshTerm config like cols rows =
         }
         |> Vt.withPalette config.palette
         |> Vt.withEmbedder (embedderOf config)
+        |> Vt.withImageLimit imageLimit
+
+
+{-| The most bytes a terminal's images hold together, 320 MB, as Ghostty's
+app and WezTerm keep (`docs/images.md` IM9). It was 0 for 0.1.1, which
+was released with images off (IM16). -}
+imageLimit : Int
+imageLimit =
+    320000000
 
 
 isFree : Maybe Tab -> Bool
@@ -5976,6 +8774,10 @@ openTabWith with m =
         host =
             m.tab.host
 
+        -- its pixels as the shown tab's cells give them (IM21)
+        px =
+            ptySize cols rows m.term
+
         -- a local tab starts in the shown one's directory (TB4), or the
         -- program's own when that cannot be read
         here =
@@ -5997,7 +8799,7 @@ openTabWith with m =
                             |> Task.mapError Os.Error.toString
                             |> Task.andThen
                                 (\dir ->
-                                    m.starter.local { columns = cols, rows = rows, directory = dir }
+                                    m.starter.local { columns = cols, rows = rows, widthInPixels = px.widthInPixels, heightInPixels = px.heightInPixels, directory = dir }
                                         -- a directory removed under the shown
                                         -- tab cannot be started in: the
                                         -- program's own, as when it cannot be
@@ -6008,7 +8810,7 @@ openTabWith with m =
                                                     Task.fail why
 
                                                 else
-                                                    m.starter.local { columns = cols, rows = rows, directory = Nothing }
+                                                    m.starter.local { columns = cols, rows = rows, widthInPixels = px.widthInPixels, heightInPixels = px.heightInPixels, directory = Nothing }
                                             )
                                 )
                             |> Task.map (\remote -> { remote = remote, problems = [] })
@@ -6092,10 +8894,14 @@ freshTab id remote host name color cols rows m =
     , pasting = Nothing
     , clips = []
     , clipRead = Nothing
-    , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
-    , tmux = TmuxMode.setBackground m.config.background (TmuxMode.setLook (m.config.tmuxLook == "tmux") (TmuxMode.setBar (m.config.tmuxTabs == "top") (TmuxMode.idle {})))
+    , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] }) host
+    , tmux = freshTmux m.config m.term
     , search = Nothing
     , syncSince = -1
+    , upload = Nothing
+    , sending = Nothing
+    , choosing = Nothing
+    , shellHost = Nothing
     }
 
 
@@ -6132,10 +8938,14 @@ reopened k id remote host m =
         , pasting = Nothing
         , clips = []
         , clipRead = Nothing
-        , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
-        , tmux = TmuxMode.setBackground m.config.background (TmuxMode.setLook (m.config.tmuxLook == "tmux") (TmuxMode.setBar (m.config.tmuxTabs == "top") (TmuxMode.idle {})))
+        , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] }) host
+        , tmux = freshTmux m.config m.term
         , search = Nothing
         , syncSince = -1
+        , upload = Nothing
+        , sending = Nothing
+        , choosing = Nothing
+        , shellHost = Nothing
     }
 
 
@@ -6359,7 +9169,7 @@ resizeShown cols rows m =
             told =
                 TmuxMode.resized { cols = cols, rows = rows } m.tmux
         in
-        m.remote.resize { columns = cols, rows = rows }
+        m.remote.resize (ptySize cols rows m.term)
             |> Task.map (\_ -> sendCommands told.commands { m | term = Vt.resize cols rows m.term, tmux = told.state, urgent = True, back = 0, selection = Nothing })
 
 
@@ -6486,6 +9296,18 @@ endTab id kill m =
 -- THE BAR
 
 
+{-| A tab sending files marked in the bar, shown or not (FT6, FT26). -}
+sendingMark : Maybe Sending.Sending -> String
+sendingMark sending =
+    when sending is
+        Just _ ->
+            "↑ "
+
+        Nothing ->
+            -- a tab sending nothing, most of them
+            meant Reason.NotOpen ""
+
+
 {-| What a tab shows: the name given it, else its host's, else its
 program's title, else "shell", with `! ` once it rang. -}
 tabLabel : TabInfo -> String -> String
@@ -6554,9 +9376,14 @@ barTabs m =
         hidden =
             labelsOf 0 m []
 
+        -- the shown tab's Program Status mark, read here: the closure
+        -- below may only read the model's fields (CL7)
+        shownMark =
+            statusMark (Vt.programStatus m.term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet ""))
+
         one id =
             if id == m.tab.id then
-                Just { id = id, label = lostMark (sessionLost m.ssh) (tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh, color = tabColorOf m.config m.tab }
+                Just { id = id, label = lostMark (sessionLost m.ssh) (shownMark ++ sendingMark m.sending ++ tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh, color = tabColorOf m.config m.tab }
 
             else
                 Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { id = id, label = lostMark f.value.lost f.value.label, active = False, bell = f.value.bell, activity = f.value.activity, lost = f.value.lost, color = f.value.color })
@@ -6907,6 +9734,7 @@ colorBox m =
                 meant Reason.NotSet [ "A color for this tab in the bar." ]
     , field = Nothing
     , swatches = Array.map swatch (colorChoices m)
+    , check = Nothing
     , buttons = []
     , hint =
         if info.hostName /= Nothing then
@@ -7015,6 +9843,7 @@ renameBox r =
     , lines = [ "An empty name gives the program's own title back." ]
     , field = Just { typed = r.typed, hidden = False, caret = String.count r.typed }
     , swatches = []
+    , check = Nothing
     , buttons = []
     , hint = "Enter: rename    Esc: cancel"
     }
@@ -7155,6 +9984,7 @@ startFailedBox why =
     , lines = wordLines 60 why
     , field = Nothing
     , swatches = []
+    , check = Nothing
     , buttons = [ { label = "OK", primary = True } ]
     , hint = "Enter or Esc: close this"
     }
@@ -7210,6 +10040,45 @@ startFailedPress p m =
         Task.succeed m
 
 
+{-| Whether the ssh question up offers to remember its answer. -}
+rememberOffered : Model -> Bool
+rememberOffered m =
+    when m.ssh |> Maybe.andThen .asking is
+        Just asking ->
+            asking.offer
+
+        Nothing ->
+            meant Reason.NotOpen False
+
+
+{-| A press while the ssh question offers to remember (PW10): on the
+checkbox or its label, ticked or not, and the keys to it; anywhere else,
+the keys back to the field. -}
+rememberPress : Window.PointerEvent -> (taken m : Model) -> Model
+rememberPress p m =
+    when m.ssh is
+        Just screen ->
+            when screen.asking is
+                Just asking ->
+                    let
+                        onIt =
+                            dialogOf screen
+                                |> Maybe.map (\d -> Dialog.checkAt (overlaySize m) d { x = p.x, y = p.y })
+                                |> Maybe.withDefault (meant Reason.NotOpen False)
+                    in
+                    if onIt then
+                        { m | ssh = Just { screen | asking = Just { asking | remember = not asking.remember, onCheck = True } }, urgent = True }
+
+                    else
+                        { m | ssh = Just { screen | asking = Just { asking | onCheck = False } }, urgent = True }
+
+                Nothing ->
+                    meant Reason.NotOpen m
+
+        Nothing ->
+            meant Reason.NotSet m
+
+
 {-| The question before closing a busy tab. -}
 closeBox : { id : Int, why : String, window : Bool } -> Dialog.Dialog
 closeBox c =
@@ -7225,8 +10094,9 @@ closeBox c =
                    ]
         , field = Nothing
         , swatches = []
+        , check = Nothing
         , buttons = closeButtons
-        , hint = "Enter: close it    Esc: keep it"
+        , hint = "Enter, or close it again: close it    Esc: keep it"
         }
 
     else
@@ -7234,6 +10104,7 @@ closeBox c =
         , lines = [ c.why, "Closing the tab ends it." ]
         , field = Nothing
         , swatches = []
+        , check = Nothing
         , buttons = closeButtons
         , hint = "Enter: close it    Esc: keep it"
         }
@@ -7273,7 +10144,22 @@ closePress p c m =
 {-| The close question answered: yes closes the window, or the tab asked
 about if it is still the one shown; no keeps them. -}
 closeAnswer : Bool -> { id : Int, why : String, window : Bool } -> (taken m : Model) -> Task Error Model
-closeAnswer yes c m =
+closeAnswer yes c m0 =
+    let
+        -- the answer in the log, which says when the question went
+        -- (docs/tabs.md TB18)
+        m =
+            logLine "close"
+                ("question answered: "
+                    ++ (if yes then
+                            "close"
+
+                        else
+                            "stay"
+                       )
+                )
+                m0
+    in
     if yes && c.window then
         Task.succeed { m | closing = Nothing, closed = True, byButton = True }
 
@@ -7312,6 +10198,11 @@ askCloseWindow m =
     if not m.config.tabsAskBeforeClosing then
         Task.succeed { m | closed = True, byButton = True }
 
+    else if Maybe.map .window m.closing == Just True then
+        -- the close button again while its question is up: the answer is
+        -- yes (TB18)
+        Task.succeed (logLine "close" "asked again while the question was up: closed" { m | closing = Nothing, closed = True, byButton = True })
+
     else
         let
             shown =
@@ -7340,7 +10231,9 @@ askCloseWindow m =
                                             []
                                        )
                         in
-                        { m | closing = Just { id = -1, why = String.join "\n" shownLines, window = True }, urgent = True }
+                        logLine "close"
+                            ("question shown: " ++ String.join "; " shownLines)
+                            { m | closing = Just { id = -1, why = String.join "\n" shownLines, window = True }, urgent = True }
                 )
 
 

@@ -1461,11 +1461,110 @@ static const uint8_t *ui_record(const uint8_t *p, const uint8_t *end) {
 #undef U16
 }
 
+/* IMAGES (docs/images.md IM2)
+ *
+ * A frame's list defines an image once (0x0A: its id in 4 bytes, its width
+ * and height in 2 each, its bytes a pixel, 3 for RGB or 4 for RGBA, then
+ * its pixels, not premultiplied), frees one (0x0B: its id), and places one (0x0C: its id;
+ * the cells it covers, x, y (signed, negative above the screen's top),
+ * columns and rows in 2 bytes each; the source
+ * rectangle in its pixels, x, y, width, height; where in the first cell it
+ * starts, x and y in pixels; the size it is drawn at in pixels, width and
+ * height; the cells it is cut to, x, y (signed), columns and rows, as a
+ * tmux pane's edges cut it (docs/images.md IM18); and a byte, 0 to draw it
+ * under the text and 1 over it). The
+ * images are kept by id until freed; the core's View sends a placement
+ * only with every cell it covers, so that what lay under it is drawn
+ * first. */
+typedef struct {
+    uint32_t id;
+    void *picture;
+    int w, h;
+} PtImage;
+
+static PtImage *images;
+static int nimages, capimages;
+
+static PtImage *image_find(uint32_t id) {
+    for (int i = 0; i < nimages; i++)
+        if (images[i].id == id) return &images[i];
+    return NULL;
+}
+
+static void image_free(uint32_t id) {
+    for (int i = 0; i < nimages; i++)
+        if (images[i].id == id) {
+            if (images[i].picture) pt_picture_free(images[i].picture);
+            images[i] = images[--nimages];
+            return;
+        }
+}
+
+/* An image's definition: its pixels premultiplied into ARGB words, kept
+ * as a picture. One whose size its record does not hold is not read. */
+static const uint8_t *image_define(const uint8_t *p, const uint8_t *end) {
+    if (p + 10 > end) return NULL;
+    uint32_t id = ((uint32_t) p[1] << 24) | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 8) | p[4];
+    int w = (p[5] << 8) | p[6], h = (p[7] << 8) | p[8], bpp = p[9] == 3 ? 3 : 4;
+    size_t n = (size_t) w * (size_t) h;
+    if ((size_t) (end - (p + 10)) < n * bpp) return NULL;
+    const uint8_t *px = p + 10;
+    image_free(id);
+    uint32_t *argb = n ? malloc(n * sizeof *argb) : NULL;
+    if (n && !argb) return px + n * bpp;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t r = px[bpp * i], g = px[bpp * i + 1], b = px[bpp * i + 2], a = bpp == 4 ? px[4 * i + 3] : 255;
+        argb[i] = a << 24 | ((r * a + 127) / 255) << 16 | ((g * a + 127) / 255) << 8 | ((b * a + 127) / 255);
+    }
+    void *picture = n ? pt_picture_add(argb, w, h) : NULL;
+    free(argb);
+    if (nimages == capimages) {
+        int cap = capimages ? 2 * capimages : 16;
+        PtImage *grown = realloc(images, (size_t) cap * sizeof *grown);
+        if (!grown) {
+            if (picture) pt_picture_free(picture);
+            return px + n * bpp;
+        }
+        images = grown;
+        capimages = cap;
+    }
+    images[nimages++] = (PtImage){id, picture, w, h};
+    return px + n * bpp;
+}
+
+static int u16(const uint8_t *p) { return (p[0] << 8) | p[1]; }
+
+#define PLACE_SIZE 38
+
+/* A placement drawn: its image's part over its cells, clipped to them. */
+static void image_place(const uint8_t *p) {
+    uint32_t id = ((uint32_t) p[1] << 24) | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 8) | p[4];
+    PtImage *im = image_find(id);
+    if (!im || !im->picture) return;
+    /* the first cell's row may be above the screen's top, negative */
+    int x = u16(p + 5), y = (int16_t) u16(p + 7), cols = u16(p + 9), rows = u16(p + 11);
+    int sx = u16(p + 13), sy = u16(p + 15), sw = u16(p + 17), sh = u16(p + 19);
+    int ox = u16(p + 21), oy = u16(p + 23), dw = u16(p + 25), dh = u16(p + 27);
+    int cx = u16(p + 29), cy = (int16_t) u16(p + 31), ccols = u16(p + 33), crows = u16(p + 35);
+    if (sx >= im->w || sy >= im->h || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+    if (sw > im->w - sx) sw = im->w - sx;
+    if (sh > im->h - sy) sh = im->h - sy;
+    /* the cells it covers, cut to its clip */
+    int x0 = x > cx ? x : cx, y0 = y > cy ? y : cy;
+    int x1 = x + cols < cx + ccols ? x + cols : cx + ccols, y1 = y + rows < cy + crows ? y + rows : cy + crows;
+    if (x1 <= x0 || y1 <= y0) return;
+    pt_picture_draw_part(im->picture, sx, sy, sw, sh, x * pt_cw + ox, y * pt_ch + oy, dw, dh, x0 * pt_cw, y0 * pt_ch, (x1 - x0) * pt_cw,
+                         (y1 - y0) * pt_ch);
+}
+
 void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
     double t0 = ns();
     if (glyph_bytes > glyph_cap) reset_glyphs();
     const uint8_t *p = list, *end = list + length, *runs = NULL, *over = NULL;
     int first = pt_rows, last = -1, sized = 0;
+    enum { MAX_PLACES = 256 };
+    const uint8_t *places[MAX_PLACES];
+    int nplaces = 0;
     inklen = 0;
     sel_from = sel_to = -1;
     ui_clipped = 0;
@@ -1502,6 +1601,23 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
             p = draw_run(p, end, 0);
             if (y < first) first = y;
             if (y > last) last = y;
+        } else if (p[0] == 0x0A) {
+            const uint8_t *next = image_define(p, end);
+            if (!next) break;
+            p = next;
+        } else if (p[0] == 0x0B && p + 5 <= end) {
+            image_free(((uint32_t) p[1] << 24) | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 8) | p[4]);
+            p += 5;
+        } else if (p[0] == 0x0C && p + PLACE_SIZE <= end) {
+            /* drawn after the runs' backgrounds, under or over their glyphs */
+            if (nplaces < MAX_PLACES) places[nplaces++] = p;
+            int y = (int16_t) u16(p + 31), rows = u16(p + 35);
+            int y0 = y < 0 ? 0 : y, y1 = y + rows - 1 < pt_rows ? y + rows - 1 : pt_rows - 1;
+            if (y1 >= y0) {
+                if (y0 < first) first = y0;
+                if (y1 > last) last = y1;
+            }
+            p += PLACE_SIZE;
         } else if (p[0] >= 6 && p[0] <= 9) {
             if (runs) {
                 /* the interface over the cells (docs/ssh-client.md SC23): drawn
@@ -1519,8 +1635,12 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
     }
     /* The runs come last in a list (Vt.View), so the glyphs and the lines
      * are drawn from the first run to where the backgrounds stopped. */
+    for (int i = 0; i < nplaces; i++)
+        if (places[i][PLACE_SIZE - 1] == 0) image_place(places[i]);
     for (int pass = 1; pass <= 2 && runs; pass++)
         for (const uint8_t *r = runs; r < p && r[0] == 2;) r = draw_run(r, p, pass);
+    for (int i = 0; i < nplaces; i++)
+        if (places[i][PLACE_SIZE - 1] != 0) image_place(places[i]);
     for (const uint8_t *u = over; u && u < end && u[0] >= 6 && u[0] <= 9;) u = ui_record(u, end);
     if (over) {
         /* the interface may lie on any row: all of them are shown again */

@@ -51,7 +51,8 @@ withPen attrs t =
     if attrs == t.attrs then
         t
 
-    else if attrs.ulc /= 0 then
+    else if attrs.ulc /= 0 || attrs.link /= 0 then
+        -- the cache is keyed by `styleKey`, which leaves both out
         withPenInterned attrs t
 
     else
@@ -132,12 +133,17 @@ cacheSlot key =
 
 sgr : Array Int -> Int -> Int -> Attrs -> Attrs
 sgr params colons k a =
-    if Array.length params == 0 then
-        -- `CSI m`, which has no parameters (§VC16)
-        { fg = 0, bg = 0, ulc = 0, flags = 0, ul = 0 }
+    let
+        -- an OSC 8 link is not SGR's: no SGR, `0` either, ends it (CL9)
+        set =
+            if Array.length params == 0 then
+                -- `CSI m`, which has no parameters (§VC16)
+                { fg = 0, bg = 0, ulc = 0, flags = 0, ul = 0, link = 0 }
 
-    else
-        sgrLoop params colons k a.fg a.bg a.ulc a.flags a.ul
+            else
+                sgrLoop params colons k a.fg a.bg a.ulc a.flags a.ul
+    in
+    { set | link = a.link }
 
 
 {-| SGR's parameters from `k` on, each attribute a number of its own, so
@@ -146,7 +152,7 @@ sgrLoop : Array Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Attrs
 sgrLoop params colons k fg bg ulc flags ul =
     -- `k` is never below 0; saying so here proves the reads below
     if k < 0 || k >= Array.length params then
-        { fg = fg, bg = bg, ulc = ulc, flags = flags, ul = ul }
+        { fg = fg, bg = bg, ulc = ulc, flags = flags, ul = ul, link = 0 }
 
     else
         let

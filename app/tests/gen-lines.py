@@ -26,10 +26,14 @@ def geng(text):
     return '"' + out + '"'
 
 
-def sessions(folder):
-    """Each line sent, and what tmux wrote, from lines.txt."""
+def sessions(folder, name="lines.txt"):
+    """Each line sent (or step), and what tmux wrote, from lines.txt or
+    notices.txt."""
     out = []
-    for line in (folder / "lines.txt").read_text().splitlines():
+    path = folder / name
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
         if line.startswith("> "):
             out.append((line[2:], []))
         elif out:
@@ -40,21 +44,27 @@ def sessions(folder):
 rows = []
 for folder in sorted(p for p in corpus.iterdir() if (p / "lines.txt").exists()):
     version = (folder / "about.txt").read_text().split("\n")[0].removeprefix("tmux ").strip()
-    lines = [
-        "{ line = " + geng(sent) + ", wrote = " + ("[ " + ", ".join(geng(w) for w in wrote) + " ]" if wrote else "[]") + " }"
-        for sent, wrote in sessions(folder)
-    ]
-    rows.append("{ name = " + geng(folder.name) + "\n      , version = " + geng(version) + "\n      , lines =\n            [ "
-                + "\n            , ".join(lines) + "\n            ]\n      }")
+    def entries(name):
+        got = [
+            "{ line = " + geng(sent) + ", wrote = " + ("[ " + ", ".join(geng(w) for w in wrote) + " ]" if wrote else "[]") + " }"
+            for sent, wrote in sessions(folder, name)
+        ]
+        return ("[ " + "\n            , ".join(got) + "\n            ]") if got else "[]"
+
+    rows.append("{ name = " + geng(folder.name) + "\n      , version = " + geng(version)
+                + "\n      , lines =\n            " + entries("lines.txt")
+                + "\n      , notices =\n            " + entries("notices.txt") + "\n      }")
 text = "\n".join([
     "module LinesRecorded exposing (recorded)",
     "",
     "{-| How each dumped tmux answered dump-lines.py's command lines",
-    "(corpus/tmux/*/lines.txt, docs/tmux-checks.md TK10). Written by",
+    "(corpus/tmux/*/lines.txt, docs/tmux-checks.md TK10), and what it told",
+    "a control client as dump-notices.py changed the server (notices.txt,",
+    "TK11). Written by",
     "gen-lines.py; do not edit. -}",
     "",
     "",
-    "recorded : Array { name : String, version : String, lines : Array { line : String, wrote : Array String } }",
+    "recorded : Array { name : String, version : String, lines : Array { line : String, wrote : Array String }, notices : Array { line : String, wrote : Array String } }",
     "recorded =",
     "    [ " + "\n    , ".join(rows),
     "    ]",

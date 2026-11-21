@@ -37,6 +37,7 @@ import Vt.Dump exposing (..)
 import Vt.Edit exposing (..)
 import Vt.Keys as Keys
 import Vt.Modes exposing (..)
+import Vt.Notice as Notice
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Print exposing (..)
@@ -48,6 +49,7 @@ import Vt.Resize exposing (..)
 import Vt.Screen exposing (..)
 import Vt.Scroll exposing (..)
 import Vt.Sgr exposing (..)
+import Vt.Status as Status
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
@@ -213,8 +215,19 @@ oscDispatch end t0 =
         long =
             Array.length taken.text - String.count (Maybe.withDefault "" (Array.first parts)) - 1 > oscMax
 
+        -- OSC 7501 takes up to its own limit, the whole sequence's 4,096
+        -- bytes, past Ghostty's 2,048 for the rest; one that filled the
+        -- string may have been cut, and is dropped whole, as the spec says
         done =
-            oscCommand end long command parts rest t
+            if command == Just 7501 then
+                if Array.length taken.text >= stringMax then
+                    t
+
+                else
+                    oscCommand end False command parts rest t
+
+            else
+                oscCommand end long command parts rest t
     in
     if listening == 0 then
         done
@@ -257,7 +270,7 @@ oscKnown long command parts =
             command
          ) is
         Just c ->
-            c == 0 || c == 2 || c == 4 || c == 104 || c == 133 || c == 9 || (c >= 10 && c <= 19) || (c >= 110 && c <= 112)
+            c == 0 || c == 2 || c == 7 || c == 4 || c == 104 || c == 133 || c == 9 || c == 7501 || c == 777 || c == 99 || c == 8 || (c >= 10 && c <= 19) || (c >= 110 && c <= 112)
 
         Nothing ->
             -- not a command's number
@@ -278,6 +291,11 @@ oscCommand end long command parts rest t =
         Just 2 ->
             { t | title = rest }
 
+        Just 7 ->
+            -- the shell's folder (FT29): kept as it came, a URI the
+            -- embedder reads
+            { t | workingDirectory = rest }
+
         Just 4 ->
             paletteColors end (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
 
@@ -288,12 +306,29 @@ oscCommand end long command parts rest t =
             semanticPrompt (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 parts)) (Array.dropFirst 2 parts) (rest == "L") t
 
         Just 9 ->
-            -- ConEmu's mark of a prompt's start, Ghostty's 133;A
+            -- ConEmu's mark of a prompt's start, Ghostty's 133;A; else
+            -- iTerm2's notification, unless another of ConEmu's commands
             if String.startsWith "12" rest then
                 semanticPrompt "A" [] False t
 
             else
-                t
+                withNotice (Notice.fromOsc9 rest) t
+
+        Just 777 ->
+            withNotice (Notice.fromOsc777 (Array.dropFirst 1 parts)) t
+
+        Just 8 ->
+            hyperlink rest t
+
+        Just 99 ->
+            let
+                read =
+                    Notice.fromOsc99 rest t.kittyNotices
+            in
+            withNotice read.done { t | kittyNotices = read.pending }
+
+        Just 7501 ->
+            programStatus end rest t
 
         Just c ->
             if c >= 10 && c <= 19 then
@@ -455,10 +490,12 @@ rgb16 c =
     "rgb:" ++ channel (Bitwise.shiftRightZfBy 16 c) ++ "/" ++ channel (Bitwise.shiftRightZfBy 8 c) ++ "/" ++ channel c
 
 
-{-| A color as XParseColor reads one, as Ghostty reads it: `#` and 1 to 4
-hex digits a channel, 3 or 6 hex digits alone, `rgb:` and 1 to 4 a channel,
-or `rgbi:` and an intensity from 0 to 1 a channel; each scaled to 8 bits.
-X11's color names are not taken (§VC12). -}
+{-| A color as XParseColor reads one: `#` and 1 to 4 hex digits a
+channel, the digits a channel's most significant bits (`#f` is `f0`, as
+X11 says and xterm and WezTerm read it; Ghostty scales them, patched in
+the oracle, §VC71); 3 or 6 hex digits alone, scaled, as Ghostty reads
+them; `rgb:` and 1 to 4 a channel, scaled; or `rgbi:` and an intensity
+from 0 to 1 a channel. X11's color names are not taken (§VC12). -}
 parseColor : String -> Maybe Int
 parseColor spec0 =
     let
@@ -468,8 +505,8 @@ parseColor spec0 =
         n =
             String.count spec
 
-        groups text k =
-            Maybe.map3 rgbOf (scaledHex (String.slice 0 k text)) (scaledHex (String.slice k (2 * k) text)) (scaledHex (String.slice (2 * k) (3 * k) text))
+        groups f text k =
+            Maybe.map3 rgbOf (f (String.slice 0 k text)) (f (String.slice k (2 * k) text)) (f (String.slice (2 * k) (3 * k) text))
 
         parts text f =
             when String.split "/" text is
@@ -481,13 +518,13 @@ parseColor spec0 =
     in
     if String.startsWith "#" spec then
         if n == 4 || n == 7 || n == 10 || n == 13 then
-            groups (String.dropFirst 1 spec) ((n - 1) // 3)
+            groups highHex (String.dropFirst 1 spec) ((n - 1) // 3)
 
         else
             Nothing
 
     else if n == 3 || n == 6 then
-        groups spec (n // 3)
+        groups scaledHex spec (n // 3)
 
     else if String.startsWith "rgbi:" spec then
         parts (String.dropFirst 5 spec) intensity
@@ -499,8 +536,50 @@ parseColor spec0 =
         Nothing
 
 
+{-| 1 to 4 hex digits as a channel's most significant bits, its top 8
+(XParseColor's `#`): `f` is `f0`, `f00` and `f000` are `f0`. -}
+highHex : String -> Maybe Int
+highHex text =
+    let
+        n =
+            String.count text
+    in
+    hexValue text
+        |> Maybe.andThen
+            (\v ->
+                if n == 1 then
+                    Just (v * 16)
+
+                else if n == 2 then
+                    Just v
+
+                else if n == 3 then
+                    Just (v // 16)
+
+                else if n == 4 then
+                    Just (v // 256)
+
+                else
+                    Nothing
+            )
+
+
 scaledHex : String -> Maybe Int
 scaledHex text =
+    let
+        n =
+            String.count text
+    in
+    if n < 1 || n > 4 then
+        Nothing
+
+    else
+        Maybe.map (\v -> v * 255 // (Bitwise.shiftLeftBy (4 * n) 1 - 1)) (hexValue text)
+
+
+{-| Hex digits' value, or none for another character or more than four. -}
+hexValue : String -> Maybe Int
+hexValue text =
     let
         n =
             String.count text
@@ -535,7 +614,7 @@ scaledHex text =
         Nothing
 
     else
-        Maybe.map (\v -> v * 255 // (Bitwise.shiftLeftBy (4 * n) 1 - 1)) value
+        value
 
 
 intensity : String -> Maybe Int
@@ -552,6 +631,103 @@ intensity text =
             meant Reason.FromOutside Nothing
 
 
+{-| OSC 8 `params ; URI` (CL9): the pen given the link, which the cells
+printed next carry, until an OSC 8 with no URI ends it. The params are
+`key=value` pairs separated by `:`, of which `id` is kept: two links with
+the same URI and id are one. A URI of anything but printable ASCII is not
+a link; nor is one past the 4,096th, which ends the link instead. -}
+hyperlink : String -> (taken t : Term) -> Term
+hyperlink rest t =
+    let
+        params =
+            String.split ";" rest |> Array.first |> Maybe.withDefault ""
+
+        uri =
+            String.dropFirst (String.count params + 1) rest
+
+        id =
+            String.split ":" params
+                |> Array.foldl
+                    (\p acc ->
+                        if String.startsWith "id=" p then
+                            String.dropFirst 3 p
+
+                        else
+                            acc
+                    )
+                    ""
+
+        printable =
+            String.all (\c -> Char.toCode c >= 0x21 && Char.toCode c <= 0x7E) uri
+
+        attrs =
+            t.attrs
+    in
+    if uri == "" || not printable then
+        withPen { attrs | link = 0 } t
+
+    else
+        when Array.findFirst (\l -> l.uri == uri && l.id == id) t.links is
+            Just found ->
+                withPen { attrs | link = found.index + 1 } t
+
+            Nothing ->
+                meant Reason.NotKnown
+                    (if Array.length t.links >= 4096 then
+                        withPen { attrs | link = 0 } t
+
+                     else
+                        let
+                            index =
+                                Array.length t.links
+                        in
+                        withPen { attrs | link = index + 1 } { t | links = Array.pushLast { uri = uri, id = id } t.links }
+                    )
+
+
+{-| A desktop notification a program asked for, kept for the embedder
+(CL8): at most 16 waiting, the oldest going first. -}
+withNotice : Maybe Notice.Notice -> (taken t : Term) -> Term
+withNotice asked t =
+    when asked is
+        Just n ->
+            { t | notices = Array.pushLast n (Array.takeLast 15 t.notices) }
+
+        Nothing ->
+            meant Reason.NotSet t
+
+
+{-| OSC 7501, the Program Status Protocol (puritty `docs/claude-code.md`
+CL7): the query answered, `OSC 7501 ; ?`, with the terminator it came
+with; a report applied to the records. -}
+programStatus : String -> String -> (taken t : Term) -> Term
+programStatus end body t =
+    when Status.parse body is
+        Status.Query ->
+            reply ("\u{001B}]7501;?" ++ end) t
+
+        Status.Report r ->
+            { t | status = Status.apply r (t.statusChanges + 1) t.status, statusChanges = t.statusChanges + 1 }
+
+        Status.Ignored ->
+            t
+
+
+{-| A new prompt ends what was working or waiting (OSC 7501's lifetime):
+those records dropped. -}
+promptEndsStatus : (taken t : Term) -> Term
+promptEndsStatus t =
+    let
+        kept =
+            Status.onPrompt t.status
+    in
+    if Array.length kept == Array.length t.status then
+        t
+
+    else
+        { t | status = kept, statusChanges = t.statusChanges + 1 }
+
+
 {-| OSC 133, the semantic prompts (§VC22), as Ghostty takes them: `A` and
 `N` a fresh line and a prompt, `P` a prompt, `B` and `I` the input (`I`
 to the line's end), `C` and `D` output, `L` (alone) a fresh line. A
@@ -562,10 +738,10 @@ semanticPrompt : String -> Array String -> Bool -> (taken t : Term) -> Term
 semanticPrompt action options onlyL t =
     when action is
         "A" ->
-            promptStart options (freshLine (withRedraw options t))
+            promptStart options (freshLine (withRedraw options (promptEndsStatus t)))
 
         "N" ->
-            promptStart options (freshLine (withRedraw options t))
+            promptStart options (freshLine (withRedraw options (promptEndsStatus t)))
 
         "P" ->
             promptStart options t

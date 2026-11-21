@@ -50,6 +50,17 @@
  *     §14): 0 PRIMARY, 1 CLIPBOARD;
  *  11 a paste's text has come (docs/phase3-select.md §15): 1 when more is
  *     to come, 0 when it is the last; `puritty_x11_pasted` takes it.
+ *  14 an image paste's bytes have come (docs/sftp.md FT13), as 11: 1 when
+ *     more is to come, 0 when it is the last; `puritty_x11_pasted` takes
+ *     them, none when the clipboard has no image.
+ *  15 a drag from another program is over the window (docs/sftp.md FT22):
+ *     its position as a pointer record's, x and y from the cells' corner,
+ *     2 bytes each, signed, then the cells' area and the cell in pixels,
+ *     2 bytes each;
+ *  16 that drag left the window, or ended somewhere else;
+ *  17 a drop's list has come, as 11: 1 when more is to come, 0 when it is
+ *     the last; `puritty_x11_dropped` takes it, a text/uri-list (RFC 2483)
+ *     of the files dropped, none when the drag offered no files.
  *
  * Keys go through XIM when an input method is there (V44-V46,
  * docs/phase3-input.md §3): xcb-imdkit, patched (patches/), with an input
@@ -118,6 +129,27 @@ static double ns(void) {
 static int dpi0 = 96;
 /* The window in cells, as its size was last reported. */
 static int win_cols, win_rows, focused = -1, win_w, win_h;
+/* The gaps between the cells and the window's edges (docs/renderer.md
+ * R20, R21): left and right `padx`, above and below `pady`, asked in
+ * points and kept in pixels at the screen's dpi. What is past the last
+ * whole cell is shared between the two sides, so the cells' (0, 0) is the
+ * window's (ox, oy); the pointer's place is reported from there, and the
+ * window's size less the two gaps. */
+static int padx_pt = 0, pady_pt = 0, padx = 0, pady = 0, ox = 0, oy = 0;
+static int pad_px(int points) {
+    return points <= 0 ? 0 : (points * dpi0 + 36) / 72;
+}
+/* The cells' corner for the window's size and the cells that fit it;
+ * answers whether it moved. */
+static int place_cells(void) {
+    int sx = win_w - 2 * padx - win_cols * pt_cw, sy = win_h - 2 * pady - win_rows * pt_ch;
+    int x = padx + (sx > 0 ? sx / 2 : 0), y = pady + (sy > 0 ? sy / 2 : 0);
+    int moved = x != ox || y != oy;
+    ox = x;
+    oy = y;
+    return moved;
+}
+static void size_hints(void);
 static uint32_t margin_bg = 0xFFFFFFFF;
 
 static xcb_atom_t wm_protocols, wm_delete, net_wm_name, utf8_string;
@@ -399,8 +431,17 @@ void *pt_picture_add(const uint32_t *argb, int w, int h) {
     xcb_create_pixmap(conn, 32, pm, window, (uint16_t) w, (uint16_t) h);
     xcb_gcontext_t g32 = xcb_generate_id(conn);
     xcb_create_gc(conn, g32, pm, 0, NULL);
-    xcb_put_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pm, g32, (uint16_t) w, (uint16_t) h, 0, 0, 0, 32, (uint32_t) w * h * 4,
-                  (const uint8_t *) argb);
+    /* in bands of rows, each request within the server's longest
+     * (BIG-REQUESTS' when it has them): an image is far larger than a
+     * glyph's picture (docs/images.md IM2) */
+    uint32_t most = xcb_get_maximum_request_length(conn) * 4;
+    uint32_t band = most > 64 + (uint32_t) w * 4 ? (most - 64) / ((uint32_t) w * 4) : 1;
+    if (band < 1) band = 1;
+    for (int y = 0; y < h; y += (int) band) {
+        int rows = h - y < (int) band ? h - y : (int) band;
+        xcb_put_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pm, g32, (uint16_t) w, (uint16_t) rows, 0, (int16_t) y, 0, 32,
+                      (uint32_t) w * (uint32_t) rows * 4, (const uint8_t *) (argb + (size_t) y * w));
+    }
     xcb_free_gc(conn, g32);
     xcb_render_picture_t picture = xcb_generate_id(conn);
     xcb_render_create_picture(conn, picture, pm, argb32, 0, NULL);
@@ -414,6 +455,33 @@ void pt_picture_draw(void *picture, int x, int y, int w, int h) {
 }
 
 void pt_picture_free(void *picture) { xcb_render_free_picture(conn, (xcb_render_picture_t) (uintptr_t) picture); }
+
+/* Part of a picture, scaled by a RENDER transform when its drawn size is
+ * not its own, and clipped to the cells it covers by the composite's
+ * rectangle. The transform maps the target's pixels to the picture's. */
+void pt_picture_draw_part(void *picture, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, int cx, int cy, int cw,
+                          int ch) {
+    xcb_render_picture_t pic = (xcb_render_picture_t) (uintptr_t) picture;
+    int x0 = dx > cx ? dx : cx, y0 = dy > cy ? dy : cy;
+    int x1 = dx + dw < cx + cw ? dx + dw : cx + cw, y1 = dy + dh < cy + ch ? dy + dh : cy + ch;
+    if (x1 <= x0 || y1 <= y0) return;
+    int scaled = sw != dw || sh != dh;
+    if (scaled) {
+        xcb_render_transform_t t = {(xcb_render_fixed_t) ((double) sw / dw * 65536), 0, 0, 0,
+                                    (xcb_render_fixed_t) ((double) sh / dh * 65536), 0, 0, 0, 65536};
+        xcb_render_set_picture_transform(conn, pic, t);
+        xcb_render_set_picture_filter(conn, pic, 8, "bilinear", 0, NULL);
+        /* the source's origin in the target's scale */
+        int ox = (int) ((double) sx * dw / sw), oy = (int) ((double) sy * dh / sh);
+        xcb_render_composite(conn, XCB_RENDER_PICT_OP_OVER, pic, 0, target, (int16_t) (ox + x0 - dx), (int16_t) (oy + y0 - dy), 0, 0,
+                             (int16_t) x0, (int16_t) y0, (uint16_t) (x1 - x0), (uint16_t) (y1 - y0));
+        xcb_render_transform_t id = {65536, 0, 0, 0, 65536, 0, 0, 0, 65536};
+        xcb_render_set_picture_transform(conn, pic, id);
+    } else {
+        xcb_render_composite(conn, XCB_RENDER_PICT_OP_OVER, pic, 0, target, (int16_t) (sx + x0 - dx), (int16_t) (sy + y0 - dy), 0, 0,
+                             (int16_t) x0, (int16_t) y0, (uint16_t) (x1 - x0), (uint16_t) (y1 - y0));
+    }
+}
 
 /* THE PIXMAP AND THE WINDOW */
 
@@ -444,8 +512,11 @@ static void margins(void) {
     if (bg == margin_bg) return;
     margin_bg = bg;
     xcb_change_window_attributes(conn, window, XCB_CW_BACK_PIXEL, &bg);
-    xcb_clear_area(conn, 0, window, (int16_t) (pt_cols * pt_cw), 0, 0, 0);
-    xcb_clear_area(conn, 0, window, 0, (int16_t) (pt_rows * pt_ch), 0, 0);
+    /* the gaps on every side, and what is past the last cells */
+    if (oy > 0) xcb_clear_area(conn, 0, window, 0, 0, 0, (uint16_t) oy);
+    if (ox > 0) xcb_clear_area(conn, 0, window, 0, 0, (uint16_t) ox, 0);
+    xcb_clear_area(conn, 0, window, (int16_t) (ox + pt_cols * pt_cw), 0, 0, 0);
+    xcb_clear_area(conn, 0, window, 0, (int16_t) (oy + pt_rows * pt_ch), 0, 0);
 }
 
 static void stats(void) {
@@ -639,17 +710,26 @@ static void xkb_event_in(xcb_generic_event_t *e) {
     }
 }
 
+static void repaint_all(void);
 static void size_in(int w, int h) {
     win_w = w;
     win_h = h;
-    int c = w / pt_cw, r = h / pt_ch;
+    int c = (w - 2 * padx) / pt_cw, r = (h - 2 * pady) / pt_ch;
     if (c < 1) c = 1;
     if (r < 1) r = 1;
     if (c > 65535) c = 65535;
     if (r > 65535) r = 65535;
-    if (c == win_cols && r == win_rows) return;
-    win_cols = c;
-    win_rows = r;
+    int same = c == win_cols && r == win_rows;
+    if (!same) {
+        win_cols = c;
+        win_rows = r;
+    }
+    /* the cells moved within the window: drawn again where they now are */
+    if (place_cells() && window) {
+        margin_bg = 0xFFFFFFFF;
+        repaint_all();
+    }
+    if (same) return;
     uint8_t rec[5] = {2, (uint8_t) (c >> 8), (uint8_t) c, (uint8_t) (r >> 8), (uint8_t) r};
     record(rec, 5);
 }
@@ -667,6 +747,12 @@ static void focus_in(int in) {
 static void pointer_event(int action, int xbutton, int x, int y, uint16_t state) {
     int button = xbutton == 2 ? 3 : xbutton == 3 ? 2 : xbutton;
     if (button > 11) return;
+    /* from the cells' corner, in the cells' area (R20) */
+    x -= ox;
+    y -= oy;
+    int gw = win_w - 2 * padx, gh = win_h - 2 * pady;
+    if (gw < 0) gw = 0;
+    if (gh < 0) gh = 0;
     int mods = 0;
     if (keymap) {
         struct xkb_state *st = xkb_state_new(keymap);
@@ -678,7 +764,7 @@ static void pointer_event(int action, int xbutton, int x, int y, uint16_t state)
     }
     uint8_t r[17] = {9, (uint8_t) action, (uint8_t) button, (uint8_t) (mods >> 8), (uint8_t) mods,
                      (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
-                     (uint8_t) (win_w >> 8), (uint8_t) win_w, (uint8_t) (win_h >> 8), (uint8_t) win_h,
+                     (uint8_t) (gw >> 8), (uint8_t) gw, (uint8_t) (gh >> 8), (uint8_t) gh,
                      (uint8_t) (pt_cw >> 8), (uint8_t) pt_cw, (uint8_t) (pt_ch >> 8), (uint8_t) pt_ch};
     if (action == 2) {
         flush_motion();
@@ -728,7 +814,7 @@ static void note(const char *fmt, int a, int b, int c, int d) {
  * it (ETX, RE9) would otherwise leave blank. */
 static void repaint_all(void) {
     if (!pixmap) return;
-    xcb_copy_area(conn, pixmap, window, gc, 0, 0, 0, 0, (uint16_t) (pt_cols * pt_cw), (uint16_t) (pt_rows * pt_ch));
+    xcb_copy_area(conn, pixmap, window, gc, 0, 0, (int16_t) ox, (int16_t) oy, (uint16_t) (pt_cols * pt_cw), (uint16_t) (pt_rows * pt_ch));
     margins();
     xcb_flush(conn);
 }
@@ -841,6 +927,9 @@ static void xim_setup(int screen_number) {
     xcb_xim_open(xim, xim_opened, true, NULL);
 }
 
+static void xdnd_message(xcb_client_message_event_t *m);
+static void xdnd_setup(void);
+
 static void drain(void) {
     xcb_generic_event_t *e;
     while ((e = xcb_poll_for_event(conn)) != NULL) {
@@ -899,9 +988,22 @@ static void drain(void) {
         else if (type == XCB_EXPOSE) {
             xcb_expose_event_t *x = (xcb_expose_event_t *) e;
             if (x->count == 0) note("expose %d,%d %dx%d", x->x, x->y, x->width, x->height);
-            if (pixmap)
-                xcb_copy_area(conn, pixmap, window, gc, (int16_t) x->x, (int16_t) x->y, (int16_t) x->x, (int16_t) x->y, x->width,
-                              x->height);
+            if (pixmap) {
+                /* the part of the cells exposed; the gaps the server fills
+                 * with the background pixel itself */
+                int sx = x->x - ox, sy = x->y - oy, w = x->width, h = x->height;
+                if (sx < 0) {
+                    w += sx;
+                    sx = 0;
+                }
+                if (sy < 0) {
+                    h += sy;
+                    sy = 0;
+                }
+                if (w > 0 && h > 0)
+                    xcb_copy_area(conn, pixmap, window, gc, (int16_t) sx, (int16_t) sy, (int16_t) (sx + ox), (int16_t) (sy + oy),
+                                  (uint16_t) w, (uint16_t) h);
+            }
             xcb_flush(conn);
         } else if (type == XCB_CONFIGURE_NOTIFY) {
             xcb_configure_notify_event_t *c = (xcb_configure_notify_event_t *) e;
@@ -924,6 +1026,8 @@ static void drain(void) {
             if (m->type == wm_protocols && m->data.data32[0] == wm_delete) {
                 uint8_t rec[1] = {4};
                 record(rec, 1);
+            } else {
+                xdnd_message(m);
             }
         }
         free(e);
@@ -1057,7 +1161,9 @@ static void pointers_setup(void) {
 }
 
 geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
-                              void *title_bytes, geng_wait *wait) {
+                              void *title_bytes, int32_t padding_x, int32_t padding_y, geng_wait *wait) {
+    padx_pt = padding_x;
+    pady_pt = padding_y;
     /* the display first: the font's size in pixels is its dpi's (V50) */
     int screen_number = 0;
     conn = xcb_connect(NULL, &screen_number);
@@ -1094,27 +1200,28 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
     visual_format = visual->format;
     win_cols = c;
     win_rows = r;
-    win_w = c * pt_cw;
-    win_h = r * pt_ch;
+    padx = pad_px(padx_pt);
+    pady = pad_px(pady_pt);
+    win_w = c * pt_cw + 2 * padx;
+    win_h = r * pt_ch + 2 * pady;
+    place_cells();
     window = xcb_generate_id(conn);
     uint32_t values[2] = {screen->black_pixel, BASE_EVENTS};
-    xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t) (c * pt_cw), (uint16_t) (r * pt_ch), 0,
+    xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t) win_w, (uint16_t) win_h, 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
     wm_protocols = atom("WM_PROTOCOLS");
     wm_delete = atom("WM_DELETE_WINDOW");
     net_wm_name = atom("_NET_WM_NAME");
     utf8_string = atom("UTF8_STRING");
     selection_atoms();
+    xdnd_setup();
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, wm_protocols, XCB_ATOM_ATOM, 32, 1, &wm_delete);
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 18, "puritty\0Puritty\0");
     /* the icon a dock or a taskbar shows (docs/windows.md WS25), 16 to 64
      * px: 33 KB, sent with each window, over ssh -X too */
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, atom("_NET_WM_ICON"), XCB_ATOM_CARDINAL, 32,
                         (uint32_t) (sizeof puritty_icon / sizeof puritty_icon[0]), puritty_icon);
-    /* WM_NORMAL_HINTS (ICCCM 4.1.2.3): a minimum of one cell, the base 0,
-     * and a step of a cell. Flags: PMinSize 16, PResizeInc 64, PBaseSize 256. */
-    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, 0, 0, 0, 0, 0};
-    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+    size_hints();
     geng_bytes *t = title_bytes;
     set_title(t->data, (int) t->length);
     key_setup();
@@ -1147,7 +1254,7 @@ geng_cancel puritty_x11_draw(void *list, geng_wait *wait) {
     pt_frame(b->data, (size_t) b->length, &frame);
     int first = frame.first, last = frame.last, sized = frame.sized;
     if (last >= first)
-        xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * pt_ch), 0, (int16_t) (first * pt_ch), (uint16_t) (pt_cols * pt_cw),
+        xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * pt_ch), (int16_t) ox, (int16_t) (oy + first * pt_ch), (uint16_t) (pt_cols * pt_cw),
                       (uint16_t) ((last - first + 1) * pt_ch));
     if (sized || pt_default_bg() != margin_bg) margins();
     xcb_flush(conn);
@@ -1236,14 +1343,22 @@ geng_cancel puritty_x11_take(geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+/* WM_NORMAL_HINTS (ICCCM 4.1.2.3): the base the two gaps, a step of a
+ * cell, and a minimum of one cell and the gaps. Flags: PMinSize 16,
+ * PResizeInc 64, PBaseSize 256. */
+static void size_hints(void) {
+    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) (pt_cw + 2 * padx), (uint32_t) (pt_ch + 2 * pady), 0, 0, (uint32_t) pt_cw,
+                          (uint32_t) pt_ch, 0, 0, 0, 0, (uint32_t) (2 * padx), (uint32_t) (2 * pady), 0};
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+}
+
 /* The font at `points` (V50's zoom): every face sized again, the glyph
  * set begun again, the window kept at its size in pixels and so the cells
  * that fit it reported as a new size. Answers the new cell as `open` does. */
 /* The window fitted to a new cell: its size hints, and the cells that now
  * fit it reported as a new size. */
 static void refit(void) {
-    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, 0, 0, 0, 0, 0};
-    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+    size_hints();
     xcb_get_geometry_reply_t *g = xcb_get_geometry_reply(conn, xcb_get_geometry(conn, window), NULL);
     if (g) {
         win_cols = -1;
@@ -1259,9 +1374,28 @@ static void refit(void) {
  * where it is; the window manager may refuse or adjust it, and the
  * ConfigureNotify that follows reports what it is. */
 geng_cancel puritty_x11_resize(int32_t cols, int32_t rows, geng_wait *wait) {
-    uint32_t wh[2] = {(uint32_t) (cols * pt_cw), (uint32_t) (rows * pt_ch)};
+    uint32_t wh[2] = {(uint32_t) (cols * pt_cw + 2 * padx), (uint32_t) (rows * pt_ch + 2 * pady)};
     xcb_configure_window(conn, window, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, wh);
     xcb_flush(conn);
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}
+
+/* The gaps around the cells set again, in points (R20, R21): the window
+ * kept at its size in pixels, so the cells that now fit it are reported as
+ * a new size, and the whole window drawn again at the new corner. */
+geng_cancel puritty_x11_padding(int32_t points_x, int32_t points_y, geng_wait *wait) {
+    padx_pt = points_x;
+    pady_pt = points_y;
+    int px = pad_px(points_x), py = pad_px(points_y);
+    if (px != padx || py != pady) {
+        padx = px;
+        pady = py;
+        refit();
+        place_cells();
+        margin_bg = 0xFFFFFFFF;
+        repaint_all();
+    }
     geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
@@ -1365,7 +1499,7 @@ geng_cancel puritty_x11_setfont(int32_t points, void *font_bytes, void *lang_byt
  * last, from the event loop, so no request waits on another. */
 
 #define PIECE 262144
-static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr, a_paste;
+static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr, a_paste, a_png;
 static struct {
     uint8_t *data;
     size_t len;
@@ -1381,11 +1515,11 @@ static struct {
 } xfer[8];
 
 static void selection_atoms(void) {
-    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE"};
-    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr, &a_paste};
-    xcb_intern_atom_cookie_t ck[7];
-    for (int i = 0; i < 7; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
-    for (int i = 0; i < 7; i++) {
+    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE", "image/png"};
+    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr, &a_paste, &a_png};
+    xcb_intern_atom_cookie_t ck[8];
+    for (int i = 0; i < 8; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
+    for (int i = 0; i < 8; i++) {
         xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(conn, ck[i], NULL);
         *out[i] = r ? r->atom : XCB_ATOM_NONE;
         free(r);
@@ -1480,8 +1614,13 @@ static void selection_request(xcb_selection_request_event_t *q) {
 /* A requestor deleted the property an INCR piece was in: the next piece,
  * and after the last an empty one, which ends it. */
 static void paste_read(void);
+static void xdnd_finished(int accepted);
+static xcb_atom_t a_xdnd_selection;
 static struct {
-    int active, incr, waiting, which, pending;
+    /* `which` 0 PRIMARY, 1 CLIPBOARD, 2 a drop's XdndSelection, asked for
+     * with the drop's `time` */
+    int active, incr, waiting, which, pending, image, probe;
+    xcb_timestamp_t time;
     xcb_atom_t target;
     xcb_get_property_cookie_t cookie;
     double started;
@@ -1535,7 +1674,14 @@ static void selection_clear(xcb_selection_clear_event_t *c) {
  * are read as the owner puts them. What comes is kept here, UTF-8, and
  * a record says so; Geng takes it with puritty_x11_pasted. One paste at
  * a time: another asked for while one is under way is not made, unless
- * the first has waited 10 s for an owner that never answered. */
+ * the first has waited 10 s for an owner that never answered.
+ *
+ * A paste that may be a picture (docs/sftp.md FT13) asks the clipboard's
+ * owner for its TARGETS first: any text there is pasted as text; with
+ * none and image/png, the picture is asked for, read the same way, its
+ * bytes as they came, and said with record 14 in place of 11; with
+ * neither, a last record 11 with nothing. An owner that will not say its
+ * targets is asked for text. */
 
 static void paste_add(const uint8_t *d, size_t n) {
     if (plen + n > pcap) {
@@ -1547,9 +1693,12 @@ static void paste_add(const uint8_t *d, size_t n) {
 }
 
 static void paste_done(int more) {
-    uint8_t r[2] = {11, (uint8_t) more};
+    uint8_t r[2] = {(uint8_t) (pst.which == 2 ? 17 : pst.image ? 14 : 11), (uint8_t) more};
     record(r, 2);
-    if (!more) pst.active = 0;
+    if (!more) {
+        pst.active = 0;
+        if (pst.which == 2) xdnd_finished(1);
+    }
 }
 
 static void paste_read(void) {
@@ -1563,14 +1712,20 @@ static void paste_read(void) {
 static void paste_ask(xcb_atom_t target) {
     pst.target = target;
     xcb_delete_property(conn, window, a_paste);
-    xcb_convert_selection(conn, window, pst.which ? a_clipboard : XCB_ATOM_PRIMARY, target, a_paste, last_time);
+    xcb_convert_selection(conn, window, pst.which == 2 ? a_xdnd_selection : pst.which ? a_clipboard : XCB_ATOM_PRIMARY, target, a_paste,
+                          pst.which == 2 ? pst.time : last_time);
     xcb_flush(conn);
 }
 
 static void paste_notify(xcb_selection_notify_event_t *n) {
     if (!pst.active || n->requestor != window) return;
+    if (n->property == XCB_ATOM_NONE && pst.probe) {
+        pst.probe = 0;
+        paste_ask(utf8_string);
+        return;
+    }
     if (n->property == XCB_ATOM_NONE) {
-        if (pst.target == utf8_string) paste_ask(XCB_ATOM_STRING); /* an owner of Latin-1 alone */
+        if (pst.target == utf8_string && !pst.image) paste_ask(XCB_ATOM_STRING); /* an owner of Latin-1 alone */
         else paste_done(0);                                       /* nothing to paste */
         return;
     }
@@ -1589,13 +1744,31 @@ static void paste_poll(void) {
         return;
     }
     int len = xcb_get_property_value_length(r);
+    if (pst.probe) {
+        /* the owner's targets: text if it has any, else its picture */
+        pst.probe = 0;
+        const xcb_atom_t *t = xcb_get_property_value(r);
+        int n = r->type == XCB_ATOM_ATOM ? len / 4 : 0, text = 0, png = 0;
+        for (int i = 0; i < n; i++) {
+            if (t[i] == utf8_string || t[i] == XCB_ATOM_STRING || t[i] == a_text || t[i] == a_plain) text = 1;
+            if (t[i] == a_png) png = 1;
+        }
+        free(r);
+        if (text || !png) {
+            paste_ask(utf8_string);
+        } else {
+            pst.image = 1;
+            paste_ask(a_png);
+        }
+        return;
+    }
     if (r->type == a_incr) {
         /* the owner sends pieces as the property is deleted, which the read did */
         pst.incr = 1;
         if (pst.pending) paste_read();
     } else {
         const uint8_t *d = xcb_get_property_value(r);
-        if (r->type == XCB_ATOM_STRING) {
+        if (r->type == XCB_ATOM_STRING && !pst.image) {
             for (int i = 0; i < len; i++) {
                 uint8_t u[2] = {(uint8_t) (0xC0 | d[i] >> 6), (uint8_t) (0x80 | (d[i] & 63))};
                 if (d[i] < 0x80) paste_add(d + i, 1);
@@ -1622,9 +1795,34 @@ geng_cancel puritty_x11_paste(int32_t which, geng_wait *wait) {
         pst.waiting = 0;
         pst.pending = 0;
         pst.which = which;
+        pst.image = 0;
+        pst.probe = 0;
         pst.started = ns();
         plen = 0;
         paste_ask(utf8_string);
+        asked = 1;
+    }
+    geng_succeed(wait, geng_slot_I4(asked));
+    return (geng_cancel) {0};
+}
+
+/* A paste of CLIPBOARD that may be a picture: its targets asked for
+ * first, then its text or its image/png (record 11 or 14). Answers 1 when
+ * it is asked for, 0 when a paste is under way. */
+geng_cancel puritty_x11_pasteOrImage(geng_wait *wait) {
+    int asked = 0;
+    if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
+    if (!pst.active) {
+        pst.active = 1;
+        pst.incr = 0;
+        pst.waiting = 0;
+        pst.pending = 0;
+        pst.which = 1;
+        pst.image = 0;
+        pst.probe = 1;
+        pst.started = ns();
+        plen = 0;
+        paste_ask(a_targets);
         asked = 1;
     }
     geng_succeed(wait, geng_slot_I4(asked));
@@ -1643,6 +1841,161 @@ geng_cancel puritty_x11_pasted(geng_wait *wait) {
     plen = 0;
     geng_succeed(wait, geng_slot_P(b));
     return (geng_cancel) {0};
+}
+
+/* The drop's list since it was last taken: the paste's buffer, which a drop
+ * fills as a paste does (record 17). */
+geng_cancel puritty_x11_dropped(geng_wait *wait) {
+    return puritty_x11_pasted(wait);
+}
+
+/* DROPS (docs/sftp.md FT21, FT22)
+ *
+ * XDND, version 5 (freedesktop.org's XDND page): the window says it takes
+ * drops (XdndAware), and a drag from another program comes as client
+ * messages from its source. Enter names the types offered, in the message
+ * or, past three, in the source's XdndTypeList; the window takes files,
+ * as text/uri-list, or KDE's application/x-kde4-urilist, which is the same
+ * list (FT21: Nemo and Dolphin offer the first, Dolphin the second too).
+ * Each Position is answered at once with a Status, accepting a copy where
+ * files are offered and asking for every position, and recorded (15) for
+ * the program to mark where the drop would go; a source may leave the
+ * action out after the first, which is still a copy. Leave is recorded
+ * (16). On Drop the list is asked for with the drop's time and read as a
+ * paste is, INCR and all, without waiting (record 17, `which` 2); Finished
+ * goes back once it has come, accepted. A drop with no files offered is a
+ * 17 with nothing and a Finished refused; one while a paste is still being
+ * read is refused as a leave (16), since its list would share the paste's
+ * buffer.
+ *
+ * Positions come in the root's pixels: where the window is on the screen
+ * is asked once a drag, on Enter, a round trip, since a window does not
+ * move while something is dragged over it. */
+
+static xcb_atom_t a_xdnd_aware, a_xdnd_enter, a_xdnd_position, a_xdnd_status, a_xdnd_leave, a_xdnd_drop, a_xdnd_finished,
+    a_xdnd_typelist, a_xdnd_copy, a_urilist, a_kde_urilist;
+static struct {
+    xcb_window_t source;
+    xcb_atom_t type;
+    int dx, dy;
+} dnd;
+
+static void xdnd_setup(void) {
+    const char *names[] = {"XdndAware", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished",
+                           "XdndSelection", "XdndTypeList", "XdndActionCopy", "text/uri-list", "application/x-kde4-urilist"};
+    xcb_atom_t *out[] = {&a_xdnd_aware, &a_xdnd_enter, &a_xdnd_position, &a_xdnd_status, &a_xdnd_leave, &a_xdnd_drop,
+                         &a_xdnd_finished, &a_xdnd_selection, &a_xdnd_typelist, &a_xdnd_copy, &a_urilist, &a_kde_urilist};
+    xcb_intern_atom_cookie_t ck[12];
+    for (int i = 0; i < 12; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
+    for (int i = 0; i < 12; i++) {
+        xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(conn, ck[i], NULL);
+        *out[i] = r ? r->atom : XCB_ATOM_NONE;
+        free(r);
+    }
+    uint32_t version = 5;
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, a_xdnd_aware, XCB_ATOM_ATOM, 32, 1, &version);
+}
+
+static void xdnd_send(xcb_atom_t kind, uint32_t d1, uint32_t d2, uint32_t d3, uint32_t d4) {
+    xcb_client_message_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.response_type = XCB_CLIENT_MESSAGE;
+    ev.format = 32;
+    ev.window = dnd.source;
+    ev.type = kind;
+    ev.data.data32[0] = window;
+    ev.data.data32[1] = d1;
+    ev.data.data32[2] = d2;
+    ev.data.data32[3] = d3;
+    ev.data.data32[4] = d4;
+    xcb_send_event(conn, 0, dnd.source, XCB_EVENT_MASK_NO_EVENT, (const char *) &ev);
+    xcb_flush(conn);
+}
+
+static void xdnd_finished(int accepted) {
+    if (dnd.source) xdnd_send(a_xdnd_finished, (uint32_t) accepted, accepted ? a_xdnd_copy : XCB_ATOM_NONE, 0, 0);
+    dnd.source = 0;
+}
+
+/* The files' type among those offered: text/uri-list first. */
+static xcb_atom_t xdnd_pick(const xcb_atom_t *t, int n) {
+    xcb_atom_t got = XCB_ATOM_NONE;
+    for (int i = 0; i < n; i++) {
+        if (t[i] == a_urilist) return a_urilist;
+        if (t[i] == a_kde_urilist && t[i] != XCB_ATOM_NONE) got = a_kde_urilist;
+    }
+    return got;
+}
+
+static void xdnd_message(xcb_client_message_event_t *m) {
+    const uint32_t *l = m->data.data32;
+    if (m->format != 32 || m->type == XCB_ATOM_NONE) return;
+    if (m->type == a_xdnd_enter) {
+        dnd.source = l[0];
+        dnd.type = XCB_ATOM_NONE;
+        if (l[1] & 1) {
+            xcb_get_property_reply_t *r =
+                xcb_get_property_reply(conn, xcb_get_property(conn, 0, dnd.source, a_xdnd_typelist, XCB_ATOM_ATOM, 0, 1024), NULL);
+            if (r && r->type == XCB_ATOM_ATOM)
+                dnd.type = xdnd_pick(xcb_get_property_value(r), xcb_get_property_value_length(r) / 4);
+            free(r);
+        } else {
+            xcb_atom_t t[3] = {l[2], l[3], l[4]};
+            dnd.type = xdnd_pick(t, 3);
+        }
+        xcb_translate_coordinates_reply_t *tr =
+            xcb_translate_coordinates_reply(conn, xcb_translate_coordinates(conn, window, screen->root, 0, 0), NULL);
+        dnd.dx = tr ? tr->dst_x : 0;
+        dnd.dy = tr ? tr->dst_y : 0;
+        free(tr);
+    } else if (m->type == a_xdnd_position) {
+        if (l[0] != dnd.source || !dnd.source) return;
+        int x = (int) (l[2] >> 16) - dnd.dx - ox, y = (int) (l[2] & 0xFFFF) - dnd.dy - oy;
+        int gw = win_w - 2 * padx, gh = win_h - 2 * pady;
+        if (gw < 0) gw = 0;
+        if (gh < 0) gh = 0;
+        uint8_t r[13] = {15, (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
+                         (uint8_t) (gw >> 8), (uint8_t) gw, (uint8_t) (gh >> 8), (uint8_t) gh,
+                         (uint8_t) (pt_cw >> 8), (uint8_t) pt_cw, (uint8_t) (pt_ch >> 8), (uint8_t) pt_ch};
+        record(r, sizeof r);
+        /* accepted, a copy; every position wanted (bit 1), no rectangle */
+        xdnd_send(a_xdnd_status, dnd.type ? 3 : 2, 0, 0, dnd.type ? a_xdnd_copy : XCB_ATOM_NONE);
+    } else if (m->type == a_xdnd_leave) {
+        if (l[0] != dnd.source) return;
+        dnd.source = 0;
+        uint8_t r[1] = {16};
+        record(r, 1);
+    } else if (m->type == a_xdnd_drop) {
+        if (l[0] != dnd.source || !dnd.source) return;
+        if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
+        if (pst.active) {
+            /* a paste still being read, whose buffer this would take: as
+             * if the drag had left */
+            uint8_t r[1] = {16};
+            record(r, 1);
+            xdnd_finished(0);
+            return;
+        }
+        if (!dnd.type) {
+            /* no files offered: a list with nothing in it */
+            uint8_t r[2] = {17, 0};
+            plen = 0;
+            record(r, 2);
+            xdnd_finished(0);
+            return;
+        }
+        pst.active = 1;
+        pst.incr = 0;
+        pst.waiting = 0;
+        pst.pending = 0;
+        pst.which = 2;
+        pst.image = 0;
+        pst.probe = 0;
+        pst.time = l[2];
+        pst.started = ns();
+        plen = 0;
+        paste_ask(dnd.type);
+    }
 }
 
 /* The window owns PRIMARY (0) or CLIPBOARD (1) with this text, from the
@@ -1683,7 +2036,7 @@ geng_cancel puritty_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
     if (have_xic && (x != spot_x || y != spot_y)) {
         spot_x = x;
         spot_y = y;
-        xcb_point_t spot = {(int16_t) (x * pt_cw), (int16_t) (y * pt_ch + pt_ascent)};
+        xcb_point_t spot = {(int16_t) (ox + x * pt_cw), (int16_t) (oy + y * pt_ch + pt_ascent)};
         xcb_xim_nested_list pre = xcb_xim_create_nested_list(xim, XCB_XIM_XNSpotLocation, &spot, NULL);
         xcb_xim_set_ic_values(xim, xic, NULL, NULL, XCB_XIM_XNPreeditAttributes, &pre, NULL);
         free(pre.data);
@@ -1801,5 +2154,21 @@ geng_cancel puritty_x11_shot(void *path_bytes, geng_wait *wait) {
     int r = write_shot(path);
     free(path);
     geng_succeed(wait, geng_slot_I4(r));
+    return (geng_cancel) {0};
+}
+
+/* ATTENTION (puritty docs/claude-code.md CL7)
+ *
+ * The window asks for the user's attention, or stops: ICCCM's WM_HINTS
+ * with UrgencyHint (bit 8) set or not, InputHint (bit 0) set with input
+ * true, which puritty takes as any window does. The window manager marks
+ * the window, in its task bar or by its decoration, until it is cleared. */
+geng_cancel puritty_x11_attention(int32_t on, geng_wait *wait) {
+    uint32_t hints[9] = {0};
+    hints[0] = 1u | (on ? 256u : 0u);
+    hints[1] = 1;
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_HINTS, XCB_ATOM_WM_HINTS, 32, 9, hints);
+    xcb_flush(conn);
+    geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }

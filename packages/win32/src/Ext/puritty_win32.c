@@ -31,7 +31,7 @@
  *
  * Events (WS12 steps 4 and 5): the size in cells (2), the focus (3), a
  * request to close (4), keys (1, WS5), the pointer (9, WS7), the IME (5 to
- * 8, WS6), the clipboard lost (10) and a paste's text come (11, WS8), each record as packages/x11's comment says, read so that Windows'
+ * 8, WS6), the clipboard lost (10), a paste's text come (11, WS8), an image paste's bytes (14, docs/sftp.md FT13), and a drag from another program over the window, gone, and dropped (15, 16, 17, FT22), each record as packages/x11's comment says, read so that Windows'
  * keys and pointer reach Geng as Linux's do:
  *
  *   - a key's code is X's keycode for the same key, from its scan code
@@ -72,6 +72,8 @@
 #include <windows.h>
 #include <imm.h>
 #include <windowsx.h>
+#include <wincred.h>
+#include <shellapi.h>
 #include <mmsystem.h>
 
 #include <ft2build.h>
@@ -686,6 +688,36 @@ void pt_picture_draw(void *picture, int x, int y, int w, int h) {
 
 void pt_picture_free(void *picture) { free(picture); }
 
+/* Part of a picture, each target pixel taking its nearest source pixel,
+ * clipped to the cells it covers and to the target (docs/images.md IM2). */
+void pt_picture_draw_part(void *picture, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, int cx, int cy, int cw,
+                          int ch) {
+    Picture *p = picture;
+    if (!p || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+    int x0 = dx > cx ? dx : cx, y0 = dy > cy ? dy : cy;
+    int x1 = dx + dw < cx + cw ? dx + dw : cx + cw, y1 = dy + dh < cy + ch ? dy + dh : cy + ch;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > pw) x1 = pw;
+    if (y1 > ph) y1 = ph;
+    for (int yy = y0; yy < y1; yy++) {
+        int v = sy + (int) ((long long) (yy - dy) * sh / dh);
+        if (v < 0 || v >= p->h) continue;
+        uint32_t *row = pixels + (size_t) yy * pw;
+        for (int xx = x0; xx < x1; xx++) {
+            int u = sx + (int) ((long long) (xx - dx) * sw / dw);
+            if (u < 0 || u >= p->w) continue;
+            uint32_t s = p->px[(size_t) v * p->w + u], sa = s >> 24;
+            if (sa == 0 && (s & 0xFFFFFF) == 0) continue;
+            uint32_t d = row[xx], na = 255 - sa;
+            uint32_t r = add8((s >> 16) & 0xff, mul8((d >> 16) & 0xff, na));
+            uint32_t g = add8((s >> 8) & 0xff, mul8((d >> 8) & 0xff, na));
+            uint32_t b = add8(s & 0xff, mul8(d & 0xff, na));
+            row[xx] = r << 16 | g << 8 | b;
+        }
+    }
+}
+
 /* THE WINDOW THREAD (WS4) */
 
 typedef struct holder {
@@ -712,7 +744,35 @@ static int open_cols, open_rows;
 static int dpi_now, points_now, dpi_forced;
 /* The cell as the window thread sizes by it, under the queue's lock. */
 static int cell_w, cell_h;
+/* The gaps between the cells and the window's edges (docs/renderer.md
+ * R20, R21): left and right `padx`, above and below `pady`, asked in
+ * points and kept in pixels at the window's resolution, beside cell_w
+ * under queue_lock. What is past the last whole cell is shared between
+ * the two sides, so the cells' (0, 0) is the client area's (ox, oy); the
+ * pointer is reported from there, with the client area's size less the
+ * two gaps. */
+static int padx_pt, pady_pt, padx, pady, ox, oy;
+static int pad_px(int points, int dpi) {
+    return points <= 0 ? 0 : (points * dpi + 36) / 72;
+}
 static int win_cols, win_rows, win_w, win_h, focused = -1;
+/* The cells' corner for the client area's size, under queue_lock;
+ * answers whether it moved. */
+static int place_cells(void) {
+    int x = padx, y = pady;
+    if (cell_w > 0 && cell_h > 0) {
+        int c = (win_w - 2 * padx) / cell_w, r = (win_h - 2 * pady) / cell_h;
+        if (c < 1) c = 1;
+        if (r < 1) r = 1;
+        int sx = win_w - 2 * padx - c * cell_w, sy = win_h - 2 * pady - r * cell_h;
+        if (sx > 0) x += sx / 2;
+        if (sy > 0) y += sy / 2;
+    }
+    int moved = x != ox || y != oy;
+    ox = x;
+    oy = y;
+    return moved;
+}
 /* Where the queue's last record begins when it is a motion, else -1; under
  * the queue's lock. */
 static int last_motion = -1;
@@ -1153,10 +1213,15 @@ static int wheel_v, wheel_h, last_x = INT32_MIN, last_y = INT32_MIN;
 static void pointer_record(int action, int button, int x, int y) {
     int mods = mods_now();
     EnterCriticalSection(&queue_lock);
-    int w = win_w, h = win_h, cw = cell_w, ch = cell_h;
+    int w = win_w, h = win_h, cw = cell_w, ch = cell_h, px = padx, py = pady, x0 = ox, y0 = oy;
     LeaveCriticalSection(&queue_lock);
     last_x = x;
     last_y = y;
+    /* from the cells' corner, in the cells' area (R20) */
+    x -= x0;
+    y -= y0;
+    w = w - 2 * px > 0 ? w - 2 * px : 0;
+    h = h - 2 * py > 0 ? h - 2 * py : 0;
     uint8_t r[17] = {9, (uint8_t) action, (uint8_t) button, (uint8_t) (mods >> 8), (uint8_t) mods,
                      (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
                      (uint8_t) (w >> 8), (uint8_t) w, (uint8_t) (h >> 8), (uint8_t) h,
@@ -1289,9 +1354,9 @@ static void place_ime(HWND h) {
     HIMC c = ImmGetContext(h);
     if (!c) return;
     EnterCriticalSection(&queue_lock);
-    int cw = cell_w, ch = cell_h;
+    int cw = cell_w, ch = cell_h, x0 = ox, y0 = oy;
     LeaveCriticalSection(&queue_lock);
-    int x = spot_x * cw, y = spot_y * ch;
+    int x = x0 + spot_x * cw, y = y0 + spot_y * ch;
     COMPOSITIONFORM cf = {CFS_POINT, {x, y}, {0, 0, 0, 0}};
     ImmSetCompositionWindow(c, &cf);
     CANDIDATEFORM cand = {0, CFS_EXCLUDE, {x, y}, {x, y, x + cw, y + ch}};
@@ -1301,12 +1366,15 @@ static void place_ime(HWND h) {
 
 static void size_in(int w, int h) {
     EnterCriticalSection(&queue_lock);
-    int cw = cell_w, ch = cell_h;
+    int cw = cell_w, ch = cell_h, px = padx, py = pady;
     win_w = w;
     win_h = h;
+    /* the cells moved within the window: drawn again where they now are */
+    int moved = place_cells();
     LeaveCriticalSection(&queue_lock);
+    if (moved && win) InvalidateRect(win, NULL, FALSE);
     if (cw <= 0 || ch <= 0) return;
-    int c = w / cw, r = h / ch;
+    int c = (w - 2 * px) / cw, r = (h - 2 * py) / ch;
     if (c < 1) c = 1;
     if (r < 1) r = 1;
     if (c > 65535) c = 65535;
@@ -1332,6 +1400,9 @@ static void paint_window(HWND h) {
     HDC dc = BeginPaint(h, &ps);
     RECT client;
     GetClientRect(h, &client);
+    EnterCriticalSection(&queue_lock);
+    int gx = ox, gy = oy;
+    LeaveCriticalSection(&queue_lock);
     EnterCriticalSection(&paint);
     if (pixels && pw > 0 && ph > 0) {
         BITMAPINFO bi;
@@ -1344,7 +1415,7 @@ static void paint_window(HWND h) {
         bi.bmiHeader.biCompression = BI_RGB;
         LARGE_INTEGER t0, t1;
         QueryPerformanceCounter(&t0);
-        SetDIBitsToDevice(dc, 0, 0, (DWORD) pw, (DWORD) ph, 0, 0, 0, (UINT) ph, pixels, &bi, DIB_RGB_COLORS);
+        SetDIBitsToDevice(dc, gx, gy, (DWORD) pw, (DWORD) ph, 0, 0, 0, (UINT) ph, pixels, &bi, DIB_RGB_COLORS);
         QueryPerformanceCounter(&t1);
         paints++;
         paint_ticks += t1.QuadPart - t0.QuadPart;
@@ -1353,7 +1424,11 @@ static void paint_window(HWND h) {
     int w = pw, hh = ph;
     LeaveCriticalSection(&paint);
     HBRUSH b = CreateSolidBrush(RGB((m >> 16) & 0xff, (m >> 8) & 0xff, m & 0xff));
-    RECT right = {w, 0, client.right, client.bottom}, below = {0, hh, w, client.bottom};
+    /* the gaps on every side, and what is past the last cells */
+    RECT top = {0, 0, client.right, gy}, left = {0, 0, gx, client.bottom};
+    RECT right = {gx + w, 0, client.right, client.bottom}, below = {0, gy + hh, client.right, client.bottom};
+    if (top.top < top.bottom) FillRect(dc, &top, b);
+    if (left.left < left.right) FillRect(dc, &left, b);
     if (right.left < right.right) FillRect(dc, &right, b);
     if (below.top < below.bottom) FillRect(dc, &below, b);
     DeleteObject(b);
@@ -1377,12 +1452,16 @@ static void rescale(int dpi, int x, int y, const RECT *whole) {
     int cols = win_cols > 0 ? win_cols : open_cols, rows = win_rows > 0 ? win_rows : open_rows;
     cell_w = pt_cw;
     cell_h = pt_ch;
+    padx = pad_px(padx_pt, dpi);
+    pady = pad_px(pady_pt, dpi);
+    int gx = padx, gy = pady;
+    place_cells();
     LeaveCriticalSection(&queue_lock);
     if (whole) {
         SetWindowPos(win, NULL, whole->left, whole->top, whole->right - whole->left, whole->bottom - whole->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
     } else {
-        RECT r = {0, 0, cols * pt_cw, rows * pt_ch};
+        RECT r = {0, 0, cols * pt_cw + 2 * gx, rows * pt_ch + 2 * gy};
         DWORD style = (DWORD) GetWindowLongPtrW(win, GWL_STYLE), ex = (DWORD) GetWindowLongPtrW(win, GWL_EXSTYLE);
         AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) dpi);
         SetWindowPos(win, NULL, x, y, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1409,6 +1488,9 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_ERASEBKGND:
         return 1;
     case WM_SIZE:
+        /* minimized, the client area is 0x0: not a size for the terminal,
+         * which would keep one cell of its screen (docs/windows.md WS31) */
+        if (wp == SIZE_MINIMIZED) return 0;
         size_in(LOWORD(lp), HIWORD(lp));
         return 0;
     case WM_DPICHANGED: {
@@ -1551,6 +1633,171 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, m, wp, lp);
 }
 
+/* DROPS (docs/sftp.md FT21, FT22)
+ *
+ * OLE's drag and drop: the window registers an IDropTarget on its own
+ * thread, which OleInitialize readies, and Windows calls it there. A drag
+ * that holds files on disk (CF_HDROP, as Explorer and a browser's
+ * downloads give) is taken as a copy; one that holds only virtual files
+ * (FileGroupDescriptorW, a file inside a zip, an Outlook attachment; FT21)
+ * is taken too, so that its drop can say it gave no file to send; any
+ * other is refused. Each DragOver is recorded (15) as X11's position, the
+ * pointer's screen position made the window's; DragLeave is 16. A drop
+ * reads CF_HDROP's paths, UTF-16 made UTF-8, a line each ended CRLF, into
+ * the drop's buffer under queue_lock (the program's thread takes it with
+ * `puritty_win32_dropped`), and records 17 with 0: the whole list, or
+ * nothing for virtual files alone. DragOver answers at once, as OLE
+ * wants: what the drop will do is decided by the program later. */
+
+#define COBJMACROS
+#include <ole2.h>
+
+static uint8_t *dbuf;
+static size_t dlen;
+
+static const IID dt_IID_IUnknown = {0x00000000, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const IID dt_IID_IDropTarget = {0x00000122, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+
+typedef struct {
+    IDropTarget target;
+    LONG refs;
+    int files; /* 1 files on disk, 2 virtual files only, 0 neither */
+} DropTarget;
+
+static int drag_holds(IDataObject *d) {
+    if (!d) return 0;
+    FORMATETC f = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    if (IDataObject_QueryGetData(d, &f) == S_OK) return 1;
+    FORMATETC v = {(CLIPFORMAT) RegisterClipboardFormatW(L"FileGroupDescriptorW"), NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    return IDataObject_QueryGetData(d, &v) == S_OK ? 2 : 0;
+}
+
+static DWORD drag_effect(DropTarget *t, DWORD allowed) {
+    return t->files && (allowed & DROPEFFECT_COPY) ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+}
+
+static void drag_record(POINTL pt) {
+    POINT p = {pt.x, pt.y};
+    ScreenToClient(win, &p);
+    EnterCriticalSection(&queue_lock);
+    int w = win_w, h = win_h, cw = cell_w, ch = cell_h, px = padx, py = pady, x0 = ox, y0 = oy;
+    LeaveCriticalSection(&queue_lock);
+    int x = p.x - x0, y = p.y - y0;
+    w = w - 2 * px > 0 ? w - 2 * px : 0;
+    h = h - 2 * py > 0 ? h - 2 * py : 0;
+    uint8_t r[13] = {15, (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
+                     (uint8_t) (w >> 8), (uint8_t) w, (uint8_t) (h >> 8), (uint8_t) h,
+                     (uint8_t) (cw >> 8), (uint8_t) cw, (uint8_t) (ch >> 8), (uint8_t) ch};
+    record(r, sizeof r);
+}
+
+static HRESULT STDMETHODCALLTYPE dt_query(IDropTarget *t, REFIID riid, void **out) {
+    if (IsEqualIID(riid, &dt_IID_IUnknown) || IsEqualIID(riid, &dt_IID_IDropTarget)) {
+        *out = t;
+        IDropTarget_AddRef(t);
+        return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+
+/* the target is this file's for the window's life, never freed */
+static ULONG STDMETHODCALLTYPE dt_addref(IDropTarget *t) { return (ULONG) InterlockedIncrement(&((DropTarget *) t)->refs); }
+static ULONG STDMETHODCALLTYPE dt_release(IDropTarget *t) { return (ULONG) InterlockedDecrement(&((DropTarget *) t)->refs); }
+
+static HRESULT STDMETHODCALLTYPE dt_enter(IDropTarget *t, IDataObject *d, DWORD keys, POINTL pt, DWORD *effect) {
+    (void) keys;
+    DropTarget *dt = (DropTarget *) t;
+    dt->files = drag_holds(d);
+    *effect = drag_effect(dt, *effect);
+    if (dt->files) drag_record(pt);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_over(IDropTarget *t, DWORD keys, POINTL pt, DWORD *effect) {
+    (void) keys;
+    DropTarget *dt = (DropTarget *) t;
+    *effect = drag_effect(dt, *effect);
+    if (dt->files) drag_record(pt);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_leave(IDropTarget *t) {
+    if (((DropTarget *) t)->files) {
+        uint8_t r[1] = {16};
+        record(r, 1);
+    }
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_drop(IDropTarget *t, IDataObject *d, DWORD keys, POINTL pt, DWORD *effect) {
+    (void) keys;
+    (void) pt;
+    DropTarget *dt = (DropTarget *) t;
+    *effect = drag_effect(dt, *effect);
+    if (!dt->files) return S_OK;
+    uint8_t *list = NULL;
+    size_t n = 0, cap = 0;
+    FORMATETC f = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    STGMEDIUM m;
+    if (dt->files == 1 && SUCCEEDED(IDataObject_GetData(d, &f, &m))) {
+        HDROP h = (HDROP) GlobalLock(m.hGlobal);
+        UINT count = h ? DragQueryFileW(h, 0xFFFFFFFF, NULL, 0) : 0;
+        for (UINT i = 0; i < count; i++) {
+            UINT units = DragQueryFileW(h, i, NULL, 0);
+            WCHAR *w = malloc(((size_t) units + 1) * sizeof(WCHAR));
+            if (!w || !DragQueryFileW(h, i, w, units + 1)) {
+                free(w);
+                continue;
+            }
+            int bytes = WideCharToMultiByte(CP_UTF8, 0, w, (int) units, NULL, 0, NULL, NULL);
+            if (bytes > 0) {
+                if (n + (size_t) bytes + 2 > cap) {
+                    cap = (n + (size_t) bytes + 2) * 2;
+                    list = realloc(list, cap);
+                }
+                WideCharToMultiByte(CP_UTF8, 0, w, (int) units, (char *) list + n, bytes, NULL, NULL);
+                n += (size_t) bytes;
+                list[n++] = '\r';
+                list[n++] = '\n';
+            }
+            free(w);
+        }
+        if (h) GlobalUnlock(m.hGlobal);
+        ReleaseStgMedium(&m);
+    }
+    EnterCriticalSection(&queue_lock);
+    free(dbuf);
+    dbuf = list;
+    dlen = n;
+    LeaveCriticalSection(&queue_lock);
+    uint8_t r[2] = {17, 0};
+    record(r, 2);
+    return S_OK;
+}
+
+static IDropTargetVtbl drop_vtbl = {dt_query, dt_addref, dt_release, dt_enter, dt_over, dt_leave, dt_drop};
+static DropTarget drop_target = {{&drop_vtbl}, 1, 0};
+
+/* The drop's list since it was last taken, UTF-8 paths a line each. */
+geng_cancel puritty_win32_dropped(geng_wait *wait) {
+    EnterCriticalSection(&queue_lock);
+    size_t n = dlen;
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + n, GENG_HEADER_BYTES(sizeof *b + n));
+    b->length = (int64_t) n;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    if (n) memcpy(b->data, dbuf, n);
+    free(dbuf);
+    dbuf = NULL;
+    dlen = 0;
+    LeaveCriticalSection(&queue_lock);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
 static void *window_thread(void *arg) {
     (void) arg;
     WNDCLASSEXW wc;
@@ -1570,7 +1817,7 @@ static void *window_thread(void *arg) {
     if (!wc.hIcon) wc.hIcon = LoadIconW(NULL, (LPCWSTR) IDI_APPLICATION);
     RegisterClassExW(&wc);
     DWORD style = WS_OVERLAPPEDWINDOW, ex = 0;
-    RECT r = {0, 0, open_cols * cell_w, open_rows * cell_h};
+    RECT r = {0, 0, open_cols * cell_w + 2 * padx, open_rows * cell_h + 2 * pady};
     AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) dpi_now);
     win = CreateWindowExW(ex, L"puritty", title0 ? title0 : L"puritty", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,
                           r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
@@ -1589,6 +1836,9 @@ static void *window_thread(void *arg) {
     }
     ShowWindow(win, start_maximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
     AddClipboardFormatListener(win);
+    /* drops from other programs (FT22), called on this thread */
+    int ole = SUCCEEDED(OleInitialize(NULL));
+    if (ole) RegisterDragDrop(win, &drop_target.target);
     /* keys go through IMM32's input context, which every window has */
     HIMC c = ImmGetContext(win);
     if (c) {
@@ -1604,6 +1854,10 @@ static void *window_thread(void *arg) {
             continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+    }
+    if (ole) {
+        RevokeDragDrop(win);
+        OleUninitialize();
     }
     geng_post_done(post);
     return NULL;
@@ -1661,7 +1915,9 @@ static void at_exit(void) {
  * (V37). Answers the cell as `width * 65536 + height`, or -1 no font, -2
  * no window. */
 geng_cancel puritty_win32_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
-                               void *title_bytes, geng_wait *wait) {
+                               void *title_bytes, int32_t padding_x, int32_t padding_y, geng_wait *wait) {
+    padx_pt = padding_x;
+    pady_pt = padding_y;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     InitializeCriticalSection(&paint);
     InitializeCriticalSection(&queue_lock);
@@ -1693,6 +1949,8 @@ geng_cancel puritty_win32_open(int32_t c, int32_t r, int32_t points, void *font_
     open_rows = r;
     dpi_now = dpi;
     points_now = points;
+    padx = ox = pad_px(padx_pt, dpi);
+    pady = oy = pad_px(pady_pt, dpi);
     char *title = string_of(title_bytes);
     title0 = wide(title);
     free(title);
@@ -1732,7 +1990,10 @@ geng_cancel puritty_win32_draw(void *list, geng_wait *wait) {
     LeaveCriticalSection(&paint);
     if (margins) InvalidateRect(win, NULL, FALSE);
     else if (frame.last >= frame.first) {
-        RECT rows = {0, frame.first * pt_ch, pt_cols * pt_cw, (frame.last + 1) * pt_ch};
+        EnterCriticalSection(&queue_lock);
+        int gx = ox, gy = oy;
+        LeaveCriticalSection(&queue_lock);
+        RECT rows = {gx, gy + frame.first * pt_ch, gx + pt_cols * pt_cw, gy + (frame.last + 1) * pt_ch};
         InvalidateRect(win, &rows, FALSE);
     }
     int inklen;
@@ -1758,6 +2019,11 @@ geng_cancel puritty_win32_draw(void *list, geng_wait *wait) {
 static int write_shot(const char *path) {
     RECT client = {0, 0, 0, 0};
     if (win) GetClientRect(win, &client);
+    /* the cells where paint_window puts them, at (ox, oy), the rest
+     * the margin's color, as the window shows them */
+    EnterCriticalSection(&queue_lock);
+    int gx = ox, gy = oy;
+    LeaveCriticalSection(&queue_lock);
     EnterCriticalSection(&paint);
     int w = client.right > 0 ? client.right : pw, h = client.bottom > 0 ? client.bottom : ph;
     FILE *o = fopen(path, "wb");
@@ -1769,7 +2035,8 @@ static int write_shot(const char *path) {
     uint8_t *line = malloc((size_t) w * 3);
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
-            uint32_t p = x < pw && y < ph ? pixels[(size_t) y * pw + x] : margin_rgb;
+            int cx = x - gx, cy = y - gy;
+            uint32_t p = cx >= 0 && cy >= 0 && cx < pw && cy < ph ? pixels[(size_t) cy * pw + cx] : margin_rgb;
             line[x * 3] = (uint8_t) (p >> 16);
             line[x * 3 + 1] = (uint8_t) (p >> 8);
             line[x * 3 + 2] = (uint8_t) p;
@@ -1884,7 +2151,10 @@ static void refit(void) {
  * then reports the new size, as a resize by the user does. */
 geng_cancel puritty_win32_resize(int32_t cols, int32_t rows, geng_wait *wait) {
     if (win && !IsZoomed(win)) {
-        RECT r = {0, 0, cols * cell_w, rows * cell_h};
+        EnterCriticalSection(&queue_lock);
+        int gx = padx, gy = pady;
+        LeaveCriticalSection(&queue_lock);
+        RECT r = {0, 0, cols * cell_w + 2 * gx, rows * cell_h + 2 * gy};
         DWORD style = (DWORD) GetWindowLongPtrW(win, GWL_STYLE), ex = (DWORD) GetWindowLongPtrW(win, GWL_EXSTYLE);
         EnterCriticalSection(&paint);
         UINT dpi = (UINT) dpi_now;
@@ -1892,6 +2162,25 @@ geng_cancel puritty_win32_resize(int32_t cols, int32_t rows, geng_wait *wait) {
         AdjustWindowRectExForDpi(&r, style, FALSE, ex, dpi);
         SetWindowPos(win, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}
+
+/* The gaps around the cells set again, in points (R20, R21): the window
+ * kept at its size in pixels, so the cells that now fit it are reported
+ * as a new size, and the whole window drawn again at the new corner. */
+geng_cancel puritty_win32_padding(int32_t points_x, int32_t points_y, geng_wait *wait) {
+    EnterCriticalSection(&paint);
+    int dpi = dpi_now;
+    LeaveCriticalSection(&paint);
+    EnterCriticalSection(&queue_lock);
+    padx_pt = points_x;
+    pady_pt = points_y;
+    int px = pad_px(points_x, dpi), py = pad_px(points_y, dpi), changed = px != padx || py != pady;
+    padx = px;
+    pady = py;
+    LeaveCriticalSection(&queue_lock);
+    if (changed && win) refit();
     geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
@@ -2170,6 +2459,129 @@ geng_cancel puritty_win32_system_menu(void *items_bytes, geng_wait *wait) {
 }
 
 
+/* A WARNING ONLY THE PLATFORM DRAWS (puritty docs/ssh-client.md SC28) */
+
+/* Windows' own message box over the window, so that nothing a server
+ * prints can pass for it: Yes, No and Cancel, Cancel the default. Answers
+ * 1 for Yes, 2 for No, 3 for Cancel or the box closed. It is modal, and
+ * waits on this thread for the answer. */
+geng_cancel puritty_win32_warning(void *title_bytes, void *text_bytes, geng_wait *wait) {
+    char *title = string_of(title_bytes);
+    char *text = string_of(text_bytes);
+    wchar_t *wtitle = wide(title);
+    wchar_t *wtext = wide(text);
+    free(title);
+    free(text);
+    int got = MessageBoxW(win, wtext, wtitle, MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON3 | MB_SETFOREGROUND);
+    free(wtitle);
+    free(wtext);
+    geng_succeed(wait, geng_slot_I4(got == IDYES ? 1 : got == IDNO ? 2 : 3));
+    return (geng_cancel) {0};
+}
+
+/* THE TASKBAR'S JUMP LIST (puritty docs/settings-gui.md SG19) */
+
+#define COBJMACROS
+#include <objbase.h>
+#include <shobjidl.h>
+#include <propsys.h>
+
+/* The interfaces' and classes' ids, written here as Windows' SDK has them,
+ * so that no import library need carry them */
+static const GUID jl_CLSID_DestinationList = {0x77f10cf0, 0x3db5, 0x4966, {0xb5, 0x20, 0xb7, 0xc5, 0x4f, 0xd3, 0x5e, 0xd6}};
+static const GUID jl_IID_ICustomDestinationList = {0x6332debf, 0x87b5, 0x4670, {0x90, 0xc0, 0x5e, 0x57, 0xb4, 0x08, 0xa4, 0x9e}};
+static const GUID jl_CLSID_EnumerableObjectCollection = {0x2d3468c1, 0x36a7, 0x43b6, {0xac, 0x24, 0xd3, 0xf0, 0x2f, 0xd9, 0x60, 0x7a}};
+static const GUID jl_IID_IObjectCollection = {0x5632b1a4, 0xe38a, 0x400a, {0x92, 0x8a, 0xd4, 0xcd, 0x63, 0x23, 0x02, 0x95}};
+static const GUID jl_IID_IObjectArray = {0x92ca9dcd, 0x5622, 0x4bba, {0xa8, 0x05, 0x5e, 0x9f, 0x54, 0x1b, 0xd8, 0xc9}};
+static const GUID jl_CLSID_ShellLink = {0x00021401, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const GUID jl_IID_IShellLinkW = {0x000214f9, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const GUID jl_IID_IPropertyStore = {0x886d8eeb, 0x8cf2, 0x4446, {0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99}};
+/* PKEY_Title: the name the jump list shows for a link */
+static const PROPERTYKEY jl_title = {{0xf29f85e0, 0x4ff9, 0x1068, {0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9}}, 2};
+
+/* Whether the user took a link with these arguments off the list, which
+ * Windows will not have put back (AppendCategory refuses the whole
+ * category) */
+static int jl_removed(IObjectArray *removed, const wchar_t *args) {
+    UINT n = 0;
+    if (!removed || FAILED(IObjectArray_GetCount(removed, &n))) return 0;
+    for (UINT i = 0; i < n; i++) {
+        IShellLinkW *link = NULL;
+        if (FAILED(IObjectArray_GetAt(removed, i, &jl_IID_IShellLinkW, (void **) &link))) continue;
+        wchar_t had[1024];
+        int same = SUCCEEDED(IShellLinkW_GetArguments(link, had, 1024)) && wcscmp(had, args) == 0;
+        IShellLinkW_Release(link);
+        if (same) return 1;
+    }
+    return 0;
+}
+
+/* The jump list made anew: a category of these links, each puritty itself
+ * with its arguments. The bytes are UTF-8 lines: the category's name, then
+ * a link a line, its title, a tab, its command line. The answer is 0, or
+ * the HRESULT of the step that failed (E_ACCESSDENIED, 0x80070005, when
+ * Windows is set not to show recently opened items). */
+geng_cancel puritty_win32_jump_list(void *items_bytes, geng_wait *wait) {
+    int count;
+    wchar_t *w = menu_text(items_bytes, &count);
+    HRESULT init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    ICustomDestinationList *list = NULL;
+    IObjectCollection *links = NULL;
+    IObjectArray *removed = NULL, *array = NULL;
+    UINT slots = 0;
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    HRESULT hr = CoCreateInstance(&jl_CLSID_DestinationList, NULL, CLSCTX_INPROC_SERVER, &jl_IID_ICustomDestinationList, (void **) &list);
+    if (SUCCEEDED(hr)) hr = ICustomDestinationList_BeginList(list, &slots, &jl_IID_IObjectArray, (void **) &removed);
+    if (SUCCEEDED(hr)) hr = CoCreateInstance(&jl_CLSID_EnumerableObjectCollection, NULL, CLSCTX_INPROC_SERVER, &jl_IID_IObjectCollection, (void **) &links);
+    wchar_t *category = w;
+    wchar_t *line = wcschr(w, L'\n');
+    if (line) *line++ = 0;
+    int added = 0;
+    while (SUCCEEDED(hr) && line && *line) {
+        wchar_t *next = wcschr(line, L'\n');
+        if (next) *next++ = 0;
+        wchar_t *args = wcschr(line, L'\t');
+        if (args) {
+            *args++ = 0;
+            IShellLinkW *link = NULL;
+            if (!jl_removed(removed, args) && SUCCEEDED(CoCreateInstance(&jl_CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &jl_IID_IShellLinkW, (void **) &link))) {
+                IShellLinkW_SetPath(link, exe);
+                IShellLinkW_SetArguments(link, args);
+                IShellLinkW_SetIconLocation(link, exe, 0);
+                IShellLinkW_SetDescription(link, line);
+                IPropertyStore *store = NULL;
+                if (SUCCEEDED(IShellLinkW_QueryInterface(link, &jl_IID_IPropertyStore, (void **) &store))) {
+                    PROPVARIANT title;
+                    memset(&title, 0, sizeof title);
+                    title.vt = VT_LPWSTR;
+                    title.pwszVal = line;
+                    IPropertyStore_SetValue(store, &jl_title, &title);
+                    IPropertyStore_Commit(store);
+                    IPropertyStore_Release(store);
+                }
+                if (SUCCEEDED(IObjectCollection_AddObject(links, (IUnknown *) link))) added++;
+                IShellLinkW_Release(link);
+            }
+        }
+        line = next;
+    }
+    if (SUCCEEDED(hr) && added > 0) {
+        hr = IObjectCollection_QueryInterface(links, &jl_IID_IObjectArray, (void **) &array);
+        if (SUCCEEDED(hr)) hr = ICustomDestinationList_AppendCategory(list, category, array);
+    }
+    if (SUCCEEDED(hr)) hr = ICustomDestinationList_CommitList(list);
+    else if (list) ICustomDestinationList_AbortList(list);
+    if (array) IObjectArray_Release(array);
+    if (links) IObjectCollection_Release(links);
+    if (removed) IObjectArray_Release(removed);
+    if (list) ICustomDestinationList_Release(list);
+    if (SUCCEEDED(init)) CoUninitialize();
+    free(w);
+    geng_succeed(wait, geng_slot_I4(SUCCEEDED(hr) ? 0 : (int32_t) hr));
+    return (geng_cancel) {0};
+}
+
 /* PAGEANT'S PIPE (puritty docs/ssh-client.md SC19) */
 
 #define SECURITY_WIN32
@@ -2211,5 +2623,416 @@ geng_cancel puritty_win32_pageantParts(geng_wait *wait) {
     memcpy(b->data + 1, user, ulen);
     memcpy(b->data + 1 + ulen, data, sizeof data);
     geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* PUTTY'S SAVED SESSIONS
+ *
+ * Each session under HKCU\Software\SimonTatham\PuTTY\Sessions as text
+ * (docs/settings-gui.md SG21): a `[name]` line, then a `Key=Value` line a
+ * value, UTF-8. The key's name is PuTTY's %-escape of the session's name
+ * in the machine's ANSI code page (windows/utils/escape_registry_key.c),
+ * so it is unescaped and read in that code page here; a string value is read as
+ * UTF-16, a DWORD as PuTTY's int. A line end or control character in a
+ * name or value becomes a space, so the text stays one line a value.
+ * Nothing when PuTTY has saved no session. */
+
+typedef struct { char *s; size_t n, cap; } Text;
+
+static void text_put(Text *t, const char *s, size_t n) {
+    if (t->n + n + 1 > t->cap) {
+        t->cap = (t->n + n + 1) * 2;
+        t->s = realloc(t->s, t->cap);
+    }
+    memcpy(t->s + t->n, s, n);
+    t->n += n;
+}
+
+static void text_line_part(Text *t, const char *s) {
+    for (; *s; s++) {
+        char c = (unsigned char) *s < 0x20 ? ' ' : *s;
+        text_put(t, &c, 1);
+    }
+}
+
+static int hex_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+/* The machine's ANSI code page, as PuTTY's process has it. Not CP_ACP:
+ * Geng's manifest makes this process's UTF-8 (activeCodePage), so a
+ * name PuTTY wrote in CP949 or 1252 would not decode. The registry's
+ * value is the machine's, and says 65001 where Windows' "Use Unicode
+ * UTF-8" option is on; else the system locale's. */
+static UINT machine_code_page(void) {
+    wchar_t acp[16];
+    DWORD size = sizeof acp;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", L"ACP",
+                     RRF_RT_REG_SZ, NULL, acp, &size) == ERROR_SUCCESS) {
+        UINT n = (UINT) wcstoul(acp, NULL, 10);
+        if (n) return n;
+    }
+    UINT locale = 0;
+    if (GetLocaleInfoEx(LOCALE_NAME_SYSTEM_DEFAULT, LOCALE_IDEFAULTANSICODEPAGE | LOCALE_RETURN_NUMBER,
+                        (LPWSTR) &locale, sizeof locale / sizeof(wchar_t)) && locale)
+        return locale;
+    return CP_ACP;
+}
+
+static char *putty_session_name(const wchar_t *key) {
+    size_t n = wcslen(key);
+    char *bytes = malloc(n + 1);
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (key[i] == L'%' && i + 2 < n && key[i + 1] < 0x80 && key[i + 2] < 0x80
+            && hex_value((char) key[i + 1]) >= 0 && hex_value((char) key[i + 2]) >= 0) {
+            bytes[k++] = (char) (hex_value((char) key[i + 1]) * 16 + hex_value((char) key[i + 2]));
+            i += 2;
+        } else
+            bytes[k++] = (char) key[i];
+    }
+    bytes[k] = 0;
+    UINT page = machine_code_page();
+    int w = MultiByteToWideChar(page, 0, bytes, -1, NULL, 0);
+    wchar_t *wide = malloc(sizeof *wide * (size_t) (w > 0 ? w : 1));
+    if (w <= 0 || !MultiByteToWideChar(page, 0, bytes, -1, wide, w)) wide[0] = 0;
+    free(bytes);
+    char *utf8 = narrow(wide);
+    free(wide);
+    return utf8;
+}
+
+geng_cancel puritty_win32_puttySessions(geng_wait *wait) {
+    Text t = {0};
+    HKEY sessions;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\SimonTatham\\PuTTY\\Sessions", 0, KEY_READ, &sessions) == ERROR_SUCCESS) {
+        for (DWORD i = 0;; i++) {
+            wchar_t name[512];
+            DWORD nn = 512;
+            LONG r = RegEnumKeyExW(sessions, i, name, &nn, NULL, NULL, NULL, NULL);
+            if (r == ERROR_NO_MORE_ITEMS) break;
+            if (r != ERROR_SUCCESS) continue;
+            HKEY session;
+            if (RegOpenKeyExW(sessions, name, 0, KEY_READ, &session) != ERROR_SUCCESS) continue;
+            char *shown = putty_session_name(name);
+            text_put(&t, "[", 1);
+            text_line_part(&t, shown);
+            text_put(&t, "]\n", 2);
+            free(shown);
+            for (DWORD j = 0;; j++) {
+                wchar_t value[256];
+                DWORD vn = 256, type, size = 0;
+                LONG q = RegEnumValueW(session, j, value, &vn, NULL, &type, NULL, &size);
+                if (q == ERROR_NO_MORE_ITEMS) break;
+                if (q != ERROR_SUCCESS && q != ERROR_MORE_DATA) continue;
+                BYTE *data = malloc(size + sizeof(wchar_t));
+                DWORD got = size;
+                vn = 256;
+                if (RegEnumValueW(session, j, value, &vn, NULL, &type, data, &got) != ERROR_SUCCESS) {
+                    free(data);
+                    continue;
+                }
+                char *key = narrow(value);
+                if (type == REG_SZ || type == REG_EXPAND_SZ) {
+                    ((wchar_t *) data)[got / sizeof(wchar_t)] = 0;
+                    char *v = narrow((wchar_t *) data);
+                    text_line_part(&t, key);
+                    text_put(&t, "=", 1);
+                    text_line_part(&t, v);
+                    text_put(&t, "\n", 1);
+                    free(v);
+                } else if (type == REG_DWORD && got == sizeof(DWORD)) {
+                    char v[16];
+                    snprintf(v, sizeof v, "%d", (int) *(DWORD *) data);
+                    text_line_part(&t, key);
+                    text_put(&t, "=", 1);
+                    text_line_part(&t, v);
+                    text_put(&t, "\n", 1);
+                }
+                free(key);
+                free(data);
+            }
+            RegCloseKey(session);
+        }
+        RegCloseKey(sessions);
+    }
+    int n = (int) t.n;
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + (size_t) n, GENG_HEADER_BYTES(sizeof *b + (size_t) n));
+    b->length = n;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    if (n) memcpy(b->data, t.s, (size_t) n);
+    free(t.s);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* SAVED PASSWORDS
+ *
+ * Windows' Credential Manager (docs/saved-secrets.md PW7, PW8): a generic
+ * credential by its target, kept on this machine
+ * (CRED_PERSIST_LOCAL_MACHINE), its secret the bytes given, a user name
+ * beside it. Measured on beelink1 (PW3): a secret of up to 2560 bytes, and
+ * no call works from an ssh logon (ERROR_NO_SUCH_LOGON_SESSION). */
+
+static geng_bytes *bytes_from(const void *data, size_t n) {
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + n, GENG_HEADER_BYTES(sizeof *b + n));
+    b->length = (int32_t) n;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    if (n) memcpy(b->data, data, n);
+    return b;
+}
+
+/* The secret: 1 and its bytes when there is one, 0 and the error's code
+ * (as text) when there is none or it cannot be read. */
+geng_cancel puritty_win32_credRead(void *target_bytes, geng_wait *wait) {
+    char *target = string_of(target_bytes);
+    wchar_t *wtarget = wide(target);
+    free(target);
+    PCREDENTIALW cred = NULL;
+    geng_bytes *b;
+    if (CredReadW(wtarget, CRED_TYPE_GENERIC, 0, &cred)) {
+        size_t n = cred->CredentialBlobSize;
+        uint8_t *out = malloc(n + 1);
+        out[0] = 1;
+        if (n) memcpy(out + 1, cred->CredentialBlob, n);
+        b = bytes_from(out, n + 1);
+        SecureZeroMemory(out, n + 1);
+        free(out);
+        CredFree(cred);
+    } else {
+        char why[16];
+        int k = snprintf(why + 1, sizeof why - 1, "%lu", (unsigned long) GetLastError());
+        why[0] = 0;
+        b = bytes_from(why, (size_t) k + 1);
+    }
+    free(wtarget);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* The secret written: empty when it was, else the error's code as text. */
+geng_cancel puritty_win32_credWrite(void *target_bytes, void *user_bytes, void *secret_bytes, geng_wait *wait) {
+    char *target = string_of(target_bytes), *user = string_of(user_bytes);
+    wchar_t *wtarget = wide(target), *wuser = wide(user);
+    free(target);
+    free(user);
+    geng_bytes *secret = secret_bytes;
+    CREDENTIALW cred;
+    memset(&cred, 0, sizeof cred);
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = wtarget;
+    cred.UserName = wuser;
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    cred.CredentialBlobSize = (DWORD) secret->length;
+    cred.CredentialBlob = secret->data;
+    geng_bytes *b;
+    if (CredWriteW(&cred, 0)) {
+        b = bytes_from("", 0);
+    } else {
+        char why[16];
+        int k = snprintf(why, sizeof why, "%lu", (unsigned long) GetLastError());
+        b = bytes_from(why, (size_t) k);
+    }
+    free(wtarget);
+    free(wuser);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* The secret removed: 1 when it was, 0 when there was none or it could
+ * not be. */
+geng_cancel puritty_win32_credDelete(void *target_bytes, geng_wait *wait) {
+    char *target = string_of(target_bytes);
+    wchar_t *wtarget = wide(target);
+    free(target);
+    int ok = CredDeleteW(wtarget, CRED_TYPE_GENERIC, 0) ? 1 : 0;
+    free(wtarget);
+    geng_succeed(wait, geng_slot_I4(ok));
+    return (geng_cancel) {0};
+}
+
+/* ATTENTION (puritty docs/claude-code.md CL7): the taskbar button
+ * flashes until the window comes to the front (FLASHW_TIMERNOFG), or
+ * stops. */
+geng_cancel puritty_win32_attention(int32_t on, geng_wait *wait) {
+    FLASHWINFO f;
+    memset(&f, 0, sizeof f);
+    f.cbSize = sizeof f;
+    f.hwnd = win;
+    f.dwFlags = on ? (FLASHW_TRAY | FLASHW_TIMERNOFG) : FLASHW_STOP;
+    f.uCount = 0;
+    f.dwTimeout = 0;
+    FlashWindowEx(&f);
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}
+
+/* DESKTOP NOTIFICATIONS (puritty docs/claude-code.md CL8)
+ *
+ * A notification a program asked for (OSC 9, 777, 99), shown as the
+ * shell's balloon from an icon of puritty's in the notification area,
+ * which Windows 10 and 11 show as a toast: the icon added with the first,
+ * changed for each next, and taken away when puritty ends. */
+
+static int notify_icon;
+
+static void notify_icon_gone(void) {
+    if (notify_icon) {
+        NOTIFYICONDATAW n;
+        memset(&n, 0, sizeof n);
+        n.cbSize = sizeof n;
+        n.hWnd = win;
+        n.uID = 1;
+        Shell_NotifyIconW(NIM_DELETE, &n);
+        notify_icon = 0;
+    }
+}
+
+geng_cancel puritty_win32_notify(void *title_bytes, void *body_bytes, geng_wait *wait) {
+    char *title = string_of(title_bytes), *body = string_of(body_bytes);
+    wchar_t *wt = wide(title), *wb = wide(body);
+    free(title);
+    free(body);
+    NOTIFYICONDATAW n;
+    memset(&n, 0, sizeof n);
+    n.cbSize = sizeof n;
+    n.hWnd = win;
+    n.uID = 1;
+    n.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
+    n.hIcon = (HICON) GetClassLongPtrW(win, GCLP_HICONSM);
+    if (!n.hIcon) n.hIcon = LoadIconW(NULL, (LPCWSTR) IDI_APPLICATION);
+    wcsncpy(n.szTip, L"puritty", sizeof n.szTip / sizeof *n.szTip - 1);
+    wcsncpy(n.szInfoTitle, wt, sizeof n.szInfoTitle / sizeof *n.szInfoTitle - 1);
+    wcsncpy(n.szInfo, wb[0] ? wb : L" ", sizeof n.szInfo / sizeof *n.szInfo - 1);
+    n.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
+    BOOL shown;
+    if (!notify_icon) {
+        shown = Shell_NotifyIconW(NIM_ADD, &n);
+        if (shown) {
+            notify_icon = 1;
+            atexit(notify_icon_gone);
+        }
+    } else
+        shown = Shell_NotifyIconW(NIM_MODIFY, &n);
+    free(wt);
+    free(wb);
+    geng_succeed(wait, geng_slot_I4(shown ? 1 : 0));
+    return (geng_cancel) {0};
+}
+
+/* A LINK OPENED (puritty docs/claude-code.md CL9): the shell's "open" of a
+ * URI the app has already found safe to open; 1 when the shell took it
+ * (ShellExecuteW answers more than 32). */
+geng_cancel puritty_win32_openLink(void *uri_bytes, geng_wait *wait) {
+    char *uri = string_of(uri_bytes);
+    wchar_t *w = wide(uri);
+    free(uri);
+    HINSTANCE r = ShellExecuteW(NULL, L"open", w, NULL, NULL, SW_SHOWNORMAL);
+    free(w);
+    geng_succeed(wait, geng_slot_I4((INT_PTR) r > 32 ? 1 : 0));
+    return (geng_cancel) {0};
+}
+
+/* AN IMAGE PASTE (puritty docs/sftp.md FT13)
+ *
+ * A paste of the clipboard asks for its text when it has any, as before,
+ * and otherwise for its image as PNG, into the paste's buffer, told by
+ * record 14 as a paste's text is by 11. Windows' Snipping Tool puts a PNG on the
+ * clipboard (its registered "PNG" format), which is taken as it is; the
+ * Print Screen keys leave only a bitmap (CF_DIB, CF_DIBV5 and CF_BITMAP,
+ * measured in FT11), which the Windows Imaging Component encodes, while
+ * the clipboard is open, since the bitmap is the clipboard's. No image is
+ * an empty last record. */
+
+#include <wincodec.h>
+
+static const GUID im_CLSID_WICImagingFactory = {0xcacaf262, 0x9370, 0x4615, {0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a}};
+static const GUID im_IID_IWICImagingFactory = {0xec5ec8a9, 0xc395, 0x4314, {0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70}};
+static const GUID im_ContainerFormatPng = {0x1b7cfaf4, 0x713f, 0x473c, {0xbb, 0xcd, 0x61, 0x37, 0x42, 0x5f, 0xae, 0xaf}};
+
+static void take_bytes(const void *d, size_t n) {
+    free(pbuf);
+    pbuf = malloc(n ? n : 1);
+    if (pbuf && n) memcpy(pbuf, d, n);
+    plen = pbuf ? n : 0;
+}
+
+/* The bitmap encoded as PNG into the paste's buffer; nothing on a failure. */
+static void encode_png(HBITMAP bitmap) {
+    IWICImagingFactory *factory = NULL;
+    IWICBitmap *source = NULL;
+    IWICBitmapEncoder *encoder = NULL;
+    IWICBitmapFrameEncode *frame = NULL;
+    IPropertyBag2 *options = NULL;
+    IStream *stream = NULL;
+    HRESULT hr = CoCreateInstance(&im_CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &im_IID_IWICImagingFactory, (void **) &factory);
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateBitmapFromHBITMAP(factory, bitmap, NULL, WICBitmapIgnoreAlpha, &source);
+    if (SUCCEEDED(hr)) hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateEncoder(factory, &im_ContainerFormatPng, NULL, &encoder);
+    if (SUCCEEDED(hr)) hr = IWICBitmapEncoder_Initialize(encoder, stream, WICBitmapEncoderNoCache);
+    if (SUCCEEDED(hr)) hr = IWICBitmapEncoder_CreateNewFrame(encoder, &frame, &options);
+    if (SUCCEEDED(hr)) hr = IWICBitmapFrameEncode_Initialize(frame, options);
+    if (SUCCEEDED(hr)) hr = IWICBitmapFrameEncode_WriteSource(frame, (IWICBitmapSource *) source, NULL);
+    if (SUCCEEDED(hr)) hr = IWICBitmapFrameEncode_Commit(frame);
+    if (SUCCEEDED(hr)) hr = IWICBitmapEncoder_Commit(encoder);
+    HGLOBAL g = NULL;
+    STATSTG stat;
+    if (SUCCEEDED(hr)) hr = IStream_Stat(stream, &stat, STATFLAG_NONAME);
+    if (SUCCEEDED(hr)) hr = GetHGlobalFromStream(stream, &g);
+    if (SUCCEEDED(hr) && g) {
+        void *d = GlobalLock(g);
+        if (d) take_bytes(d, (size_t) stat.cbSize.QuadPart);
+        GlobalUnlock(g);
+    }
+    if (options) IPropertyBag2_Release(options);
+    if (frame) IWICBitmapFrameEncode_Release(frame);
+    if (encoder) IWICBitmapEncoder_Release(encoder);
+    if (stream) IStream_Release(stream);
+    if (source) IWICBitmap_Release(source);
+    if (factory) IWICImagingFactory_Release(factory);
+}
+
+static void read_clipboard_image(void) {
+    plen = 0;
+    static UINT png;
+    if (!png) png = RegisterClipboardFormatW(L"PNG");
+    int has_png = png && IsClipboardFormatAvailable(png);
+    if (!has_png && !IsClipboardFormatAvailable(CF_BITMAP)) return;
+    if (!open_clipboard()) return;
+    if (has_png) {
+        HANDLE h = GetClipboardData(png);
+        const void *d = h ? GlobalLock(h) : NULL;
+        if (d) take_bytes(d, GlobalSize(h));
+        if (d) GlobalUnlock(h);
+    } else {
+        CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        HBITMAP b = GetClipboardData(CF_BITMAP);
+        if (b) encode_png(b);
+    }
+    CloseClipboard();
+}
+
+/* A paste of the clipboard that may be a picture: its text when it holds
+ * any (record 11), else its picture (record 14), else nothing (an empty
+ * record 11). Read now; always 1, none is ever under way. */
+geng_cancel puritty_win32_pasteOrImage(geng_wait *wait) {
+    uint8_t r[2] = {11, 0};
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+        read_clipboard();
+    } else {
+        read_clipboard_image();
+        if (plen) r[0] = 14;
+    }
+    record(r, 2);
+    geng_succeed(wait, geng_slot_I4(1));
     return (geng_cancel) {0};
 }

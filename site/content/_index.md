@@ -3,19 +3,20 @@ title = "puritty"
 
 [extra]
 headline = "A terminal that's fast, and just does things right"
-lede = "puritty runs on Linux and Windows. It draws tmux's panes as its own, carries its own ssh client, and is just as quick when it runs on another machine and draws on your desktop."
-status = "**Pre-release.** puritty is its author's daily terminal. It will be published with the first alpha of [Geng](https://geng-lang.org), the language it is written in; until then you build it from source."
+lede = "puritty runs on Linux and Windows. It has deep integration with tmux, carries its own ssh client on Windows, and is quick on the desktop and over remote X11."
+status = "**0.2.1.** puritty is its author's daily terminal. It is published now in source and binary form, but nobody but the author can build it until [Geng](https://geng-lang.org), the language it is written in, is published."
 hero_image = "tmux-on-windows.png"
 hero_alt = "puritty on Windows 11 with three colored tabs, the first connected to Linux with puritty's own ssh client and attached to tmux 3.8 by tmux -CC: git history in the left pane, two Chinese poems and a table in the right one, and Thai in a floating pane over them"
 hero_caption = "On Windows 11, connected to Linux with puritty's own ssh client, running `tmux -CC attach`: tmux's panes and a floating pane, with Chinese and Thai, drawn by puritty, and three tabs of puritty's own."
 
 [[extra.features]]
 kicker = "tmux, natively"
-title = "tmux's panes become puritty's own"
+title = "tmux's panes are managed by puritty"
 body = """
 Run `tmux -CC` and puritty draws tmux's panes itself, each a full terminal
 of its own, with tmux 3.8's **floating and modal panes** in boxes over the
-tiled ones and tmux's windows as tabs. Your prefix and key bindings work
+tiled ones and tmux's windows as tabs. You can move and resize panes with your mouse.
+Your prefix and key bindings work
 as in tmux, and tmux's own screens (its prompts, menus, session tree,
 copy mode, even its options editor) are drawn by puritty too.
 
@@ -29,26 +30,75 @@ image = "tmux-panes.png"
 alt = "puritty attached to tmux 3.8 with tmux -CC, in Ghostty's colors: two panes side by side, English in bold, italic, curly, dotted and dashed underlines and 24-bit color on the left, a Korean poem and table on the right, a floating pane of git history over both, and tmux's windows as tabs"
 
 [[extra.features]]
-kicker = "Remote X11"
-title = "Fast when it runs on another machine"
+kicker = "Pictures"
+title = "Plots and pictures, right in the terminal"
+body = """
+Programs draw pictures where they put them, in the three ways
+terminals know: **Sixel**, **Kitty's graphics** (its Unicode
+placeholders too) and **iTerm2's images** (PNG, JPEG and GIF).
+gnuplot, chafa, timg, yazi's previews and ratatui-image work as they do
+in the terminals they were written for.
+
+They work in a plain shell, through tmux, and in the panes of
+`tmux -CC`, where each pane keeps its own pictures as you split, zoom
+and resize.
+And on Windows, through puritty's own ssh client.
+"""
+image = "seashell.png"
+alt = "puritty in Ghostty's colors: the command gnuplot seashell.gp, under it a lit spiral seashell drawn by gnuplot in purple, red, orange and yellow, and the prompt below it"
+script = "seashell.gp"
+
+[[extra.features]]
+kicker = "Claude Code"
+title = "Built for Claude Code"
+body = """
+Claude Code asks the terminal what it can do, and puritty has the
+answers.
+
+- **Each tab shows what Claude is doing.** puritty speaks the new Program
+  Status Protocol, and marks a tab ◔ working, ◉ waiting on you, ✓ done or
+  ✗ failed. When a tab you aren't watching needs you, the window asks for
+  your attention.
+- **Desktop notifications**, in all three forms terminals send.
+- **Pictures** that mods draw in the conversation.
+- **Links** you open with Ctrl+click.
+- **Shift+Enter** for a new line, no flicker, and the mouse in pixels for
+  the fullscreen view, which works in `tmux -CC` panes too.
+
+Run several sessions in tabs and see at a glance which one is waiting on
+you.
+"""
+link = "@/guide/claude-code.md"
+link_text = "Claude Code in puritty"
+image = "claude-code.png"
+alt = "puritty with three tabs, each running Claude Code: the first marked ✓ done, the second ◔ working, the third, shown, ◉ waiting on you. In it, a seashell plot that a mod drew in the conversation, and Claude Code asking permission to run a git command"
+
+[[extra.features]]
+kicker = "Local and remote X11"
+title = "Fast over remote X11, and at home on your desktop"
 body = """
 GPU terminals draw every frame with OpenGL. Run one on a remote host and
 the whole window crosses the network as pixels, about **4.9 MB a frame**.
 
-puritty has a renderer of its own for X11. It sends the X server text and
-small instructions, only what changed, and moves scrolled text with one
-copy on the server. Measured over `ssh -X`:
+puritty draws with a renderer of its own for X11. It sends the X server
+text and small instructions, only what changed, and moves scrolled text
+with one copy on the server. It's the same renderer on your own desktop
+and over `ssh -X`. Measured over `ssh -X`:
 
 | what you're doing | what crosses the network |
 |---|---|
 | scrolling in vim | about 500 bytes a line |
 | `tail -f` on a log | about 420 bytes a line |
 | `htop` updating | about 8–10 KB a second |
+
+On a Wayland desktop, such as GNOME or KDE Plasma, puritty runs through
+Xwayland, as X11 programs do there. A native Wayland window and GPU drawing
+for local use are on the [roadmap](@/roadmap.md).
 """
 
 [[extra.features]]
 kicker = "Every script"
-title = "Korean, Chinese, Japanese and Thai, done properly"
+title = "Thai, Korean, Chinese, and Japanese, done properly"
 body = """
 - **Input methods work**, drawn at the cursor as you compose, tested over
   six IME setups: fcitx5-hangul, ibus-hangul, Mozc and pinyin among them.
@@ -58,7 +108,10 @@ body = """
   reader sees as one character is often several pieces stacked together:
   a consonant, a vowel mark above or below it, and a tone mark on top.
   puritty draws it as it's meant to look.
-- **Han characters** take your language's regional forms.
+- **Han characters** take your language's regional forms. Some Han
+  characters are drawn differently in Simplified Chinese, Traditional
+  Chinese, Japanese and Korean, and puritty draws the forms your language
+  expects.
 - **EUC-KR and CP949 are built in**, both ways, for the hosts that still
   run `ko_KR.euckr`. No `luit`, no wrapper.
 """
@@ -67,13 +120,13 @@ alt = "puritty showing file names, a table and git commit messages in Korean, Ja
 
 [[extra.features]]
 kicker = "Windows"
-title = "An ssh terminal with the client built in"
+title = "A terminal with the ssh client built in"
 body = """
 On Windows puritty opens a list of your hosts, from its settings and your
 `~/.ssh/config`, with a quick-connect field. The connections you made last
 come first, and quick connect takes a command to run, as `ssh` does. Its
 own ssh client talks to the host directly: no OpenSSH and no console layer
-between them.
+between them. But you can still open a local shell if you want.
 
 It checks host keys against `known_hosts`, uses your keys, the Windows ssh
 agent or Pageant, asks for a passphrase or a password in the window, and
@@ -91,7 +144,7 @@ title = "Written in a memory-safe language with compile-time constraint checking
 body = """
 The terminal core is tested against libghostty-vt on recorded sessions,
 fuzzed, and run against the `esctest2` conformance suite, where it passes
-392 of 567 tests; Ghostty 1.4 passes 388. Every buffer a remote program can
+410 of 567 tests; Ghostty 1.4 passes 388. Every buffer a remote program can
 fill has a limit.
 
 puritty is written in [Geng](https://geng-lang.org), whose compiler proves
@@ -172,6 +225,11 @@ body = "Remote programs can copy to it with OSC 52. Reading it is denied unless 
 
 ## Try it
 
-puritty is pre-release and built from source for now.
-[Getting started](@/guide/getting-started.md) says how, and the
-[roadmap](@/roadmap.md) what comes next.
+puritty 0.2.1 is out for Windows and Linux:
+[download it](https://github.com/gilramir/puritty/releases/latest) from
+GitHub. [Getting started](@/guide/getting-started.md) says which file to
+take, and the [roadmap](@/roadmap.md) what comes next.
+
+Why is it called puritty? Because it's written in
+[Geng](https://geng-lang.org), which is a pure functional programming
+language.

@@ -1,4 +1,4 @@
-module Backend exposing (Backend, Incoming(..), pty, ssh)
+module Backend exposing (Backend, Incoming(..), Size, pty, ssh, withSshHelpers)
 
 {-| What a window's terminal talks to (`docs/ssh-client.md` SC11 step 1,
 SC18): the bytes the remote end writes, the bytes it is sent, its size,
@@ -7,6 +7,7 @@ client's session; the loop in `Main` knows neither.
 -}
 
 import Bytes exposing (Bytes)
+import Dict exposing (Dict)
 import Os.Error exposing (Error)
 import Os.File as File
 import Os.Path exposing (Path)
@@ -14,6 +15,7 @@ import Os.Process as Process
 import Process as Light
 import Reason
 import Source exposing (Source)
+import Ssh.Connection as Connection
 import Ssh.Session as Session
 import Task exposing (Task)
 
@@ -24,6 +26,17 @@ never does. -}
 type Incoming
     = Data Bytes
     | Notice Session.Notice
+
+
+{-| A terminal's size: its cells, and its pixels as the program on it reads
+them (`TIOCGWINSZ`, ssh's `pty-req` and `window-change`), 0 when not known
+(`docs/images.md` IM21). -}
+type alias Size =
+    { columns : Int
+    , rows : Int
+    , widthInPixels : Int
+    , heightInPixels : Int
+    }
 
 
 {-| `read` answers what came; `writeSome` takes what it can and answers how
@@ -37,18 +50,22 @@ command line does, for asking before a tab is closed (docs/tabs.md TB4);
 an ssh session answers `Nothing`, and `Main` asks from its own state.
 `directory` is where the program started is, as its `cd` left it, for a
 new tab opened there (TB4); an ssh session answers `Nothing`.
+`side` gives an ssh session the inputs that open and feed channels beside
+it on its connection (`docs/sftp.md` FT12, FT13); a pseudo terminal has
+none.
 -}
 type alias Backend =
     { read : Task Error Incoming
     , writeSome : Bytes -> Task Error Int
     , writable : Task Error {}
-    , resize : { columns : Int, rows : Int } -> Task Error {}
+    , resize : Size -> Task Error {}
     , kill : Task String {}
     , waitForExit : Task String Int
     , answer : Session.Answer -> Task Error {}
-    , reconnect : { columns : Int, rows : Int } -> Task Error {}
+    , reconnect : Size -> Task Error {}
     , busy : Task Error (Maybe String)
     , directory : Task Error (Maybe Path)
+    , side : Maybe (Session.Input -> Task Error {})
     }
 
 
@@ -73,6 +90,7 @@ pty child =
                 , reconnect = \_ -> Task.succeed {}
                 , busy = Process.foreground terminal
                 , directory = Process.directory terminal
+                , side = Nothing
                 }
             )
 
@@ -115,6 +133,7 @@ ssh permissions options =
                                         |> Task.andThen (\_ -> Source.emit sources.inputs Session.Reconnect)
                             , busy = Task.succeed Nothing
                             , directory = Task.succeed Nothing
+                            , side = Just (\input -> Source.emit sources.inputs input)
                             }
                         )
             )
@@ -150,4 +169,186 @@ afterEnd permissions options sources =
 
                     Just _ ->
                         afterEnd permissions options sources
+            )
+
+
+{-| A tab of OpenSSH's `ssh` given side channels (`docs/sftp.md` FT31), as
+the built-in client's session has them: each `OpenSubsystem` or
+`OpenExec` a helper `ssh` that goes through the tab's connection by its
+control socket (`ControlMaster`), `ssh OPTIONS -s HOST NAME` or
+`ssh OPTIONS HOST COMMAND`, on pipes; its output told through `read` as
+the session's side events are. `options` holds what reaches the tab's
+master (`-S` and the socket, or the user's own `ControlPath` by their
+config) and `BatchMode`, so that a helper that finds no master fails
+rather than asking for a password.
+
+A write to a helper is answered by a `Sent 0` once the pipe has taken it,
+for the engines that pace what they read by what waits. A subsystem whose
+helper ends having written nothing, its status not 0, is `Refused` with
+what `ssh` said, as a session's refused channel is: `subsystem request
+failed` where the host has SFTP off. -}
+withSshHelpers : Process.Permission -> { options : Array Bytes, host : Bytes } -> Backend -> Task x Backend
+withSshHelpers cp via b =
+    Task.map2 (\events inputs -> { events = events, inputs = inputs }) Source.new Source.new
+        |> Task.andThen
+            (\s ->
+                Light.spawn (helpers cp via s Dict.empty)
+                    |> Task.map
+                        (\_ ->
+                            { b
+                                | read =
+                                    Task.race b.read
+                                        [ Source.next s.events
+                                            |> Task.map
+                                                (\e ->
+                                                    when e is
+                                                        Just side ->
+                                                            Notice (Session.Side side)
+
+                                                        Nothing ->
+                                                            meant Reason.NoMore (Data Bytes.empty)
+                                                )
+                                        ]
+                                , side = Just (\i -> Source.emit s.inputs i)
+                            }
+                        )
+            )
+
+
+type alias Helpers =
+    { events : Source { ref : Int, event : Connection.Event }, inputs : Source Session.Input }
+
+
+{-| The side inputs taken in turn, each helper kept by its reference. -}
+helpers : Process.Permission -> { options : Array Bytes, host : Bytes } -> Helpers -> Dict Int { child : Process.Child, pipes : Process.Pipes } -> Task x {}
+helpers cp via s children =
+    let
+        tell ref event =
+            Source.emit s.events { ref = ref, event = event }
+
+        withChild ref f =
+            when Dict.get ref children is
+                Just c ->
+                    f c
+
+                Nothing ->
+                    -- one that ended, or never started
+                    meant Reason.Gone (Task.succeed {})
+    in
+    Source.next s.inputs
+        |> Task.andThen
+            (\input ->
+                when input is
+                    Just (Session.OpenSubsystem o) ->
+                        started cp s o.ref True (via.options ++ [ Bytes.fromString "-s", via.host, Bytes.fromString o.name ])
+                            |> Task.andThen (\c -> helpers cp via s (Maybe.withDefault (meant Reason.Refused children) (Maybe.map (\one -> Dict.set o.ref one children) c)))
+
+                    Just (Session.OpenExec o) ->
+                        started cp s o.ref False (via.options ++ [ via.host, o.command ])
+                            |> Task.andThen (\c -> helpers cp via s (Maybe.withDefault (meant Reason.Refused children) (Maybe.map (\one -> Dict.set o.ref one children) c)))
+
+                    Just (Session.SideWrite w) ->
+                        withChild w.ref (\c -> File.write w.bytes c.pipes.input |> Task.onError (\_ -> Task.succeed {}) |> Task.andThen (\_ -> tell w.ref (Connection.Sent 0)))
+                            |> Task.andThen (\_ -> helpers cp via s children)
+
+                    Just (Session.SideEof ref) ->
+                        withChild ref (\c -> File.close c.pipes.input |> Task.onError (\_ -> Task.succeed {}))
+                            |> Task.andThen (\_ -> helpers cp via s children)
+
+                    Just (Session.SideClose ref) ->
+                        withChild ref (\c -> Process.kill c.child |> Task.onError (\_ -> Task.succeed {}))
+                            |> Task.andThen (\_ -> helpers cp via s (Dict.remove ref children))
+
+                    Just _ ->
+                        -- the session's own inputs: a pseudo terminal's tab has none
+                        helpers cp via s children
+
+                    Nothing ->
+                        meant Reason.NoMore (Task.succeed {})
+            )
+
+
+{-| A helper started: `Started`, and its output read beside, or `Refused`
+and `Ended` when it could not start. -}
+started : Process.Permission -> Helpers -> Int -> Bool -> Array Bytes -> Task x (Maybe { child : Process.Child, pipes : Process.Pipes })
+started cp s ref subsystem args =
+    Process.spawnAsBytes cp (Bytes.fromString "ssh") args (Process.defaultSpawnOptions Process.External)
+        |> Task.map Ok
+        |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
+        |> Task.andThen
+            (\got ->
+                when got is
+                    Ok child ->
+                        when Process.pipes child is
+                            Just pipes ->
+                                Source.emit s.events { ref = ref, event = Connection.Started }
+                                    |> Task.andThen (\_ -> Light.spawn (helperOutput s ref subsystem child pipes False))
+                                    |> Task.map (\_ -> Just { child = child, pipes = pipes })
+
+                            Nothing ->
+                                meant Reason.FromOutside (refused s ref "ssh was started with no pipes")
+
+                    Err why ->
+                        meant Reason.Refused (refused s ref ("ssh could not be started: " ++ why))
+            )
+
+
+refused : Helpers -> Int -> String -> Task x (Maybe { child : Process.Child, pipes : Process.Pipes })
+refused s ref why =
+    Source.emit s.events { ref = ref, event = Connection.Refused why }
+        |> Task.andThen (\_ -> Source.emit s.events { ref = ref, event = Connection.Ended })
+        |> Task.map (\_ -> Nothing)
+
+
+{-| A helper's output told until it ends, then what it said on its error
+output and how it ended. -}
+helperOutput : Helpers -> Int -> Bool -> Process.Child -> Process.Pipes -> Bool -> Task x {}
+helperOutput s ref subsystem child pipes wrote =
+    File.read pipes.output
+        |> Task.onError (\_ -> Task.succeed Bytes.empty)
+        |> Task.andThen
+            (\bytes ->
+                if Bytes.isEmpty bytes then
+                    errorOutput pipes.error []
+                        |> Task.andThen
+                            (\said ->
+                                Process.waitForExit child
+                                    |> Task.onError (\_ -> Task.succeed -1)
+                                    |> Task.andThen
+                                        (\status ->
+                                            (if subsystem && not wrote && status /= 0 then
+                                                Source.emit s.events { ref = ref, event = Connection.Refused (String.trim (Bytes.toStringLossy said)) }
+
+                                             else
+                                                (if Bytes.isEmpty said then
+                                                    Task.succeed {}
+
+                                                 else
+                                                    Source.emit s.events { ref = ref, event = Connection.ErrorOutput said }
+                                                )
+                                                    |> Task.andThen (\_ -> Source.emit s.events { ref = ref, event = Connection.Exited status })
+                                            )
+                                                |> Task.andThen (\_ -> Source.emit s.events { ref = ref, event = Connection.Ended })
+                                        )
+                            )
+                        |> Task.andThen (\_ -> File.close pipes.output |> Task.onError (\_ -> Task.succeed {}))
+                        |> Task.andThen (\_ -> File.close pipes.error |> Task.onError (\_ -> Task.succeed {}))
+
+                else
+                    Source.emit s.events { ref = ref, event = Connection.Output bytes }
+                        |> Task.andThen (\_ -> helperOutput s ref subsystem child pipes True)
+            )
+
+
+errorOutput : File.Handle -> Array Bytes -> Task x Bytes
+errorOutput h pieces =
+    File.read h
+        |> Task.onError (\_ -> Task.succeed Bytes.empty)
+        |> Task.andThen
+            (\b ->
+                if Bytes.isEmpty b then
+                    Task.succeed (Bytes.flatten pieces)
+
+                else
+                    errorOutput h (Array.pushLast b pieces)
             )

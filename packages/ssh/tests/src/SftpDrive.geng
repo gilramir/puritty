@@ -1,0 +1,493 @@
+module SftpDrive exposing (Link, script, transfer)
+
+{-| `Ssh.Sftp` driven over a link that sends bytes and receives them
+(puritty `docs/sftp.md` FT14): a pipe to `sftp-server`, or a channel beside
+an ssh session. `script` runs every request kind once, against a directory
+it is given, and says what each answered, a line each, for the pins;
+`transfer` times a pipelined upload and download of a size.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Console
+import Dict exposing (Dict)
+import Int64
+import Ssh.Sftp as Sftp exposing (Request(..), Response(..))
+import Task exposing (Task)
+import Time
+import UInt8
+
+
+{-| What carries SFTP's bytes: `receive` answers the next bytes, none at
+the end. -}
+type alias Link =
+    { send : Bytes -> Task String {}
+    , receive : Task String Bytes
+    }
+
+
+type alias Conn =
+    { link : Link, client : Sftp.Client, answers : Dict Int Response }
+
+
+say : String -> Task x {}
+say line =
+    Console.write (line ++ "\n")
+
+
+{-| The client started over `link`: its `INIT` sent and the server's
+version waited for. -}
+connect : Link -> Task String { conn : Conn, ready : String }
+connect link =
+    let
+        s =
+            Sftp.start
+    in
+    link.send s.send
+        |> Task.andThen (\_ -> untilReady { link = link, client = s.client, answers = Dict.empty })
+
+
+untilReady : Conn -> Task String { conn : Conn, ready : String }
+untilReady conn =
+    conn.link.receive
+        |> Task.andThen
+            (\bytes ->
+                if Bytes.isEmpty bytes then
+                    Task.fail "the link ended before the server's version"
+
+                else
+                    let
+                        got =
+                            Sftp.received bytes conn.client
+
+                        next =
+                            stored got.events { conn | client = got.client }
+                    in
+                    when Array.findFirst isReady got.events |> Maybe.map .value is
+                        Just (Sftp.Ready v) ->
+                            Task.succeed
+                                { conn = next
+                                , ready =
+                                    "version "
+                                        ++ String.fromInt v.version
+                                        ++ "; posix-rename: "
+                                        ++ (if Array.any (\e -> e.name == "posix-rename@openssh.com") v.extensions then
+                                                "yes"
+
+                                            else
+                                                "no"
+                                           )
+                                }
+
+                        _ ->
+                            when Array.findFirst isBroken got.events |> Maybe.map .value is
+                                Just (Sftp.Broken why) ->
+                                    Task.fail why
+
+                                _ ->
+                                    untilReady next
+            )
+
+
+isReady : Sftp.Event -> Bool
+isReady e =
+    when e is
+        Sftp.Ready _ ->
+            True
+
+        _ ->
+            False
+
+
+isBroken : Sftp.Event -> Bool
+isBroken e =
+    when e is
+        Sftp.Broken _ ->
+            True
+
+        _ ->
+            False
+
+
+stored : Array Sftp.Event -> Conn -> Conn
+stored events conn =
+    Array.foldl
+        (\e c ->
+            when e is
+                Sftp.Answer a ->
+                    { c | answers = Dict.set a.id a.response c.answers }
+
+                _ ->
+                    c
+        )
+        conn
+        events
+
+
+{-| A request sent; its number. -}
+send : Request -> Conn -> Task String { conn : Conn, id : Int }
+send req conn =
+    let
+        r =
+            Sftp.request req conn.client
+    in
+    conn.link.send r.send |> Task.map (\_ -> { conn = { conn | client = r.client }, id = r.id })
+
+
+{-| The answer numbered `id`, read for as long as it takes. -}
+answerTo : Int -> Conn -> Task String { conn : Conn, response : Response }
+answerTo id conn =
+    when Dict.get id conn.answers is
+        Just r ->
+            Task.succeed { conn = { conn | answers = Dict.remove id conn.answers }, response = r }
+
+        Nothing ->
+            conn.link.receive
+                |> Task.andThen
+                    (\bytes ->
+                        if Bytes.isEmpty bytes then
+                            Task.fail "the link ended while an answer was waited for"
+
+                        else
+                            let
+                                got =
+                                    Sftp.received bytes conn.client
+                            in
+                            when Array.findFirst isBroken got.events |> Maybe.map .value is
+                                Just (Sftp.Broken why) ->
+                                    Task.fail why
+
+                                _ ->
+                                    answerTo id (stored got.events { conn | client = got.client })
+                    )
+
+
+ask : Request -> Conn -> Task String { conn : Conn, response : Response }
+ask req conn =
+    send req conn |> Task.andThen (\s -> answerTo s.id s.conn)
+
+
+{-| An answer as a line: a status by its name, a handle, data by its
+size, names by name, attributes by those given. -}
+shown : Response -> String
+shown r =
+    when r is
+        Status s ->
+            "status: " ++ Sftp.codeName s.code
+
+        Handle _ ->
+            "a handle"
+
+        Data d ->
+            String.fromInt (Bytes.length d) ++ " bytes"
+
+        Names names ->
+            "names: " ++ String.join ", " (Array.map (\e -> nameShown e.name) names)
+
+        Attributes a ->
+            attrsShown a
+
+
+attrsShown : Sftp.Attrs -> String
+attrsShown a =
+    String.join "; "
+        (Array.mapAndFlatten (\m -> Maybe.map (\x -> [ x ]) m |> Maybe.withDefault [])
+            [ Maybe.map (\s -> "size " ++ String.fromInt64 s) a.size
+            , Maybe.map (\p -> "mode " ++ octal (Bitwise.and p 0x0FFF)) a.permissions
+            , Maybe.map (\t -> "mtime " ++ String.fromInt64 t) a.mtime
+            ]
+        )
+
+
+octal : Int -> String
+octal n =
+    if n < 8 then
+        String.fromInt n
+
+    else
+        octal (n // 8) ++ String.fromInt (modBy 8 n)
+
+
+{-| A name as it reads: UTF-8 as it is, other bytes in hex. -}
+nameShown : Bytes -> String
+nameShown name =
+    when Bytes.toString name is
+        Just text ->
+            text
+
+        Nothing ->
+            "<" ++ Bytes.toHexString { padding = False } name ++ ">"
+
+
+path : String -> String -> Bytes
+path dir name =
+    Bytes.fromString (dir ++ "/" ++ name)
+
+
+{-| Every request kind once, under `dir` (made empty for it), each
+answer a line. -}
+script : Link -> String -> Task String {}
+script link dir =
+    let
+        step label req =
+            \conn ->
+                ask req conn
+                    |> Task.andThen (\a -> say (label ++ ": " ++ shown a.response) |> Task.map (\_ -> a.conn))
+
+        handleOf r =
+            when r is
+                Handle h ->
+                    h
+
+                _ ->
+                    Bytes.empty
+
+        thenDo f t =
+            Task.andThen f t
+
+        big =
+            Bytes.fromString (String.repeat 100000 "0123456789")
+
+        -- EUC-KR's 한 (0xC7 0xD1), not UTF-8
+        korean =
+            Bytes.flatten [ Bytes.fromString (dir ++ "/"), Bytes.fromUInt8s [ UInt8.fromInt 0xC7, UInt8.fromInt 0xD1 ] ]
+    in
+    connect link
+        |> Task.andThen (\c -> say c.ready |> Task.map (\_ -> c.conn))
+        |> thenDo (step "mkdir sub, mode 750" (MakeDir { path = path dir "sub", attrs = { noAttrsMode | permissions = Just 488 } }))
+        |> thenDo (step "stat sub" (Stat (path dir "sub")))
+        |> thenDo (step "mkdir sub again" (MakeDir { path = path dir "sub", attrs = Sftp.noAttrs }))
+        |> thenDo
+            (\conn ->
+                upload (path dir "sub/big") big 32768 16 conn
+                    |> Task.andThen (\u -> say ("upload of 1000000 bytes, 32 KiB at a time, 16 in flight: " ++ u.said) |> Task.map (\_ -> u.conn))
+            )
+        |> thenDo (step "stat sub/big" (Stat (path dir "sub/big")))
+        |> thenDo
+            (\conn ->
+                download (path dir "sub/big") 32768 16 conn
+                    |> Task.andThen (\d -> say ("download: " ++ String.fromInt (Bytes.length d.bytes) ++ " bytes, the same as sent: " ++ yesNo (d.bytes == big)) |> Task.map (\_ -> d.conn))
+            )
+        |> thenDo (step "set sub/big's mtime" (SetStat { path = path dir "sub/big", attrs = { noAttrsMode | mtime = Just (Int64.fromInt 1000000000) } }))
+        |> thenDo (step "stat sub/big" (Stat (path dir "sub/big")))
+        |> thenDo
+            (\conn ->
+                -- a byte past 2^31, where an Int would have wrapped
+                ask (Open { path = path dir "sparse", for = Sftp.ForWriting, attrs = Sftp.noAttrs }) conn
+                    |> Task.andThen (\o -> ask (Write { handle = handleOf o.response, offset = Int64.fromInt 1500000000 * Int64.fromInt 2, data = Bytes.fromString "x" }) o.conn |> Task.map (\w -> { conn = w.conn, handle = handleOf o.response, said = shown w.response }))
+                    |> Task.andThen (\w -> say ("write a byte at 3000000000: " ++ w.said) |> Task.andThen (\_ -> ask (Close w.handle) w.conn))
+                    |> Task.map .conn
+            )
+        |> thenDo (step "stat sparse" (Stat (path dir "sparse")))
+        |> thenDo
+            (\conn ->
+                ask (Open { path = korean, for = Sftp.ForWritingNew, attrs = Sftp.noAttrs }) conn
+                    |> Task.andThen (\o -> say ("open an EUC-KR name, new: " ++ shown o.response) |> Task.andThen (\_ -> ask (Close (handleOf o.response)) o.conn))
+                    |> Task.map .conn
+            )
+        |> thenDo (step "open the same, new again" (Open { path = korean, for = Sftp.ForWritingNew, attrs = Sftp.noAttrs }))
+        |> thenDo (\conn -> listing dir conn |> Task.andThen (\l -> say ("readdir: " ++ l.said) |> Task.map (\_ -> l.conn)))
+        |> thenDo (step "rename sparse over sub/big" (Rename { from = path dir "sparse", to = path dir "sub/big" }))
+        |> thenDo (step "stat sub/big" (Stat (path dir "sub/big")))
+        |> thenDo (step "realpath sub/.." (RealPath (path dir "sub/..")))
+        |> thenDo (step "remove sub/big" (Remove (path dir "sub/big")))
+        |> thenDo (step "remove sub/big again" (Remove (path dir "sub/big")))
+        |> thenDo (step "rmdir sub" (RemoveDir (path dir "sub")))
+        |> thenDo (step "remove the EUC-KR name" (Remove korean))
+        |> thenDo (step "stat sub" (Stat (path dir "sub")))
+        |> thenDo (step "lstat /" (LinkStat (Bytes.fromString "/")))
+        |> Task.map (\_ -> {})
+
+
+noAttrsMode : Sftp.Attrs
+noAttrsMode =
+    Sftp.noAttrs
+
+
+yesNo : Bool -> String
+yesNo b =
+    if b then
+        "yes"
+
+    else
+        "no"
+
+
+{-| A directory's names, sorted, each read in turn until the end. -}
+listing : String -> Conn -> Task String { conn : Conn, said : String }
+listing dir conn =
+    ask (OpenDir (Bytes.fromString dir)) conn
+        |> Task.andThen
+            (\o ->
+                when o.response is
+                    Handle h ->
+                        readAll h [] o.conn
+                            |> Task.andThen (\r -> ask (Close h) r.conn |> Task.map (\c -> { conn = c.conn, said = String.join ", " (Array.sort (Array.map nameShown (Array.keepIf (\n -> n /= Bytes.fromString "." && n /= Bytes.fromString "..") r.names))) }))
+
+                    other ->
+                        Task.succeed { conn = o.conn, said = shown other }
+            )
+
+
+readAll : Bytes -> Array Bytes -> Conn -> Task String { conn : Conn, names : Array Bytes }
+readAll h acc conn =
+    ask (ReadDir h) conn
+        |> Task.andThen
+            (\r ->
+                when r.response is
+                    Names entries ->
+                        readAll h (acc ++ Array.map .name entries) r.conn
+
+                    _ ->
+                        Task.succeed { conn = r.conn, names = acc }
+            )
+
+
+{-| `data` written to `file` in pieces of `piece` bytes, `most` requests
+in flight; what the statuses said. -}
+upload : Bytes -> Bytes -> Int -> Int -> Conn -> Task String { conn : Conn, said : String }
+upload file data piece most conn =
+    ask (Open { path = file, for = Sftp.ForWriting, attrs = Sftp.noAttrs }) conn
+        |> Task.andThen
+            (\o ->
+                when o.response is
+                    Handle h ->
+                        writes h data piece most 0 [] 0 o.conn
+                            |> Task.andThen
+                                (\w ->
+                                    ask (Close h) w.conn
+                                        |> Task.map (\c -> { conn = c.conn, said = String.fromInt w.ok ++ " writes done, " ++ String.fromInt w.failed ++ " failed, then close: " ++ shown c.response })
+                                )
+
+                    other ->
+                        Task.succeed { conn = o.conn, said = "open: " ++ shown other }
+            )
+
+
+writes : Bytes -> Bytes -> Int -> Int -> Int -> Array Int -> Int -> Conn -> Task String { conn : Conn, ok : Int, failed : Int }
+writes h data piece most at flying ok conn =
+    if at < Bytes.length data && Array.length flying < most then
+        send (Write { handle = h, offset = Int64.fromInt at, data = Bytes.slice at (min (Bytes.length data) (at + piece)) data }) conn
+            |> Task.andThen (\s -> writes h data piece most (at + piece) (Array.pushLast s.id flying) ok s.conn)
+
+    else
+        when Array.popFirst flying is
+            Just f ->
+                answerTo f.first conn
+                    |> Task.andThen
+                        (\a ->
+                            when a.response is
+                                Status s ->
+                                    if s.code == Sftp.statusOk then
+                                        writes h data piece most at f.rest (ok + 1) a.conn
+
+                                    else
+                                        Task.succeed { conn = a.conn, ok = ok, failed = 1 + Array.length f.rest }
+
+                                _ ->
+                                    Task.succeed { conn = a.conn, ok = ok, failed = 1 + Array.length f.rest }
+                        )
+
+            Nothing ->
+                Task.succeed { conn = conn, ok = ok, failed = 0 }
+
+
+{-| `file` read whole, `piece` bytes a request, `most` in flight. -}
+download : Bytes -> Int -> Int -> Conn -> Task String { conn : Conn, bytes : Bytes }
+download file piece most conn =
+    ask (Open { path = file, for = Sftp.ForReading, attrs = Sftp.noAttrs }) conn
+        |> Task.andThen
+            (\o ->
+                when o.response is
+                    Handle h ->
+                        reads h piece most 0 [] [] False o.conn
+                            |> Task.andThen (\r -> ask (Close h) r.conn |> Task.map (\c -> { conn = c.conn, bytes = Bytes.flatten r.pieces }))
+
+                    _ ->
+                        Task.succeed { conn = o.conn, bytes = Bytes.empty }
+            )
+
+
+{-| Reads in flight in order; each answer's data kept in order. A short
+read is asked again from where it stopped, in its place; the end of the
+file stops new ones. -}
+reads : Bytes -> Int -> Int -> Int -> Array { id : Int, at : Int } -> Array Bytes -> Bool -> Conn -> Task String { conn : Conn, pieces : Array Bytes }
+reads h piece most at flying pieces ended conn =
+    if not ended && Array.length flying < most then
+        send (Read { handle = h, offset = Int64.fromInt at, length = piece }) conn
+            |> Task.andThen (\s -> reads h piece most (at + piece) (Array.pushLast { id = s.id, at = at } flying) pieces ended s.conn)
+
+    else
+        when Array.popFirst flying is
+            Just f ->
+                answerTo f.first.id conn
+                    |> Task.andThen
+                        (\a ->
+                            when a.response is
+                                Data d ->
+                                    if Bytes.length d < piece && not (Array.isEmpty f.rest) then
+                                        -- a short read before others: the file ends here
+                                        reads h piece most at f.rest (Array.pushLast d pieces) True a.conn
+
+                                    else
+                                        reads h piece most at f.rest (Array.pushLast d pieces) ended a.conn
+
+                                _ ->
+                                    reads h piece most at f.rest pieces True a.conn
+                        )
+
+            Nothing ->
+                Task.succeed { conn = conn, pieces = pieces }
+
+
+{-| A file of `size` bytes uploaded to `file` and downloaded again, `most`
+requests of `piece` bytes in flight, each way timed. -}
+transfer : Link -> Bytes -> Int -> Int -> Int -> Task String {}
+transfer link file size piece most =
+    let
+        data =
+            Bytes.fromString (String.repeat size "x")
+
+        rate n ms =
+            let
+                -- bytes a millisecond is KB/s; a hundredth of it, tenths of MB/s
+                tenths =
+                    n // max 1 ms // 100
+            in
+            String.fromInt (tenths // 10) ++ "." ++ String.fromInt (modBy 10 tenths) ++ " MB/s"
+    in
+    connect link
+        |> Task.andThen
+            (\c ->
+                Time.now
+                    |> Task.andThen
+                        (\t0 ->
+                            upload file data piece most c.conn
+                                |> Task.andThen
+                                    (\u ->
+                                        Time.now
+                                            |> Task.andThen
+                                                (\t1 ->
+                                                    download file piece most u.conn
+                                                        |> Task.andThen
+                                                            (\d ->
+                                                                Time.now
+                                                                    |> Task.andThen
+                                                                        (\t2 ->
+                                                                            let
+                                                                                up =
+                                                                                    Int64.toInt (Time.posixToMillis t1 - Time.posixToMillis t0)
+
+                                                                                down =
+                                                                                    Int64.toInt (Time.posixToMillis t2 - Time.posixToMillis t1)
+                                                                            in
+                                                                            say ("upload " ++ String.fromInt size ++ " bytes: " ++ String.fromInt up ++ " ms, " ++ rate size up ++ "; " ++ u.said)
+                                                                                |> Task.andThen (\_ -> say ("download: " ++ String.fromInt down ++ " ms, " ++ rate (Bytes.length d.bytes) down ++ "; the same bytes: " ++ yesNo (d.bytes == data)))
+                                                                                |> Task.andThen (\_ -> ask (Remove file) d.conn)
+                                                                                |> Task.map (\_ -> {})
+                                                                        )
+                                                            )
+                                                )
+                                    )
+                        )
+            )

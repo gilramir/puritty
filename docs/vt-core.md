@@ -4830,3 +4830,96 @@ tabs switched, closed and reopened, local and over ssh, and under
 an XOFF (a Ctrl+S pressed with the prefix, Ctrl+A, 4 ms apart in the log)
 stopped a pane's output under `tmux -CC`, and after a plain `tmux attach` it
 was the pane left; a Ctrl+Q sent to it on nene released it.
+
+## VC70 · esctest2 again, and a task to raise the count (2026-11-16)
+
+Run again from main (`9c9b027`), both sides rebuilt, as §VC10 runs it:
+
+| | passed | failed | esctest's known bugs |
+|---|---:|---:|---:|
+| the core | 392 | 133 | 42 |
+| Ghostty (libghostty-vt, the oracle) | 388 | 137 | 42 |
+
+of 567. The core passed 386 at phase 1's exit (§VC10's record of
+2026-10-30); `core.txt` already held the six since. Ghostty passes no test
+the core fails; the core passes four Ghostty does not (three of OSC 10–19's
+special colors, and DECSET's Allow80To132).
+
+**Task, for later: raise the count.** Where the core's 133 failures are:
+
+| tests | failed | what they need |
+|---|---:|---|
+| `XtermWinopsTests` | 19 | XTWINOPS: resize, maximize, iconify, report the window's size and place; much of it the window's, not the core's |
+| `ChangeColorTests`, `ChangeDynamicColorTests`, `ChangeSpecialColorTests`, `ResetSpecialColorTests` | 36 | OSC 4, 10–19, 5 and 104–119: X11's color names (§VC9's list), the special colors, resets |
+| `DECCRATests`, `DECFRATests`, `DECERATests`, `DECSERATests` | 24 | VT400's rectangle copy, fill and erase |
+| `DECDSRTests`, `DECRQSSTests`, `DECRQMTests`, `DATests`, `DA2Tests` | 27 | the reports: device status, settings, modes (and DECRQM's over-claims, §VC9), attributes |
+| `DECICTests`, `DECDCTests` | 12 | insert and delete column |
+| `DECFITests`, `DECBITests` | 8 | forward and back index |
+| `DECSCLTests`, `RISTests`, `DECSETTests` | 7 | conformance levels, reset, 132 columns |
+
+Each is to be weighed for what programs use before it is built: the
+rectangle operations and columns are VT400's and rarely sent, the color
+names and reports are asked by programs every day. Not started.
+
+## VC71 · esctest2's 133 failures, by cause (2026-11-16)
+
+VC70's task begun: every failure read in `.harness-work/esctest/core.log`
+(main at `6157357`; 392 passed, 133 failed, 42 known bugs, of 567) and
+sorted by what it would take and whether programs send it.
+
+| group | tests | what fails | plan |
+|---|---:|---|---|
+| DSR reports (`DECDSRTests`) | 10 | nine `CSI ? Ps n` asked are not answered (printer `?15`, UDKs `?25`, keyboard `?26`, locator `?55`/`?56`, `?62` DECMSR, `?63` DECCKSR, `?75`, `?85`): a program that asks waits out its timeout; DECXCPR says the page (`?6;5;1R`) where xterm does not | **do** the nine: each has one fixed answer (no printer, no locator, …); DECXCPR's page left, as Ghostty says it |
+| `#` colors (`Change…Color_Hash3/9/12`) | 9 | `#fff` taken as `ffff` where X11 says the digits are a channel's **high bits** (`f0f0`); `rgb:` is the one that scales | **do**: X11's rule |
+| column and index (`DECIC`, `DECDC`, `DECFI`, `DECBI`) | 16 | VT420's insert/delete column and forward/back index, with the margins | **do** |
+| rectangles (`DECCRA`, `DECFRA`, `DECERA`, `DECSERA`) | 24 | VT400's copy, fill and erase of an area | **do**, after the above |
+| settings reports (`DECRQSS`) | 7 | DECSCA, DECSACE, DECSCL, DECSLPP, DECSNLS, DECSASD, DECSSDT | answer those the core keeps (DECSCA, DECSACE with the rectangles); not a claim of what it lacks (§VC9) |
+| modes (`DECRQM`) | 6 | ARM, HCCM, HEBM, NRCM, PEX, PFF asked: xterm says reset (2), the core not recognized (0) | leave: 0 is true of the core |
+| X color management (`rgbi:`, `CIE…:`, `TekHVC:`) | 21 | Xcms converts these by the X display's color profile; xterm's answers are that machine's | **leave**: no answer is the right one, and no program sends them |
+| OSC 5 special colors, OSC 105 (`ChangeSpecialColor`, `ResetSpecialColor`) | 8 | the core keeps no special colors (§VC17, as Ghostty) | leave; `ResetSpecialColor_Dynamic` is only the harness, which gives the core no look (puritty does: OSC 10 after OSC 110 answers the look's) |
+| window ops (`XtermWinops`) | 19 | resize, move, iconify, the title stack read back with `CSI 21 t` | **leave**: the window's, and title reports are refused by design in most terminals (a title can carry a command back) |
+| identity (`DA`, `DA2`) | 4 | esctest wants VT420's class (`64`) and xterm's features | leave: what programs (vim) read from DA2 is puritty's own identity, a decision of its own |
+| levels, reset, 132 columns (`DECSCL`, `RIS`, `DECSET`) | 7 | conformance levels, DECCOLM | leave |
+
+"Do" is 59 tests, which with the 392 would be 451. Each step is
+measured and recorded as it lands.
+
+**Done, 2026-11-16:**
+
+- **The DEC status reports** (`Vt.Dispatch.decStatus`): `?15` no
+  printer (`?13n`), `?25` UDKs locked (`?21n`, there are none), `?26` the
+  keyboard at the level DA says, VT220's (`?27;1n`; esctest asks the
+  level of the terminal's own DA and wants two parameters there), `?55`
+  no locator (`?50n`), `?56` its type unknown (`?57;0n`), `?62` no macro
+  space (`CSI 0 *{`), `?63` the checksum of none (`DCS id !~0000 ST`),
+  `?75` ready (`?70n`), `?85` no sessions (`?83n`). 9 tests; 401.
+- **`#` colors as X11 reads them** (`Vt.Osc.highHex`): the digits are
+  the channels' high bits, `rgb:` still scaled and the bare 3 and 6 digit
+  forms as Ghostty scales them. Ghostty scales the `#` forms too: patched
+  in the oracle (`harness/oracle/patches/0012`, report
+  `docs/upstream/ghostty-hash-colors-scaled.md`), which then passes six
+  more (388 to 394; its other three are OSC 5's, which it lacks). The
+  replay case `osc-colors` pinned the old answers and was made again: the
+  `#` answers alone changed (`#fff` and `#f00f00f00` to `f0f0`, OSC 12's
+  `#f00` to `f0f0/0000/0000`). 9 tests; **410**.
+
+vt unit tests 102 (both answers); the replay 325 of 325 on both sides.
+
+**The differential fuzzer** (`fuzz.py --diff`, ten minutes, 24 jobs)
+found four inputs at once, each the same: the core answered a DEC status
+report (`?75` and the rest) that Ghostty does not make. Not a bug of
+either; the oracle now gives the same fixed answers
+(`harness/oracle/patches/0013`; DECCKSR's id passed through Ghostty's
+stream, which took one parameter only), and the four no longer differ.
+With both patches the oracle passes 403 of esctest's tests (from 388).
+
+**What the next steps cost (measured 2026-11-17).** Ghostty implements
+none of DECIC, DECDC, DECFI, DECBI or the rectangle operations: of their
+esctest tests it passes only those where the sequence does nothing
+(the cursor does not move, an invalid area is ignored). The core held to
+the oracle, each one built in the core is to be built again in the
+oracle's Zig (a patch, as 0013 is for the reports) or the differential
+fuzzer finds it at once, as it found the reports. That is the column
+and index operations' 16 tests and the rectangles' 24 at twice the work,
+for VT420 sequences that ncurses, vim and tmux do not send. Not started;
+held for a decision.

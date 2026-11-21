@@ -308,3 +308,78 @@ carried at least every minute while it shows.
 clock started 2 s before it starts over, a line printed before and one
 after it drawn as they came, a word typed after it echoed as it was typed,
 and Enter.
+
+## RE12 · A desktop like ETX's, to test in (2026-11-17)
+
+Gilbert, 2026-11-17: an environment like ETX's, for tests later.
+`app/distro/rhel8/etx/` builds one container, `puritty-etx`, kept running
+between commands:
+
+    app/distro/rhel8/etx/etx.sh start [BINARY]   # default app/puritty-rhel8
+    app/distro/rhel8/etx/etx.sh puritty [ARGS]   # standard error in share/puritty.log
+    app/distro/rhel8/etx/etx.sh shot FILE.png
+    app/distro/rhel8/etx/etx.sh vnc              # 127.0.0.1:5932, to look and type
+    app/distro/rhel8/etx/etx.sh bytes [SECONDS]  # the X connection, each way
+    app/distro/rhel8/etx/etx.sh shell | run CMD… | inspect | stop
+
+The state (the binary, `share/` with pictures and logs, the seccomp
+profile) is in `~/.cache/puritty/etx`. `ETX_DELAY_MS` (default 1),
+`ETX_COMPOSITING` (`true` or `false`; unset leaves xfwm4's default) and
+`ETX_TRACE` are read at `start`.
+
+**What it copies from RE2**, each made the way the container allows:
+
+| RE2's desktop | the stand-in |
+|---|---|
+| RHEL 8.10, glibc 2.28, the X libraries, HarfBuzz 1.7.5, FreeType 2.9.1 | AlmaLinux 8.10, the same package versions (`inspect` lists them) |
+| `pidfd_open` answers `ENOSYS` (kernel 4.18) | the container's seccomp profile makes the three pidfd calls answer `ENOSYS` (38); the kernel is still the host's |
+| the X server on another host, display 32 | Xvfb reached only over TCP as `etx-server:32`, through `xproxy.py`, which holds each direction back `ETX_DELAY_MS` |
+| vendor `Rocket Software` | `xproxy.py` rewrites the vendor in the connection setup reply |
+| RENDER, RANDR, SYNC, XFIXES, XInput, XKB, GLX (llvmpipe); no MIT-SHM, Present, DRI3 | Xvfb with MIT-SHM off; Xvfb cannot turn Present off, so `xproxy.py` answers a QueryExtension of Present, MIT-SHM or DRI3 "not present" (ListExtensions still names Present); Mesa's llvmpipe for GLX |
+| 1902×879 at 100 dpi | the same |
+| xfwm4 (Xfce) | xfwm4 with a session bus (`dbus-launch`), which its settings need |
+| IBus 1.5.19 and ibus-hangul installed, not running; `XMODIFIERS` empty | the same |
+| `ko_KR.utf8`, `ko_KR.euckr`; DejaVu Sans Mono, Noto Sans CJK, Waree | the same |
+| tmux 2.7 from the RPM, 3.8 first on `PATH` | the same: 3.8 built from the tarball `app/tests/tmux-versions` checks |
+| zsh | zsh, an empty `.zshrc` |
+
+**What it does not copy:** ETX's own protocol to the Windows client
+(ThinX, or H.264), so nothing here says what RE7 asks; the real network
+between the VM and ETX's server (its latency is not measured: `ping` from
+the VM to `DISPLAY`'s host would give it, and `ETX_DELAY_MS` should then be
+half of it); the real kernel; how long the machine has been up (RE10:
+`PURITTY_CLOCK_START` stands in); XTEST, which xdotool needs and ETX's
+server may not have; and X authorization (`-ac`, none).
+
+**`bytes`** counts what crosses the stand-in's X connection, the hop from
+the VM to ETX's server, which phase 2 measured for plain X
+(`phase2-window.md` §5.2). `shot` and `vnc` read Xvfb directly, so they
+are not counted.
+
+**`ETX_TRACE`** notes every request, reply, event and error with its time
+and connection in `share/xtrace.txt`: what an X client waits on, as for
+RE9's blank window.
+
+### What it showed when it was first run
+
+- **`inspect`** (`probes/rhel8/inspect.sh`) gave RE2's answers: AlmaLinux
+  8.10, glibc 2.28, `pidfd_open` `ENOSYS`, tmux 3.8, the package
+  versions, `ko_KR.euckr` and `.utf8`, IBus 1.5.19, the fonts, vendor
+  `Rocket Software`, 1902×879 at 100 dpi, and GLX RANDR RENDER SYNC XFIXES
+  XInputExtension XKEYBOARD (Present printed too, from ListExtensions,
+  though a client that asks is told it is not there). The kernel line says
+  the host's.
+- **puritty** (the RHEL8 build of 2026-11-17): a window framed by xfwm4,
+  zsh's prompt, a line typed with xdotool echoed, `tmux -V` saying 3.8,
+  and 0 bytes either way over 5 idle seconds. A Hangul word sent with
+  `xdotool type` did not arrive; not looked into (xdotool has to remap a
+  key for a character the keyboard map lacks), and no input method runs.
+- **`vnc`**: x11vnc needs `-noshm` here, since MIT-SHM is off; the port
+  answered `RFB 003.008`.
+- **xfwm4 starts in 0.5 s at no delay and 14 s at 1 ms.** The trace: it
+  sends 6,240 GrabKey requests at start, each followed by a GetInputFocus
+  it waits for (an error check), so each costs a round trip. Any X client
+  that waits on the server that often is slow where the server is on
+  another host; xfwm4 under real ETX would pay its own round trip the same
+  number of times. A desktop started in the container is not ready to take
+  a window until then, which `start` waits for.

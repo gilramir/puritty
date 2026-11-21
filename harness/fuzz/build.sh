@@ -37,7 +37,8 @@ NIX_HARDENING_ENABLE= "$CC" -O2 -g -fsanitize=fuzzer-no-link -I . min.c \
 # vt-diff and vt-diff-min: the same, with libghostty-vt beside the core.
 G=$(realpath ../../vendor/ghostty)
 ../oracle/build.sh   # applies the oracle's patches, builds the library if they changed
-NIX_HARDENING_ENABLE= "$CC" -O2 -g -I "$G/zig-out/include" -c ../oracle/gdump.c "$@"
+W=$(dirname "$(ls "$G"/zig-pkg/*/release/c/wuffs-v0.4.c | head -1)")
+NIX_HARDENING_ENABLE= "$CC" -O2 -g -I "$G/zig-out/include" -I "$W" -c ../oracle/gdump.c "$@"
 NIX_HARDENING_ENABLE= "$CC" -O2 -g -fsanitize=fuzzer -DVTFUZZ_DIFF -I . fuzz.c gdump.o \
   program.o geng.o geng_rt.o geng_sys.o geng_embed.o "$D/boehm/gc.o" "$G/zig-out/lib/libghostty-vt.a" \
   -lm -lpthread -o vt-diff "$@"

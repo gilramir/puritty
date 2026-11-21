@@ -10,9 +10,16 @@ particular distribution releases to come. Before it, the Windows previews
 (preview-2026-11-11 to -12c) were built with `app/release-windows.sh` and
 zipped by hand.
 
-    scripts/prerelease.sh TAG [TARGET...]
+    scripts/prerelease.sh [--sign] TAG [TARGET...]
 
 from puritty's devbox, with a clean working tree:
+
+- **`--sign`** signs puritty.exe before it is zipped, with Gilbert's
+  certificate (`scripts/sign-windows.sh`, `windows.md` WS28: SimplySign
+  Desktop logged in on beelink1); the README and notes then say so.
+  Gilbert, 2026-11-17: optional, since a quick build to try may be made
+  when he is not at his desktop; public releases are signed. A release
+  (a version tag) built without it is warned about at the end.
 
 - **Targets**: `windows-x64`, and `NAME-x64` for each folder of
   `app/distro` (`rhel8-x64`); all of them when none is named.
@@ -89,7 +96,7 @@ Each in `app/distro/` (RL2's shape), built and run here with podman:
 |---|---|---|---|---|
 | `rhel9-x64` | AlmaLinux 9.8 | 21.1.8 | the shared one | `smoke.sh`: drawn, ended by itself |
 | `rhel10-x64` | AlmaLinux 10.2 | 21.1.8 | the shared one | `smoke.sh` under Xwayland (below) |
-| `noble-x64` | Ubuntu 24.04 | 18 | none | `smoke.sh`; the `.deb` installed with apt |
+| `noble-x64` | Ubuntu 24.04 | 21.1.8 (apt.llvm.org, RL7) | the shared one | `smoke.sh`; the `.deb` installed with apt |
 | `debian13-x64` | Debian 13 | 19 | none | `smoke.sh`; the `.deb` installed with apt |
 | `rhel8-x64` | AlmaLinux 8 | 21.1.8 | the shared one | `smoke.sh` on RHEL 8, Fedora 43, Debian 13, Arch |
 
@@ -129,3 +136,160 @@ clang (18.1.3, 19.1.7) took no profile; both `.deb`s installed with apt and
 ran; `SHA256SUMS` and `notes.md` written. It needed `prerelease.sh` to
 compare with geng-lang's devbox clang, since puritty's has none on its
 PATH. The output is kept in `dist/rl4-check/` (not in git).
+
+## RL5 · Third parties' notices in every package (2026-11-15)
+
+Gilbert asked whether the repository lists every licence it should. It
+did not: the packages carried puritty's `LICENSE` alone, while the
+programs hold PuTTY's cryptography, FreeType, HarfBuzz, Boehm GC, Gren's
+and Geng's runtime and libraries, tmux's option descriptions and color
+names, tables generated from libghostty-vt and Unicode's data, xcb-imdkit
+and xcb-util-cursor (Linux), and zlib, libpng and mingw-w64's runtime
+(Windows), most of whose licences ask for their notice in every copy.
+
+- `THIRD-PARTY-NOTICES.md`: each component, what of it puritty has, its
+  licence and platforms, FreeType's credit line, and the tests' and the
+  website's own (Wycheproof's vectors, the 6502 excerpt, tmux's recorded
+  answers); `LICENSES/` holds each text as its project gives it, taken
+  from the very sources built (the pinned nixpkgs' tarballs, tmux 3.8's,
+  mingw-w64 14.0.0's, the vendored trees).
+- **xcb-imdkit**, LGPL 2.1, stays linked statically (**Gilbert,
+  2026-11-15**): its source is fcitx's at `621048b` with puritty's four
+  patches in `packages/x11/patches`, and puritty's whole source and build
+  are public, so another version is used by building again; the notices
+  say how.
+- Every archive (`scripts/prerelease.sh`) carries the notices and
+  `LICENSES/` beside `LICENSE`; the `.deb`'s copyright file is puritty's
+  licence, the notices and every text, and installs the folder too.
+- `scripts/notices.py`, in the unit gate: every vendored folder, patch,
+  library source a build fetches, and generated file must be under a
+  pattern of the notices' `paths` block (`own` for puritty's own), no
+  pattern may match nothing, and no licence file may be missing or unused.
+  Made to fail once on purpose: with `ColorNames.geng`'s line taken out, a
+  stray licence file and a `$(src bzip2)` added, it names all three.
+
+## RL6 · Before a release: puritty against every real tmux (2026-11-15)
+
+`harness/puppet.py --all` (docs/tmux-checks.md TK12) attaches the release's
+Linux build to every tmux release from 2.7 to 3.8 in turn and holds what it
+shows to what tmux has after each of a puppet's 19 steps. It takes about
+25 minutes and is run before a release, beside the unit gate.
+`harness/puppet-trials.py -v 2.7 -v 3.0 -v 3.2 -v 3.4 -v 3.6a -v 3.8`
+(TK13) runs the puppet's odd cases on those six: the server killed, the
+client killed or detached from elsewhere, the session killed, odd names,
+a bad command, garbage output. About 50 minutes; before a release too.
+
+## RL7 · The noble build is profile-guided (2026-11-16)
+
+Gilbert wants the Ubuntu (and Linux Mint) build profile-guided too. Noble's
+own clang is 18 and cannot read the shared profile (RL1), so the noble image
+now takes clang 21 from apt.llvm.org (`llvm-toolchain-noble-21`), linked as
+`clang`, `clang++` and `ld.lld`; it is 21.1.8, the devbox's, so
+`prerelease.sh` reads the profile there. Measured here: the noble build
+ignores 41 of 8575 functions' profile data as out of date, the same count as
+the RHEL8 build from the same commit, and `smoke.sh noble` draws and ends by
+itself. glibc and the X libraries are still noble's, so the `.deb`'s
+`Depends` are unchanged. Debian 13 still builds with its own clang 19,
+without a profile.
+
+## RL8 · Files named by version, not codename (2026-11-16)
+
+The Ubuntu build's files said `noble`, Ubuntu's codename. Gilbert asked
+whether `ubuntu24` would be better; it ships now as `ubuntu24.04`
+(`puritty-TAG-ubuntu24.04-x64.tar.gz`, `puritty_V_ubuntu24.04_amd64.deb`),
+the full version, since Ubuntu had a 24.10 as well. The codename is how
+Ubuntu's own archive names a release, for people adding an apt source;
+people choosing a download know their version, and Mint 22's users know
+"Ubuntu 24.04" sooner than "noble". WezTerm's files name the version the
+same way (`….Ubuntu22.04.deb`).
+
+Only the shipped names changed: the build folder, its images, the puppet's
+`app/puritty-noble` and `vendor/distro/noble` keep the codename, and
+`prerelease.sh` still takes the target `noble-x64`, mapping it in
+`shipped()`; `deb.sh` takes the file's label from `PURITTY_DEB_LABEL`. The
+release notes name each distribution in words (RHEL 9, Ubuntu 24.04 and
+Linux Mint 22, Debian 13).
+
+## RL9 · 0.1.0, the first release (2026-11-16)
+
+Gilbert, 2026-11-16: today's build is published as it stands, tagged
+**0.1.0**; 1.0.0 comes with Geng's first alpha (the roadmap says so).
+`prerelease.sh` takes a tag that is a version as a release: the `.deb`'s
+version is the tag itself (`0.1.0`, where a preview's is
+`0.1.0~preview20261116`), the notes say "puritty 0.1.0" and "What's in it",
+and the `gh` command it prints leaves out `--prerelease`. puritty already
+names itself 0.1.0 (`Main.geng`'s version strings), so the binary needs no
+change.
+
+The script also builds while `site/` has changes: the website is in no
+package, and Gilbert edits it while a release is built.
+
+## RL10 · The version the program says (2026-11-17)
+
+0.1.1 went out saying 0.1.0, in `puritty --version`, the settings
+program's and XTVERSION's answer (`puritty 0.1.0`): three literals in
+`app/src/Main.geng`, not changed for the release. They are one constant
+now, `purittyVersion`, and `scripts/prerelease.sh` refuses a version tag
+(a release) that is not it, so a release is made only once the program
+says its number. A preview tag is not checked. The 0.1.1 builds stay as
+published; 0.1.2 is the first to say its own number.
+
+
+## RL11 · The next release is 0.2.0, with images (2026-11-18)
+
+Gilbert, 2026-11-18: the next release has the images (Sixel, Kitty
+graphics, iTerm2's inline images, `docs/images.md`) and is **0.2.0**, not
+0.1.2; RL10's "0.1.2" is that release. Before it is tagged:
+
+- `purittyVersion` in `app/src/Main.geng` says `0.2.0` (it says `0.1.1`
+  now), which `prerelease.sh` checks (RL10).
+- The user guide drafted in `docs/images.md` IM10 moves to
+  `docs/user/images.md`, which `site/sync.py` publishes; not before, so
+  that the website does not offer images a published build lacks.
+- `imageLimit` stays on (IM16's switch, 320 MB).
+
+The speed the release ships with (IM26, IM27, IM28): text with no picture
+on the screen, or one scrolled away, as fast as before images; a Kitty
+picture kept on the screen beside a scroll region costs its line feeds
+about 4 times; a Sixel or iTerm2 picture kept on the screen makes text
+about 19 times slower, some 30 MB/s on 12.8 MB of text, more than an ssh
+link brings.
+
+## RL12 · 0.2.0 (2026-11-19)
+
+Gilbert, 2026-11-19: puritty 0.2.0 is released on GitHub, published, not
+a draft. It has RL11's images, and since 0.1.1 also Claude Code's
+support (program status, desktop notifications, OSC 8 links, Kitty's
+pictures from files behind a setting that is off), passwords and
+passphrases remembered in Windows' Credential Manager, PuTTY's saved
+sessions in the host list, and the padding around the text.
+`purittyVersion` says `0.2.0`, and the site says so. The checks run
+first: the unit gate, `harness/puppet.py --all` and
+`harness/puppet-trials.py` on RL6's six tmux releases.
+
+
+Measured, 2026-11-19, from commit `07a9d0b`: the unit gate passed 17 of
+17 runs; `puppet.py --all` passed every tmux release from 2.7 to 3.8;
+`puppet-trials.py` passed 138 of 138 trials. `scripts/prerelease.sh
+--sign 0.2.0` built all six targets, `windows-x64` (signed on beelink1),
+`rhel8-x64`, `rhel9-x64`, `rhel10-x64`, `noble-x64` and `debian13-x64`,
+each smoke run ending by itself. This is the first release with RHEL 10
+and Debian 13 builds. The release was made with `gh release create`
+without `--draft` and is GitHub's latest, with nine files: the
+zip, five tarballs, two `.deb`s and `SHA256SUMS`.
+
+## RL13 · 0.2.1 (2026-11-19)
+
+Gilbert, 2026-11-19, after trying WS31's fix on beelink1: "looks good;
+issue 0.2.1 release". 0.2.1 is 0.2.0 with WS31: on Windows, minimizing a
+window no longer empties its screen. The only code changed is the Windows
+window procedure's `WM_SIZE`; the Linux builds differ from 0.2.0's only
+in the version they say. So the unit gate is run (it builds and runs the
+app's suite on Windows too) and RL6's tmux runs, which drive the Linux
+build, are not: they passed on 0.2.0 (RL12) with the same Linux code.
+
+Measured, 2026-11-19, from commit `76a427b`: the unit gate passed 17 of
+17 runs; `scripts/prerelease.sh --sign 0.2.1` built the six targets, the
+Windows exe signed on beelink1 and every smoke run ending by itself. The
+release was made with `gh release create` without `--draft` and is
+GitHub's latest, with nine files.

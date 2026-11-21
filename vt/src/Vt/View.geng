@@ -100,7 +100,9 @@ import Bytes exposing (Bytes)
 import Dict
 import Int64
 import UInt8
+import Vt
 import Vt.Cell exposing (..)
+import Vt.Kitty as Kitty
 import Vt.Palette exposing (paletteColor, programColor)
 import Vt.Reason as Reason
 import Vt.Screen exposing (..)
@@ -127,6 +129,12 @@ type alias Shadow =
     , inked : Bool
     , drawnIn : Builder Int
     , pending : Bool
+    -- the Kitty graphics placements drawn last frame, the images the
+    -- window holds, by their key, with the id each was sent under, and
+    -- the next such id (`docs/images.md` IM2, IM18)
+    , placed : Array Kitty.Shown
+    , sent : Dict.Dict String Int
+    , nextImage : Int
     -- the window's rows, the terminal's and any below them its embedder
     -- draws itself (a tab bar, puritty `docs/tabs.md` TB2): the size
     -- record asks for them all, so the window keeps them
@@ -409,6 +417,9 @@ shadowIn cols rows screenRows =
     , inked = False
     , drawnIn = Builder.fromArray (Array.repeat (cols * rows) -1)
     , pending = False
+    , placed = []
+    , sent = Dict.empty
+    , nextImage = 1
     , screenRows = max rows screenRows
     }
 
@@ -516,7 +527,7 @@ frameOn look focus preedit hl s clusters back t sh0 =
                     fresh =
                         shadow t.cols t.rows
                 in
-                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes, colorKey = key, screenRows = windowRows }
+                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes, colorKey = key, screenRows = windowRows, sent = sh0.sent, nextImage = sh0.nextImage }
 
             else
                 { sh0 | styleIds = Builder.empty 64, pending = False }
@@ -545,11 +556,39 @@ frameOn look focus preedit hl s clusters back t sh0 =
         sh2 =
             spread s cursor rows cols scrolled.shadow
 
+        -- the Kitty graphics placements in view; the cells of those that
+        -- came, went or moved are drawn again, so that what lay under one
+        -- that went shows and one that came has its cells under it
+        desired =
+            Kitty.shownPlacements back t ++ Vt.placeholderPlacements back t
+
+        moved =
+            Array.keepIf (\p -> not (Array.member p desired)) sh2.placed ++ Array.keepIf (\p -> not (Array.member p sh2.placed)) desired
+
+        -- a scroll's copy carries the pixels of the placements drawn last
+        -- frame with its rows, `band.k` rows up: their cells there are
+        -- forgotten too, so that a picture's pixels the copy brought where
+        -- no placement now is are drawn over. The band is found by rows'
+        -- text, and the blank rows under a Sixel picture match blank rows
+        -- anywhere, so the copy need not move a picture as its placement
+        -- moved (`docs/images.md` IM31)
+        carried =
+            if band.bottom >= band.top then
+                Array.map (shiftedUp band.k) sh2.placed
+
+            else
+                []
+
         diffed =
-            diffRows s clusters cursor 0 rows cols sh2 scrolled.list
+            imagesDrawn desired 3 s clusters cursor rows cols (diffRows s clusters cursor 0 rows cols (Array.foldl (forgetPlaced rows cols) sh2 (moved ++ carried)) scrolled.list)
 
         sh3 =
             diffed.shadow
+
+        -- the images the placements drawn show, sent once a generation;
+        -- those the core no longer has, freed
+        images =
+            imageRecords diffed.drawn t sh3.sent sh3.nextImage
 
         ids =
             Builder.toArray sh3.styleIds
@@ -579,11 +618,226 @@ frameOn look focus preedit hl s clusters back t sh0 =
                         )
 
         bytes =
-            Bytes.fromUInt8s (size ++ Builder.toArray styles ++ highlight ++ Builder.toArray diffed.list)
+            Bytes.flatten
+                [ Bytes.fromUInt8s (size ++ Builder.toArray styles ++ highlight)
+                , images.list
+                , Bytes.fromUInt8s (Array.flatten (Array.map (placementRecord images.sent) diffed.drawn))
+                , Bytes.fromUInt8s (Builder.toArray diffed.list)
+                ]
     in
-    { shadow = { sh3 | hashes = Builder.fromArray current, styleIds = Builder.empty 64, frames = sh3.frames + 1, bytes = sh3.bytes + Bytes.length bytes }
+    { shadow = { sh3 | hashes = Builder.fromArray current, styleIds = Builder.empty 64, frames = sh3.frames + 1, bytes = sh3.bytes + Bytes.length bytes, placed = desired, sent = images.sent, nextImage = images.next }
     , list = bytes
     }
+
+
+-- IMAGES (`docs/images.md` IM2)
+
+
+{-| The cells a placement covers forgotten, so that the diff draws them. -}
+forgetPlaced : Int -> Int -> Kitty.Shown -> (taken sh : Shadow) -> Shadow
+forgetPlaced rows cols p sh =
+    let
+        r =
+            cellsCut p
+    in
+    { sh | cells = forgetRows r.y0 r.y1 (max 0 r.x0) (min cols r.x1) rows cols sh.cells }
+
+
+{-| A placement where a scroll's copy of `k` rows up put its pixels. -}
+shiftedUp : Int -> Kitty.Shown -> Kitty.Shown
+shiftedUp k p =
+    let
+        c =
+            p.clip
+    in
+    { p | y = p.y - k, clip = { c | y = c.y - k } }
+
+
+{-| The cells a placement draws in: those it covers, cut to its clip. -}
+cellsCut : Kitty.Shown -> { x0 : Int, y0 : Int, x1 : Int, y1 : Int }
+cellsCut p =
+    { x0 = max p.x p.clip.x
+    , y0 = max p.y p.clip.y
+    , x1 = min (p.x + p.cols) (p.clip.x + p.clip.cols)
+    , y1 = min (p.y + p.rows) (p.clip.y + p.clip.rows)
+    }
+
+
+forgetRows : Int -> Int -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+forgetRows y end x0 x1 rows cols cells =
+    if y >= end || y >= rows then
+        cells
+
+    else if y < 0 then
+        forgetRows (y + 1) end x0 x1 rows cols cells
+
+    else
+        forgetRows (y + 1) end x0 x1 rows cols (Builder.fill (y * cols + x0) (y * cols + x1) unknown cells)
+
+
+{-| The placements to draw: those any of whose cells this frame drew, with
+every cell they cover drawn (a placement is composited over its cells, so
+cells left as they were would take it twice). One drawn in full may make
+another's cells drawn: up to `passes` times. -}
+imagesDrawn : Array Kitty.Shown -> Int -> (s : Screen) -> Clusters -> Cursor -> (rows : Int where rows <= s.rows) -> (cols : Int where cols <= 1000) -> (taken done : { shadow : Shadow, list : Builder UInt8 }) -> { shadow : Shadow, list : Builder UInt8, drawn : Array Kitty.Shown }
+imagesDrawn desired passes s clusters cursor rows cols done =
+    let
+        stamp =
+            done.shadow.frames
+
+        -- the frame each cell was drawn in, read once (a builder is not
+        -- to be captured)
+        stamps =
+            Builder.slice 0 (rows * cols) done.shadow.drawnIn
+
+        drawnIn i =
+            Array.get i stamps == Just stamp
+
+        cellsOf p =
+            let
+                r =
+                    cellsCut p
+            in
+            Array.range (max 0 r.y0) (min rows r.y1 - 1)
+                |> Array.mapAndFlatten (\y -> Array.range (max 0 r.x0) (min cols r.x1 - 1) |> Array.map (\x -> y * cols + x))
+
+        touched =
+            Array.keepIf (\p -> Array.any drawnIn (cellsOf p)) desired
+
+        partly =
+            Array.keepIf (\p -> not (Array.all drawnIn (cellsOf p))) touched
+    in
+    if Array.isEmpty partly || passes <= 0 then
+        { shadow = done.shadow, list = done.list, drawn = touched }
+
+    else
+        let
+            sh =
+                done.shadow
+
+            undrawn =
+                Array.foldl
+                    (\p acc ->
+                        Array.foldl
+                            (\i a ->
+                                if drawnIn i then
+                                    a
+
+                                else
+                                    Array.pushLast i a
+                            )
+                            acc
+                            (cellsOf p)
+                    )
+                    []
+                    partly
+
+            forgotten =
+                { sh | cells = Array.foldl (\i c -> Builder.set i unknown c) sh.cells undrawn }
+        in
+        imagesDrawn desired (passes - 1) s clusters cursor rows cols (diffRows s clusters cursor 0 rows cols forgotten done.list)
+
+
+{-| A placement's record (0x0C, `puritty_text.c`): the id its image was
+sent under, the cells it covers, the source rectangle, its offset in the
+first cell, the size it is drawn at, the cells it is cut to, and whether it
+lies under the text or over it. -}
+placementRecord : Dict.Dict String Int -> Kitty.Shown -> Array UInt8
+placementRecord sent p =
+    Builder.empty 38
+        |> Builder.pushLast (UInt8.fromInt 0x0C)
+        |> push32 (Maybe.withDefault (meant Reason.NotKnown 0) (Dict.get p.key sent))
+        |> push16 p.x
+        |> push16 (Bitwise.and 0xFFFF p.y)
+        |> push16 p.cols
+        |> push16 p.rows
+        |> push16 p.src.x
+        |> push16 p.src.y
+        |> push16 p.src.w
+        |> push16 p.src.h
+        |> push16 p.offX
+        |> push16 p.offY
+        |> push16 (min 0xFFFF p.w)
+        |> push16 (min 0xFFFF p.h)
+        |> push16 p.clip.x
+        |> push16 (Bitwise.and 0xFFFF p.clip.y)
+        |> push16 p.clip.cols
+        |> push16 p.clip.rows
+        |> Builder.pushLast
+            (UInt8.fromInt
+                (if p.under then
+                    0
+
+                 else
+                    1
+                )
+            )
+        |> Builder.toArray
+
+
+push32 : Int -> (taken b : Builder UInt8) -> Builder UInt8
+push32 v b =
+    push16 (Bitwise.and 0xFFFF v) (push16 (Bitwise.and 0xFFFF (Bitwise.shiftRightZfBy 16 v)) b)
+
+
+{-| The definitions of the images the drawn placements show that the
+window does not hold, each under an id of View's own, by its key (0x0A),
+and the frees of those it holds whose image is gone (0x0B). Two panes'
+images 1 are two keys, and two ids (IM18). -}
+imageRecords : Array Kitty.Shown -> Term -> Dict.Dict String Int -> Int -> { list : Bytes, sent : Dict.Dict String Int, next : Int }
+imageRecords drawn t sent0 next0 =
+    let
+        defined =
+            Array.foldl
+                (\p acc ->
+                    if Dict.get p.key acc.sent /= Nothing then
+                        acc
+
+                    else
+                        when Kitty.imageByKey p.key t is
+                            Just image ->
+                                let
+                                    head =
+                                        Builder.empty 10
+                                            |> Builder.pushLast (UInt8.fromInt 0x0A)
+                                            |> push32 acc.next
+                                            |> push16 image.width
+                                            |> push16 image.height
+                                            |> Builder.pushLast
+                                                (UInt8.fromInt
+                                                    (if image.rgba then
+                                                        4
+
+                                                     else
+                                                        3
+                                                    )
+                                                )
+                                            |> Builder.toArray
+                                in
+                                { sent = Dict.set p.key acc.next acc.sent, next = acc.next + 1, parts = acc.parts ++ [ Bytes.fromUInt8s head, image.pixels ] }
+
+                            Nothing ->
+                                meant Reason.NotKnown acc
+                )
+                { sent = sent0, next = next0, parts = [] }
+                drawn
+
+        gone =
+            Dict.foldl
+                (\key id acc ->
+                    if Kitty.imageByKey key t == Nothing then
+                        Array.pushLast { key = key, id = id } acc
+
+                    else
+                        acc
+                )
+                []
+                defined.sent
+
+        frees =
+            Array.map (\g -> Bytes.fromUInt8s (Builder.toArray (push32 g.id (Builder.pushLast (UInt8.fromInt 0x0B) (Builder.empty 5))))) gone
+    in
+    { list = Bytes.flatten (frees ++ defined.parts), sent = Array.foldl (\g d -> Dict.remove g.key d) defined.sent gone, next = defined.next }
 
 
 {-| Each row's hash, pushed onto `acc`. A loop, because a function that
@@ -1342,8 +1596,18 @@ writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
             c =
                 cellAt s cursor o ext row x
 
+            -- Kitty's placeholder, U+10EEEE with its marks, is drawn
+            -- blank, as Ghostty draws it: the image's piece is under it
+            -- (`docs/images.md` IM35)
             points =
                 Array.takeFirst 63 (Maybe.withDefault (meant Reason.NotOpen cellPoints c clusters) (preCellPoints cursor (row + x)))
+                    |> (\ps ->
+                            if Array.first ps == Just 0x10EEEE then
+                                []
+
+                            else
+                                ps
+                       )
 
             under =
                 isCursor cursor (row + x)
@@ -1656,6 +1920,7 @@ preeditAttrs fb =
 
         else
             1
+    , link = 0
     }
 
 

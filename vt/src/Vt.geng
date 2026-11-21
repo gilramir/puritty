@@ -7,23 +7,31 @@ module Vt exposing
     , View
     , compose
     , composeStyled
+    , composedPlaces
     , cursorOf
     , defaultPageRows
     , defaultWordBoundaries
     , dump
+    , embedderOf
     , feed
+    , fileGiven
+    , fileWanted
     , historyBound
     , historyReached
     , invert
     , keyOptions
     , lineAt
+    , linkAt
     , listen
     , mouseModes
     , new
     , paint
+    , placeholderPlacements
+    , programStatus
     , promptJump
     , recutHolds
     , resize
+    , restarted
     , rowsHash
     , rowsPushed
     , scrollbackBytesFor
@@ -33,12 +41,19 @@ module Vt exposing
     , setScrollbackBytes
     , takeClipboard
     , takeHeard
+    , takeNotices
     , takeReplies
     , viewAt
     , viewPainted
+    , withCellSize
     , withEmbedder
+    , withExtraImages
+    , withImageLimit
+    , withKittyErases
     , withPalette
+    , withoutComposed
     , wordAt
+    , workingDirectory
     )
 
 {-| puritty's headless terminal core (`docs/vt-core.md`).
@@ -82,16 +97,21 @@ import Vt.Cell exposing (..)
 import Vt.Dump exposing (..)
 import Vt.Edit as Edit
 import Vt.Keys as Keys
+import Vt.Kitty as Kitty
 import Vt.Modes exposing (fresh, modifyOtherKeysKey, privateState)
+import Vt.Modes as Modes
+import Vt.Notice as Notice
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Parse as Parse
+import Vt.Placeholder as Placeholder
 import Vt.Print exposing (wrapped)
 import Vt.Reason as Reason
 import Vt.Recut exposing (recut)
 import Vt.Resize exposing (..)
 import Vt.Screen exposing (..)
 import Vt.Scroll as Scroll exposing (resizeQuiet, withScroll)
+import Vt.Status as Status
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
@@ -188,6 +208,57 @@ viewAt back0 t =
     in
     -- a ring has a row past its screen's, which a view never uses
     { screen = writeRows read.rows 0 0 t.rows (newScreen t.cols t.rows (t.rows + 1)), clusters = read.clusters }
+
+
+{-| The pieces of images Kitty's Unicode placeholders show in the view
+`back` rows up into the scrollback (`docs/images.md` IM35): each row's
+placeholder cells read and cut into runs (`Vt.Placeholder`), each run's
+piece placed as `Vt.Kitty.placeholderShown` finds it. The rows are read
+only when a virtual placement exists, which is all placeholder cells can
+show, so a terminal without one pays nothing. -}
+placeholderPlacements : Int -> Term -> Array Kitty.Shown
+placeholderPlacements back0 t =
+    if not (Kitty.hasVirtual t) then
+        []
+
+    else
+        let
+            back =
+                clamp 0 (scrollbackRows t) back0
+
+            read =
+                rowsBetween (0 - back) t.rows t
+        in
+        Kitty.placeholderShown
+            (Array.indexedMap (\y r -> { y = y, runs = Placeholder.runsOfRow (placeholderCells r.cells read.clusters t.styles) }) read.rows
+                |> Array.keepIf (\r -> not (Array.isEmpty r.runs))
+            )
+            t
+
+
+{-| A row's placeholder cells, with their columns, each read from its
+style and the marks after U+10EEEE. -}
+placeholderCells : Array Int64 -> Clusters -> Styles -> Array { x : Int, cell : Placeholder.Cell }
+placeholderCells cells clusters styles =
+    Array.indexedMap (\x c -> { x = x, c = c }) cells
+        |> Array.mapAndKeepJust
+            (\e ->
+                let
+                    points =
+                        cellPoints e.c clusters
+                in
+                when Array.first points is
+                    Just cp ->
+                        if Placeholder.isPlaceholder cp then
+                            Just { x = e.x, cell = Placeholder.decode (styleOf (cellStyle e.c) styles) (Array.dropFirst 1 points) }
+
+                        else
+                            Nothing
+
+                    Nothing ->
+                        -- an empty cell
+                        meant Reason.OutOfRange Nothing
+            )
 
 
 {-| The screen as a view (`viewAt 0`), with text painted over its cells
@@ -321,8 +392,121 @@ composeStyled panes places t =
 
         written =
             Array.map (\cells -> { cells = cells, wrapped = False, prompt = 0 }) done.rows
+
+        im =
+            t.images
+
+        -- each pane's Kitty graphics placements in view, moved to its place
+        -- and cut to it; a pane laid later lies over what is there, so a
+        -- placement it meets is left out (`docs/images.md` IM18)
+        composed =
+            Array.foldl
+                (\place acc ->
+                    when Builder.get place.index panes is
+                        Just pane ->
+                            let
+                                area =
+                                    { x = place.x, y = place.y, cols = pane.cols, rows = pane.rows }
+
+                                kept =
+                                    Array.keepIf (\c -> not (meets c.clip area)) acc
+                            in
+                            kept ++ paneImages (place.index + 1) place.x place.y place.back cols rows { width = t.config.cellWidth, height = t.config.cellHeight } pane
+
+                        Nothing ->
+                            meant Reason.NotKnown acc
+                )
+                im.composed
+                places
     in
-    { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters }
+    { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters, images = { im | composed = composed } }
+
+
+{-| Whether two rectangles of cells share a cell. -}
+meets : { x : Int, y : Int, cols : Int, rows : Int } -> { x : Int, y : Int, cols : Int, rows : Int } -> Bool
+meets a b =
+    a.x < b.x + b.cols && b.x < a.x + a.cols && a.y < b.y + b.rows && b.y < a.y + a.rows
+
+
+{-| A pane's placements in view as the canvas shows them: moved by its
+place, cut to its rectangle and to the canvas, each with its image and a
+key that names the pane (`origin`). -}
+paneImages : Int -> Int -> Int -> Int -> Int -> Int -> { width : Int, height : Int } -> Term -> Array Composed
+paneImages origin px py back cols rows cell pane =
+    let
+        -- a picture's pixels in the pane's cell drawn in the canvas's:
+        -- tmux tells a pane's programs a cell of its own (16 by 32 for a
+        -- control client), by which they size their pictures, and the
+        -- pane's rows hold them as tmux's do (`docs/images.md` IM32)
+        scaleX v =
+            if cell.width > 0 && pane.config.cellWidth > 0 && cell.width /= pane.config.cellWidth then
+                v * cell.width // pane.config.cellWidth
+
+            else
+                v
+
+        scaleY v =
+            if cell.height > 0 && pane.config.cellHeight > 0 && cell.height /= pane.config.cellHeight then
+                v * cell.height // pane.config.cellHeight
+
+            else
+                v
+    in
+    (Kitty.shownPlacements back pane ++ placeholderPlacements back pane)
+        |> Array.mapAndKeepJust
+            (\sh ->
+                Maybe.map
+                    (\image ->
+                        let
+                            x0 =
+                                max (max 0 px) (sh.clip.x + px)
+
+                            y0 =
+                                max (max 0 py) (sh.clip.y + py)
+
+                            x1 =
+                                min (min cols (px + pane.cols)) (sh.clip.x + px + sh.clip.cols)
+
+                            y1 =
+                                min (min rows (py + pane.rows)) (sh.clip.y + py + sh.clip.rows)
+                        in
+                        { key = String.fromInt origin ++ String.dropFirst 1 sh.key
+                        , image = image
+                        , y = sh.y + py
+                        , x = sh.x + px
+                        , cols = sh.cols
+                        , rows = sh.rows
+                        , clip = { x = x0, y = y0, cols = max 0 (x1 - x0), rows = max 0 (y1 - y0) }
+                        , src = sh.src
+                        , offX = scaleX sh.offX
+                        , offY = scaleY sh.offY
+                        , w = scaleX sh.w
+                        , h = scaleY sh.h
+                        , under = sh.under
+                        }
+                    )
+                    (Kitty.imageByKey sh.key pane)
+            )
+        |> Array.keepIf (\c -> c.clip.cols > 0 && c.clip.rows > 0)
+
+
+{-| Where a canvas shows its panes' placements (`docs/images.md` IM18):
+the cells each starts at and covers, and the cells it is cut to. -}
+composedPlaces : Term -> Array { x : Int, y : Int, cols : Int, rows : Int, clip : { x : Int, y : Int, cols : Int, rows : Int } }
+composedPlaces t =
+    Array.map (\c -> { x = c.x, y = c.y, cols = c.cols, rows = c.rows, clip = c.clip }) t.images.composed
+
+
+{-| The canvas without the panes' placements of its last composing: what
+an embedder that composes its panes again each frame clears first
+(`docs/images.md` IM18). -}
+withoutComposed : (taken t : Term) -> Term
+withoutComposed t =
+    let
+        im =
+            t.images
+    in
+    { t | images = { im | composed = [] } }
 
 
 composePane : (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> Term -> Int -> Int -> Int -> { fg : Int, bg : Int } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters }
@@ -1275,6 +1459,64 @@ withEmbedder embedder t =
             meant Reason.NotSet told
 
 
+{-| The terminal with a cell's size in pixels as the window now has it,
+after a zoom or a font change: what `CSI 14 t` and `CSI 16 t` answer from
+(`docs/images.md` IM3). -}
+withCellSize : { width : Int, height : Int } -> (taken t : Term) -> Term
+withCellSize cell t =
+    let
+        config =
+            t.config
+    in
+    { t | config = { config | cellWidth = max 0 cell.width, cellHeight = max 0 cell.height } }
+
+
+{-| Whether Sixel and iTerm2's images are drawn (`docs/images-sixel.md`,
+`images-iterm.md`): off in the oracle's terminal, as libghostty-vt has
+neither; the embedder turns them on (puritty's window and tmux panes). -}
+withExtraImages : Bool -> (taken t : Term) -> Term
+withExtraImages on t =
+    let
+        e =
+            t.embedder
+    in
+    { t | embedder = { e | extraImages = on } }
+
+
+{-| What the terminal says of itself when asked, as the embedder told it
+(`withEmbedder`). -}
+embedderOf : Term -> Embedder
+embedderOf t =
+    t.embedder
+
+
+{-| Whether Kitty's images are drawn into the cells, as Sixel's and
+iTerm2's are: text written or erased over one takes it there, so `clear`
+takes it (`docs/images.md` IM30). On in tmux's panes, whose `clear` is ED
+0 from the top left, which Ghostty's rule leaves Kitty's images under;
+off elsewhere, as in Ghostty. -}
+withKittyErases : Bool -> (taken t : Term) -> Term
+withKittyErases on t =
+    let
+        e =
+            t.embedder
+    in
+    { t | embedder = { e | kittyErases = on } }
+
+
+{-| The most bytes a screen's Kitty graphics images may hold together
+(`docs/images.md` IM5, IM9): libghostty-vt's 10,000,000 until the embedder
+says; puritty's is 320 MB. 0 turns the protocol off, as in libghostty-vt:
+no command is done or answered (IM16). -}
+withImageLimit : Int -> (taken t : Term) -> Term
+withImageLimit bytes t =
+    let
+        im =
+            t.images
+    in
+    { t | images = { im | limit = max 0 bytes } }
+
+
 {-| The terminal with its 16 named colors as its embedder's (puritty's
 `[colors] palette`, docs/phase3-select.md §22): the first `Array.length`
 of them, up to 16, in place of libghostty-vt's; the rest are kept. They are
@@ -1371,10 +1613,41 @@ takeReplies t =
     { term = { t | replies = [] }, replies = replies }
 
 
-{-| The terminal fed one read's bytes (`Vt.Parse.feed`). -}
+{-| The terminal fed one read's bytes (`Vt.Parse.feed`). After a Kitty
+command that names a file (`docs/images-kitty.md` KG9), nothing more is
+parsed, and what comes is held, until the embedder gives the file
+(`fileWanted`, `fileGiven`). -}
 feed : Bytes -> (taken t : Term) -> Term
 feed bytes t =
     Parse.feed bytes t
+
+
+{-| The file a Kitty command waits for (KG9): its path, whether it is a
+temporary file to remove once read (`t=t`), and where to read from and how
+many bytes (0: to its end). Only where the embedder lets programs name
+files (`Embedder.kittyFiles`). -}
+fileWanted : Term -> Maybe { path : String, temporary : Bool, offset : Int, size : Int }
+fileWanted t =
+    Maybe.map (\w -> { path = w.path, temporary = w.temporary, offset = w.offset, size = w.size }) t.images.file
+
+
+{-| The file the waiting Kitty command named, as the embedder read it, or
+why not, in Kitty's words (`ENOENT: …`): the command done, then what was
+held since parsed. That may name another file, so the embedder asks
+`fileWanted` again. -}
+fileGiven : Result String Bytes -> (taken t : Term) -> Term
+fileGiven result t =
+    let
+        done =
+            Kitty.fileDone result t
+
+        held =
+            Bytes.flatten done.images.held
+
+        im =
+            done.images
+    in
+    Parse.feed held { done | images = { im | held = [] } }
 
 
 -- MODES
@@ -1407,6 +1680,15 @@ keyOptions t =
 -- SCROLLING
 
 
+{-| The terminal for a new session in the same tab, as a reconnect makes
+one (puritty `docs/tabs.md` TB19): every mode, the colors, the title and
+the images as new, the alternate screen left, and the main screen, its
+cursor and the scrollback kept, as PuTTY and Windows Terminal restart. -}
+restarted : (taken t : Term) -> Term
+restarted t =
+    Modes.restarted t
+
+
 {-| The terminal made `cols` by `rows`, as its host resizes it, by Ghostty's
 rules (§VC14, V8). The main screen's lines reflow to the new width, its
 scrollback with them, unless autowrap is off; the alternate screen's rows
@@ -1417,14 +1699,372 @@ reported, as Ghostty reports it even when the size is the same (V15). -}
 resize : Int -> Int -> (taken t : Term) -> Term
 resize cols rows t =
     let
+        -- the Kitty graphics placements' anchors as numbers, before a
+        -- width change reflows the main screen's lines (`docs/images.md`
+        -- IM25): numbers alone, so the resize takes the term unshared
+        anchors =
+            if clamp 1 1000 cols /= t.cols && t.autowrap && not (Array.isEmpty (mainStore t).placements) then
+                pinsBefore (clamp 1 1000 cols) t
+
+            else
+                []
+
         r =
-            resizeQuiet cols rows t
+            pinsAfter anchors (resizeQuiet cols rows t)
     in
     if Dict.get 2048 r.modes == Just True then
         sizeReport r
 
     else
         r
+
+
+-- PLACEMENTS THROUGH A REFLOW (docs/images.md IM25)
+
+
+{-| Each placement's anchor before a reflow to `cols` columns: its index,
+how many lines its line is above the cursor's (below, negative), and its
+offset in its line. The offset is as Ghostty moves a tracked pin
+(`PageList.reflowRow`): on a cell, with the cell; in the blanks past a
+line's last text, held to a row of the new width from where the row
+begins in it, which is the saved cursor's rule (`Vt.Resize.joinLines`). -}
+pinsBefore : (cols : Int where 1 <= cols && cols <= 1000) -> Term -> Array { index : Int, dist : Int, offset : Int }
+pinsBefore cols t =
+    let
+        pushed =
+            rowsPushed t
+
+        -- the main screen's scrollback, which `scrollbackRows` counts as
+        -- none while the alternate screen is shown (IM27)
+        back =
+            Scroll.historyBound t
+
+        -- the main screen's, which the alternate's being shown hides (IM27)
+        store =
+            mainStore t
+
+        cy =
+            clamp 0 1000 (mainCursorY t)
+
+        ys =
+            Array.map (\pl -> pl.row - pushed) store.placements
+
+        lowest =
+            Array.foldl min cy ys
+
+        -- the rows from a few hundred above the highest anchor, for its
+        -- line's start, down to the screen's end
+        first =
+            clamp (0 - back) t.rows (clamp (0 - back) t.rows lowest - 256)
+
+        read =
+            mainRows first (clamp 0 (t.rows - first) (t.rows - first)) t
+
+        starts =
+            lineStarts read
+
+        lineOf y =
+            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 (Array.length read - 1) (y - first)) starts)
+
+        cursorLine =
+            lineOf cy
+    in
+    store.placements
+        |> Array.indexedMap
+            (\i pl ->
+                let
+                    y =
+                        pl.row - pushed
+                in
+                if pl.virtual || y < first || y >= t.rows then
+                    Nothing
+
+                else
+                    let
+                        k =
+                            y - first
+
+                        start =
+                            lineStart read k
+
+                        base =
+                            Array.foldl (\r acc -> acc + rowLength t.cols r) 0 (Array.slice start k read)
+
+                        row =
+                            Maybe.withDefault (meant Reason.OutOfRange { cells = [], wrapped = False, prompt = 0 }) (Array.get k read)
+
+                        text =
+                            textLength row.cells
+
+                        x =
+                            if not row.wrapped && pl.col >= text then
+                                min pl.col (cols - 1 - modBy cols base)
+
+                            else
+                                pl.col
+                    in
+                    Just { index = i, dist = cursorLine - lineOf y, offset = base + x }
+            )
+        |> Array.keepIf (\a -> a /= Nothing)
+        |> Array.mapAndKeepJust identity
+
+
+{-| Each anchor found again after the reflow: its line, so many lines above
+the cursor's, and its offset walked through the line's new rows. -}
+pinsAfter : Array { index : Int, dist : Int, offset : Int } -> (taken t : Term) -> Term
+pinsAfter anchors t =
+    if Array.isEmpty anchors then
+        t
+
+    else
+        let
+            pushed =
+                rowsPushed t
+
+            back =
+                Scroll.historyBound t
+
+            far =
+                Array.foldl (\a m -> max m a.dist) 0 anchors
+
+            -- as many rows above the cursor as the lines asked for can
+            -- take, at the most a few hundred rows each
+            cy =
+                clamp 0 1000 (mainCursorY t)
+
+            first =
+                clamp (0 - back) t.rows (clamp 0 t.rows cy - 256 * (clamp 0 1000 far + 1))
+
+            read =
+                mainRows first (clamp 0 (t.rows - first) (t.rows - first)) t
+
+            starts =
+                lineStarts read
+
+            cursorLine =
+                Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 (Array.length read - 1) (cy - first)) starts)
+
+            -- the row a line begins on, by its number
+            startOf line =
+                Maybe.withDefault (meant Reason.OutOfRange -1) (Maybe.map .index (Array.findFirst (\n -> n == line) starts))
+
+            placeOf a =
+                let
+                    s0 =
+                        startOf (cursorLine - a.dist)
+                in
+                if s0 < 0 then
+                    Nothing
+
+                else
+                    Just (walk t.cols read s0 a.offset)
+
+            im =
+                t.images
+
+            store =
+                mainStore t
+
+            moved =
+                Array.foldl
+                    (\a pls ->
+                        when placeOf a is
+                            Just at ->
+                                when Array.get a.index pls is
+                                    Just pl ->
+                                        Array.set a.index { pl | row = clamp 0 1073752017 (pushed + first + clamp 0 1000000 at.row), col = clamp 0 999 at.col } pls
+
+                                    Nothing ->
+                                        meant Reason.OutOfRange pls
+
+                            Nothing ->
+                                meant Reason.NoMore pls
+                    )
+                    store.placements
+                    anchors
+        in
+        if t.alt then
+            { t | images = { im | other = Just { store | placements = moved } } }
+
+        else
+            { t | images = { im | shown = { store | placements = moved } } }
+
+
+{-| The main screen's images: the shown store, or with the alternate screen
+shown, the other one. -}
+mainStore : Term -> Store
+mainStore t =
+    if t.alt then
+        Maybe.withDefault (meant Reason.NotYet State.noStore) t.images.other
+
+    else
+        t.images.shown
+
+
+{-| The main screen's cursor row, which it keeps while the alternate screen
+is shown (`hidden`). -}
+mainCursorY : Term -> Int
+mainCursorY t =
+    if t.alt then
+        clamp 0 1000 t.hidden.y
+
+    else
+        t.y
+
+
+{-| `count` rows of the main screen and its scrollback from row `first`,
+as `rowsBetween` reads them, whichever screen is shown. -}
+mainRows : Int -> Int -> Term -> Array Row
+mainRows first0 count0 t =
+    if t.alt then
+        when t.other is
+            Just main ->
+                rowsOfScreen first0 count0 main t
+
+            Nothing ->
+                meant Reason.NotOpen (rowsOfScreen first0 count0 t.screen t)
+
+    else
+        rowsOfScreen first0 count0 t.screen t
+
+
+rowsOfScreen : Int -> Int -> Screen -> Term -> Array Row
+rowsOfScreen first0 count0 s t =
+    let
+        hist =
+            s.hist
+
+        first =
+            clamp (0 - 536880105) s.rows first0
+
+        count =
+            clamp 0 (s.rows - first) count0
+
+        fromPages =
+            min count (max 0 (0 - hist - first))
+
+        paged =
+            viewPages t.back t.back.head 0 (t.back.rows + first + hist) fromPages t.clusters []
+    in
+    paged.rows ++ screenRing (clamp (0 - hist) s.rows (first + fromPages)) (clamp (0 - hist) s.rows (first + count)) s []
+
+
+{-| The rows of screen `s`'s ring from `y` up to `stop`, as `ringRows`
+reads the shown screen's. -}
+screenRing : (y : Int where 0 - s.hist <= y) -> (stop : Int where stop <= s.rows) -> (s : Screen) -> Array Row -> Array Row
+screenRing y stop s acc =
+    if y >= stop then
+        acc
+
+    else
+        screenRing (y + 1) stop s (Array.pushLast (ringRowOf (rowOffset s y) s) acc)
+
+
+{-| Each row's line, counted from the first row's: a row begins a line
+unless the row before it wrapped. -}
+lineStarts : Array Row -> Array Int
+lineStarts rows =
+    Array.foldl
+        (\r acc ->
+            { line =
+                if acc.wrapped then
+                    acc.line
+
+                else
+                    acc.line + 1
+            , wrapped = r.wrapped
+            , out =
+                Array.pushLast
+                    (if acc.wrapped then
+                        acc.line
+
+                     else
+                        acc.line + 1
+                    )
+                    acc.out
+            }
+        )
+        { line = -1, wrapped = False, out = [] }
+        rows
+        |> .out
+
+
+{-| The first row of the line row `k` is in. -}
+lineStart : Array Row -> Int -> Int
+lineStart rows k =
+    if k <= 0 then
+        0
+
+    else
+        when Array.get (k - 1) rows is
+            Just r ->
+                if r.wrapped then
+                    lineStart rows (k - 1)
+
+                else
+                    k
+
+            Nothing ->
+                meant Reason.OutOfRange k
+
+
+{-| The cells a row gives its line: a wrapped row all of them less a spacer
+head at its end, which is not written again; any other its text. -}
+rowLength : Int -> Row -> Int
+rowLength cols r =
+    if r.wrapped then
+        when Array.last r.cells is
+            Just c ->
+                if Array.length r.cells >= cols && cellWide c == spacerHead then
+                    cols - 1
+
+                else
+                    cols
+
+            Nothing ->
+                meant Reason.OutOfRange cols
+
+    else
+        textLength r.cells
+
+
+{-| Up to the last cell that is not empty, as Ghostty trims a row. -}
+textLength : Array Int64 -> Int
+textLength cells =
+    Array.foldl
+        (\c acc ->
+            { i = acc.i + 1
+            , last =
+                if Bitwise.and (Bitwise.or bgBit 0xFFFFFF) c == 0 then
+                    acc.last
+
+                else
+                    acc.i + 1
+            }
+        )
+        { i = 0, last = 0 }
+        cells
+        |> .last
+
+
+{-| Offset `offset` in the line that begins on row `s`: through its wrapped
+rows to the one that holds it. -}
+walk : Int -> Array Row -> Int -> Int -> { row : Int, col : Int }
+walk cols rows s offset =
+    when Array.get s rows is
+        Just r ->
+            let
+                len =
+                    rowLength cols r
+            in
+            if r.wrapped && offset >= len && s + 1 < Array.length rows then
+                walk cols rows (s + 1) (offset - len)
+
+            else
+                { row = s, col = clamp 0 (cols - 1) offset }
+
+        Nothing ->
+            meant Reason.OutOfRange { row = s, col = clamp 0 (cols - 1) offset }
 
 
 -- THE DUMP
@@ -1460,4 +2100,61 @@ dump t =
         replyLines =
             Array.map (\r -> "reply " ++ escapeReply r) t.replies
     in
-    String.join "\n" (Array.flatten [ head, Array.flatten histLines, Array.flatten screenLines, replyLines ]) ++ "\n"
+    String.join "\n" (Array.flatten [ head, Array.flatten histLines, Array.flatten screenLines, Kitty.dumpLines t, replyLines ]) ++ "\n"
+
+
+{-| The folder the shell last said it is in, by OSC 7 (`file://HOST/PATH`,
+the path percent-encoded), as it came; empty until one did (puritty
+`docs/sftp.md` FT29). -}
+workingDirectory : Term -> String
+workingDirectory t =
+    t.workingDirectory
+
+
+{-| What the Program Status Protocol's records say, for a tab to show
+(OSC 7501, puritty `docs/claude-code.md` CL7): the most pressing of them,
+or nothing. `Term.statusChanges` counts the reports that changed them. -}
+programStatus : Term -> Maybe Status.Shown
+programStatus t =
+    Status.shown t.status
+
+
+{-| The desktop notifications programs asked for since last taken (OSC 9,
+777 and 99, puritty `docs/claude-code.md` CL8), oldest first. -}
+takeNotices : (taken t : Term) -> { term : Term, notices : Array Notice.Notice }
+takeNotices t =
+    let
+        notices =
+            t.notices
+    in
+    { term = { t | notices = [] }, notices = notices }
+
+
+{-| The OSC 8 link of the cell at `p` in the view `back` rows scrolled
+back, if it is part of one (puritty `docs/claude-code.md` CL9): its URI. -}
+linkAt : Int -> Point -> Term -> Maybe String
+linkAt back0 p t =
+    let
+        back =
+            clamp 0 (scrollbackRows t) back0
+
+        row =
+            clamp 0 (max 0 (t.rows - 1)) p.row
+
+        read =
+            rowsBetween (row - back) 1 t
+    in
+    Array.first read.rows
+        |> Maybe.andThen (\r -> Array.get p.col r.cells)
+        |> Maybe.andThen
+            (\c ->
+                let
+                    link =
+                        (styleOf (cellStyle c) t.styles).link
+                in
+                if link > 0 then
+                    Array.get (link - 1) t.links |> Maybe.map .uri
+
+                else
+                    Nothing
+            )

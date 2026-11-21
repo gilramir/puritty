@@ -1,0 +1,532 @@
+module Vt.Inflate exposing (adler32, inflate, zlib)
+
+{-| Inflate (RFC 1951) and the zlib stream around it (RFC 1950), for the
+Kitty graphics protocol's compressed data and PNG's (`docs/images.md`
+IM4): in the core, in Geng, so that data a remote program sends is read
+where no buffer can be overrun. After zlib's own reference decoder,
+`puff.c`: each Huffman code decoded a bit at a time from its lengths'
+counts, a table no larger than the alphabet. The output is held to `most`
+bytes, so that a few compressed bytes cannot ask for gigabytes.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import UInt8
+import Vt.Cell exposing (byteAt)
+import Vt.Reason as Reason
+
+
+{-| A zlib stream inflated: its two header bytes checked (deflate, a
+window of at most 32 KiB, no preset dictionary, the check bits), the
+deflate data inflated, and its Adler-32 held to the data's. -}
+zlib : Int -> Bytes -> Result String Bytes
+zlib most data =
+    let
+        n =
+            Bytes.length data
+
+        cmf =
+            byteAt data 0
+
+        flg =
+            byteAt data 1
+    in
+    if n < 6 then
+        Err "short"
+
+    else if Bitwise.and cmf 0x0F /= 8 || Bitwise.shiftRightZfBy 4 cmf > 7 then
+        Err "not deflate"
+
+    else if modBy 31 (cmf * 256 + flg) /= 0 then
+        Err "header check"
+
+    else if Bitwise.and flg 0x20 /= 0 then
+        Err "preset dictionary"
+
+    else
+        when blocks most data { pos = 16, out = Builder.empty 4096, end = n * 8 } is
+            Ok done ->
+                let
+                    out =
+                        Bytes.fromUInt8s (Builder.toArray done.out)
+
+                    -- the checksum after the deflate data, on a byte
+                    at =
+                        (done.pos + 7) // 8
+
+                    want =
+                        Bitwise.or (Bitwise.shiftLeftBy 24 (byteAt data at)) (Bitwise.or (Bitwise.shiftLeftBy 16 (byteAt data (at + 1))) (Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt data (at + 2))) (byteAt data (at + 3))))
+                in
+                if at + 4 > n then
+                    Err "no checksum"
+
+                else if adler32 out /= want then
+                    Err "checksum"
+
+                else
+                    Ok out
+
+            Err why ->
+                meant Reason.FromOutside Err why
+
+
+{-| Raw deflate data inflated. -}
+inflate : Int -> Bytes -> Result String Bytes
+inflate most data =
+    Result.map (\done -> Bytes.fromUInt8s (Builder.toArray done.out)) (blocks most data { pos = 0, out = Builder.empty 4096, end = Bytes.length data * 8 })
+
+
+type alias State =
+    { pos : Int, out : Builder UInt8, end : Int }
+
+
+{-| `n` bits from `pos`, the first the lowest, or none past the end. -}
+bits : Bytes -> Int -> Int -> Int -> Maybe Int
+bits data end pos n =
+    if pos + n > end then
+        Nothing
+
+    else
+        Just (bitsFrom data pos n 0 0)
+
+
+bitsFrom : Bytes -> Int -> Int -> Int -> Int -> Int
+bitsFrom data pos n i acc =
+    if i >= n then
+        acc
+
+    else
+        let
+            p =
+                pos + i
+
+            b =
+                Bitwise.and 1 (Bitwise.shiftRightZfBy (Bitwise.and p 7) (byteAt data (Bitwise.shiftRightZfBy 3 p)))
+        in
+        bitsFrom data pos n (i + 1) (Bitwise.or acc (Bitwise.shiftLeftBy i b))
+
+
+{-| The blocks from `st.pos` to the last. -}
+blocks : Int -> Bytes -> (taken st : State) -> Result String State
+blocks most data st =
+    when bits data st.end st.pos 3 is
+        Just head ->
+            let
+                last =
+                    Bitwise.and head 1 == 1
+
+                kind =
+                    Bitwise.shiftRightZfBy 1 head
+
+                at =
+                    { st | pos = st.pos + 3 }
+
+                done =
+                    if kind == 0 then
+                        stored most data at
+
+                    else if kind == 1 then
+                        codes most data fixed at
+
+                    else if kind == 2 then
+                        dynamic most data at
+
+                    else
+                        Err "block type"
+            in
+            when done is
+                Ok next ->
+                    if last then
+                        Ok next
+
+                    else
+                        blocks most data next
+
+                Err why ->
+                    meant Reason.FromOutside Err why
+
+        Nothing ->
+            meant Reason.FromOutside Err "short"
+
+
+{-| A stored block: to the next byte, its length and the length's
+complement, then the bytes as they are. -}
+stored : Int -> Bytes -> (taken st : State) -> Result String State
+stored most data st =
+    let
+        byte =
+            (st.pos + 7) // 8
+
+        len =
+            Bitwise.or (byteAt data byte) (Bitwise.shiftLeftBy 8 (byteAt data (byte + 1)))
+
+        nlen =
+            Bitwise.or (byteAt data (byte + 2)) (Bitwise.shiftLeftBy 8 (byteAt data (byte + 3)))
+
+        from =
+            byte + 4
+    in
+    if (from + len) * 8 > st.end then
+        Err "short"
+
+    else if Bitwise.xor len 0xFFFF /= nlen then
+        Err "stored length"
+
+    else if Builder.length st.out + len > most then
+        Err "too large"
+
+    else
+        Ok { st | pos = (from + len) * 8, out = pushBytes data from (from + len) st.out }
+
+
+{-| Bytes `from` to `to` of `data` pushed onto `out`, one at a time (`Bytes`
+has no array of its bytes to append). -}
+pushBytes : Bytes -> Int -> Int -> (taken out : Builder UInt8) -> Builder UInt8
+pushBytes data from to out =
+    if from >= to then
+        out
+
+    else
+        pushBytes data (from + 1) to (Builder.pushLast (UInt8.fromInt (byteAt data from)) out)
+
+
+{-| A Huffman code, as `puff.c` keeps one: how many codes there are of each
+length (1 to 15), and the symbols in the order of their codes. -}
+type alias Huffman =
+    { counts : Array Int, symbols : Array Int }
+
+
+{-| The code whose lengths are `lengths`, symbol by symbol; none when it
+asks for more codes of a length than there are (over-subscribed). -}
+huffman : Array Int -> Maybe Huffman
+huffman lengths =
+    let
+        counts =
+            Array.foldl (\l c -> Array.update l (\k -> k + 1) c) (Array.repeat 16 0) lengths
+
+        -- over-subscribed when a length has more codes than are left
+        left =
+            Array.foldl
+                (\len acc ->
+                    if acc < 0 then
+                        acc
+
+                    else
+                        (acc * 2) - Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get len counts)
+                )
+                1
+                (Array.range 1 15)
+
+        symbols =
+            Array.indexedMap (\sym len -> { sym = sym, len = len }) lengths
+                |> Array.keepIf (\s -> s.len > 0)
+                |> Array.sortWith
+                    (\a b ->
+                        if a.len /= b.len then
+                            compare a.len b.len
+
+                        else
+                            compare a.sym b.sym
+                    )
+                |> Array.map .sym
+    in
+    if left < 0 then
+        Nothing
+
+    else
+        Just { counts = Array.set 0 0 counts, symbols = symbols }
+
+
+{-| A symbol of code `h` from `pos`: `puff.c`'s `decode`, a bit at a time. -}
+decode : Bytes -> Int -> Huffman -> Int -> Maybe { sym : Int, pos : Int }
+decode data end h pos =
+    decodeLen data end h pos 1 0 0 0
+
+
+decodeLen : Bytes -> Int -> Huffman -> Int -> Int -> Int -> Int -> Int -> Maybe { sym : Int, pos : Int }
+decodeLen data end h pos len code first index =
+    if len > 15 || pos >= end then
+        Nothing
+
+    else
+        let
+            c =
+                Bitwise.or code (Bitwise.and 1 (Bitwise.shiftRightZfBy (Bitwise.and pos 7) (byteAt data (Bitwise.shiftRightZfBy 3 pos))))
+
+            count =
+                Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get len h.counts)
+        in
+        if c - count < first then
+            Maybe.map (\sym -> { sym = sym, pos = pos + 1 }) (Array.get (index + (c - first)) h.symbols)
+
+        else
+            decodeLen data end h (pos + 1) (len + 1) (Bitwise.shiftLeftBy 1 c) (Bitwise.shiftLeftBy 1 (first + count)) (index + count)
+
+
+{-| The fixed codes (RFC 1951 §3.2.6). -}
+fixed : { lit : Huffman, dist : Huffman }
+fixed =
+    let
+        lit =
+            Array.initialize 288
+                0
+                (\i ->
+                    if i < 144 then
+                        8
+
+                    else if i < 256 then
+                        9
+
+                    else if i < 280 then
+                        7
+
+                    else
+                        8
+                )
+    in
+    { lit = Maybe.withDefault (meant Reason.NotKnown { counts = [], symbols = [] }) (huffman lit)
+    , dist = Maybe.withDefault (meant Reason.NotKnown { counts = [], symbols = [] }) (huffman (Array.repeat 30 5))
+    }
+
+
+lengthBase : Array Int
+lengthBase =
+    [ 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 ]
+
+
+lengthExtra : Array Int
+lengthExtra =
+    [ 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 ]
+
+
+distBase : Array Int
+distBase =
+    [ 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 ]
+
+
+distExtra : Array Int
+distExtra =
+    [ 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 ]
+
+
+{-| A block's symbols to its end (256): literals, and lengths with their
+distances back into what is out. -}
+codes : Int -> Bytes -> { lit : Huffman, dist : Huffman } -> (taken st : State) -> Result String State
+codes most data h st =
+    when decode data st.end h.lit st.pos is
+        Just s ->
+            if s.sym < 256 then
+                if Builder.length st.out >= most then
+                    Err "too large"
+
+                else
+                    codes most data h { st | pos = s.pos, out = Builder.pushLast (UInt8.fromInt s.sym) st.out }
+
+            else if s.sym == 256 then
+                Ok { st | pos = s.pos }
+
+            else
+                let
+                    i =
+                        s.sym - 257
+
+                    lenExtra =
+                        Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i lengthExtra)
+                in
+                when { l = bits data st.end s.pos lenExtra, base = Array.get i lengthBase } is
+                    { l = Just le, base = Just base } ->
+                        let
+                            len =
+                                clamp 0 258 base + clamp 0 31 le
+                        in
+                        when decode data st.end h.dist (s.pos + lenExtra) is
+                            Just d ->
+                                let
+                                    dExtra =
+                                        Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get d.sym distExtra)
+                                in
+                                when { e = bits data st.end d.pos dExtra, base = Array.get d.sym distBase } is
+                                    { e = Just de, base = Just db } ->
+                                        let
+                                            -- a base to 24577, and at
+                                            -- most thirteen extra bits
+                                            dist =
+                                                clamp 0 24577 db + clamp 0 8191 de
+
+                                            have =
+                                                Builder.length st.out
+                                        in
+                                        if dist > have then
+                                            Err "distance too far"
+
+                                        else if have + len > most then
+                                            Err "too large"
+
+                                        else
+                                            codes most data h { st | pos = d.pos + dExtra, out = copyBack (clamp 1 32768 dist) len st.out }
+
+                                    _ ->
+                                        Err "distance"
+
+                            Nothing ->
+                                meant Reason.FromOutside Err "distance code"
+
+                    _ ->
+                        Err "length"
+
+        Nothing ->
+            meant Reason.FromOutside Err "code"
+
+
+{-| `len` bytes copied from `dist` back, one at a time, as they may
+overlap what is being written. -}
+copyBack : (dist : Int where 1 <= dist && dist <= 32768) -> Int -> (taken out : Builder UInt8) -> Builder UInt8
+copyBack dist len out =
+    if len <= 0 then
+        out
+
+    else
+        let
+            b =
+                Maybe.withDefault (meant Reason.OutOfRange (UInt8.fromInt 0)) (Builder.get (Builder.length out - dist) out)
+        in
+        copyBack dist (len - 1) (Builder.pushLast b out)
+
+
+{-| A dynamic block's codes, read from its header, then its symbols. -}
+dynamic : Int -> Bytes -> (taken st : State) -> Result String State
+dynamic most data st =
+    when { a = bits data st.end st.pos 5, b = bits data st.end (st.pos + 5) 5, c = bits data st.end (st.pos + 10) 4 } is
+        { a = Just hlit0, b = Just hdist0, c = Just hclen0 } ->
+            let
+                -- five, five and four bits
+                hlit =
+                    clamp 0 31 hlit0 + 257
+
+                hdist =
+                    clamp 0 31 hdist0 + 1
+
+                hclen =
+                    clamp 0 15 hclen0 + 4
+
+                order =
+                    [ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 ]
+
+                start =
+                    clamp 0 2000000000 st.pos + 14
+
+                lengths =
+                    Array.foldl
+                        (\k acc ->
+                            when Array.get k order is
+                                Just slot ->
+                                    Array.set slot (Maybe.withDefault (meant Reason.OutOfRange 0) (bits data st.end (start + 3 * k) 3)) acc
+
+                                Nothing ->
+                                    meant Reason.NoMore acc
+                        )
+                        (Array.repeat 19 0)
+                        (Array.range 0 (hclen - 1))
+            in
+            if hlit > 286 || hdist > 30 || start + 3 * hclen > st.end then
+                Err "dynamic header"
+
+            else
+                when huffman lengths is
+                    Just lencode ->
+                        when readLengths data st.end lencode (hlit + hdist) (start + 3 * hclen) [] is
+                            Ok r ->
+                                let
+                                    lit =
+                                        Array.slice 0 hlit r.lengths
+
+                                    dist =
+                                        Array.slice hlit (hlit + hdist) r.lengths
+                                in
+                                if Maybe.withDefault (meant Reason.NotSet 0) (Array.get 256 lit) == 0 then
+                                    Err "no end code"
+
+                                else
+                                    when { l = huffman lit, d = huffman dist } is
+                                        { l = Just lh, d = Just dh } ->
+                                            codes most data { lit = lh, dist = dh } { st | pos = r.pos }
+
+                                        _ ->
+                                            Err "dynamic codes"
+
+                            Err why ->
+                                meant Reason.FromOutside Err why
+
+                    Nothing ->
+                        meant Reason.FromOutside Err "code lengths"
+
+        _ ->
+            Err "short"
+
+
+{-| The literal/length and distance codes' lengths, `n` of them, by the
+code-length code: a length, or 16 the last one three to six times, 17 and
+18 zeros three to ten and 11 to 138 times. -}
+readLengths : Bytes -> Int -> Huffman -> Int -> Int -> Array Int -> Result String { lengths : Array Int, pos : Int }
+readLengths data end h n pos acc =
+    if Array.length acc >= n then
+        if Array.length acc > n then
+            Err "lengths overrun"
+
+        else
+            Ok { lengths = acc, pos = pos }
+
+    else
+        when decode data end h pos is
+            Just s ->
+                if s.sym < 16 then
+                    readLengths data end h n s.pos (Array.pushLast s.sym acc)
+
+                else if s.sym == 16 then
+                    when { prev = Array.last acc, r = bits data end s.pos 2 } is
+                        { prev = Just p, r = Just r } ->
+                            readLengths data end h n (s.pos + 2) (acc ++ Array.repeat (3 + r) p)
+
+                        _ ->
+                            Err "repeat with nothing before"
+
+                else if s.sym == 17 then
+                    when bits data end s.pos 3 is
+                        Just r ->
+                            readLengths data end h n (s.pos + 3) (acc ++ Array.repeat (3 + r) 0)
+
+                        Nothing ->
+                            meant Reason.FromOutside Err "short"
+
+                else
+                    when bits data end s.pos 7 is
+                        Just r ->
+                            readLengths data end h n (s.pos + 7) (acc ++ Array.repeat (11 + r) 0)
+
+                        Nothing ->
+                            meant Reason.FromOutside Err "short"
+
+            Nothing ->
+                meant Reason.FromOutside Err "code length code"
+
+
+{-| Adler-32 (RFC 1950 §8.2). -}
+adler32 : Bytes -> Int
+adler32 data =
+    let
+        n =
+            Bytes.length data
+
+        go i a b =
+            if i >= n then
+                Bitwise.or (Bitwise.shiftLeftBy 16 b) a
+
+            else
+                let
+                    a2 =
+                        modBy 65521 (a + byteAt data i)
+                in
+                go (i + 1) a2 (modBy 65521 (b + a2))
+    in
+    go 0 1 0

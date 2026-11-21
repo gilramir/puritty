@@ -1,0 +1,72 @@
+diff --git a/src/terminal/color.zig b/src/terminal/color.zig
+index d0f422712..2faf96fae 100644
+--- a/src/terminal/color.zig
++++ b/src/terminal/color.zig
+@@ -733,6 +733,30 @@ pub const RGB = packed struct(u24) {
+         return @intCast(@as(usize, color) * std.math.maxInt(u8) / divisor);
+     }
+ 
++    /// Parse a channel of the `#` forms: XParseColor takes its 1 to 4 hex
++    /// digits as the channel's most significant bits, so `#f` is 0xf0 and
++    /// `#f00` and `#f000` are 0xf0 too, unlike `rgb:`, which scales
++    /// (puritty harness/oracle/patches).
++    fn fromHexHigh(value: []const u8) error{InvalidFormat}!u8 {
++        if (value.len == 0 or value.len > 4) {
++            @branchHint(.cold);
++            return error.InvalidFormat;
++        }
++
++        const color = lib.parseInt(u16, value, 16) catch {
++            @branchHint(.cold);
++            return error.InvalidFormat;
++        };
++
++        return switch (value.len) {
++            1 => @intCast(color << 4),
++            2 => @intCast(color),
++            3 => @intCast(color >> 4),
++            4 => @intCast(color >> 8),
++            else => unreachable,
++        };
++    }
++
+     /// Parse a color specification.
+     ///
+     /// Leading and trailing spaces and tabs are ignored.
+@@ -768,24 +792,24 @@ pub const RGB = packed struct(u24) {
+         if (input[0] == '#') {
+             switch (input.len) {
+                 4 => return RGB{
+-                    .r = try RGB.fromHex(input[1..2]),
+-                    .g = try RGB.fromHex(input[2..3]),
+-                    .b = try RGB.fromHex(input[3..4]),
++                    .r = try RGB.fromHexHigh(input[1..2]),
++                    .g = try RGB.fromHexHigh(input[2..3]),
++                    .b = try RGB.fromHexHigh(input[3..4]),
+                 },
+                 7 => return RGB{
+-                    .r = try RGB.fromHex(input[1..3]),
+-                    .g = try RGB.fromHex(input[3..5]),
+-                    .b = try RGB.fromHex(input[5..7]),
++                    .r = try RGB.fromHexHigh(input[1..3]),
++                    .g = try RGB.fromHexHigh(input[3..5]),
++                    .b = try RGB.fromHexHigh(input[5..7]),
+                 },
+                 10 => return RGB{
+-                    .r = try RGB.fromHex(input[1..4]),
+-                    .g = try RGB.fromHex(input[4..7]),
+-                    .b = try RGB.fromHex(input[7..10]),
++                    .r = try RGB.fromHexHigh(input[1..4]),
++                    .g = try RGB.fromHexHigh(input[4..7]),
++                    .b = try RGB.fromHexHigh(input[7..10]),
+                 },
+                 13 => return RGB{
+-                    .r = try RGB.fromHex(input[1..5]),
+-                    .g = try RGB.fromHex(input[5..9]),
+-                    .b = try RGB.fromHex(input[9..13]),
++                    .r = try RGB.fromHexHigh(input[1..5]),
++                    .g = try RGB.fromHexHigh(input[5..9]),
++                    .b = try RGB.fromHexHigh(input[9..13]),
+                 },
+ 
+                 else => {

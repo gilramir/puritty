@@ -24,6 +24,8 @@ import Os.File as File
 import Os.Path as Path
 import Os.Process as Process
 import Platform
+import Putty
+import PuttyStore
 import Reason
 import Recent exposing (Recent)
 import RecentFile
@@ -158,6 +160,7 @@ openWindow r given locale =
                     , points = Config.defaults.points
                     , lang = locale.language
                     , glyphCap = Config.defaults.glyphCacheMb * 1024 * 1024
+                    , padding = { x = 0, y = 0 }
                     , title =
                         if r.launcher then
                             said.hostsTitle
@@ -172,16 +175,20 @@ openWindow r given locale =
                                     meant Reason.Refused Task.fail ("cannot open the window: " ++ why)
 
                                 Ok cell ->
-                                    Task.map3 (\events fonts aliases -> { events = events, fonts = fonts, aliases = aliases })
+                                    Task.map3 (\events fonts elsewhere -> { events = events, fonts = fonts, aliases = elsewhere.aliases, putty = elsewhere.putty })
                                         (SettingsSource.watchSettings given)
                                         Window.fonts
-                                        (sshAliases r)
-                                        |> Task.andThen (\w -> recentsOf r |> Task.map (\recents -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = recents }))
+                                        -- the hosts of ~/.ssh/config and PuTTY's sessions (SG21)
+                                        (Task.map2 (\aliases putty -> { aliases = aliases, putty = putty })
+                                            (sshAliases r)
+                                            (PuttyStore.sessions r.fs r.vars |> Task.map Putty.hosts)
+                                        )
+                                        |> Task.andThen (\w -> recentsOf r |> Task.map (\recents -> { events = w.events, fonts = w.fonts, aliases = w.aliases, putty = w.putty, recents = recents }))
                                         -- the page it was last on while puritty runs (SG16)
-                                        |> Task.andThen (\w -> lastPage r |> Task.map (\at -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = w.recents, page = at }))
+                                        |> Task.andThen (\w -> lastPage r |> Task.map (\at -> { events = w.events, fonts = w.fonts, aliases = w.aliases, putty = w.putty, recents = w.recents, page = at }))
                                         -- the family the terminal shows for the file's font,
                                         -- when it is not the system's (ST35)
-                                        |> Task.andThen (\w -> Window.fontUsed (fontOf read) |> Task.map (\used -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = w.recents, page = w.page, used = used }))
+                                        |> Task.andThen (\w -> Window.fontUsed (fontOf read) |> Task.map (\used -> { events = w.events, fonts = w.fonts, aliases = w.aliases, putty = w.putty, recents = w.recents, page = w.page, used = used }))
                                         -- an arrow over a window of choices, not the
                                         -- terminal's I-beam (Gilbert, 2026-11-10)
                                         |> Task.andThen (\w -> Window.setPointer Window.ArrowPointer |> Task.map (\_ -> w))
@@ -224,10 +231,22 @@ remembered : Recent -> State -> Task x State
 remembered recent s =
     when s.stateDir is
         Just dir ->
-            RecentFile.remember s.given.fs dir s.window.config.recentConnections recent |> Task.map (\_ -> s)
+            RecentFile.remember s.given.fs dir s.window.config.recentConnections recent
+                |> Task.andThen (\_ -> showRecents s.given.fs dir s.window.config.recentConnections)
+                |> Task.map (\_ -> s)
 
         Nothing ->
             meant Reason.NotSet Task.succeed s
+
+
+{-| The taskbar's jump list made again from the recent connections as the
+file now has them (`docs/settings-gui.md` SG19); a window started by
+another puritty makes it as it starts (`Main`). -}
+showRecents : File.Permission -> Path.Path -> Int -> Task x {}
+showRecents fs dir most =
+    RecentFile.load fs dir
+        |> Task.andThen (\recents -> RecentFile.jumpList (Array.takeFirst (max 0 most) recents))
+        |> Task.map (\_ -> {})
 
 
 {-| The page the settings window was last on while puritty runs (SG16),
@@ -255,7 +274,7 @@ sshAliases r =
             meant Reason.NotSet Task.succeed []
 
 
-first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, recents : Array Recent, page : Maybe String, used : String } -> Maybe String -> Words.Lang -> State
+first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, putty : Array Config.Host, recents : Array Recent, page : Maybe String, used : String } -> Maybe String -> Words.Lang -> State
 first r given read cell w shotPath lang =
     let
         got =
@@ -278,6 +297,7 @@ first r given read cell w shotPath lang =
             , rows = size.rows
             , fonts = w.fonts
             , aliases = w.aliases
+            , putty = w.putty
             , launcher = r.launcher
             }
             |> SettingsWindow.withRecents w.recents
@@ -477,6 +497,29 @@ one ev s =
                                     meant Reason.OutOfRange Task.succeed pressed
                         )
 
+            else if p.action == 0 && p.button == 2 then
+                -- the paste button: the box under it clicked, then the
+                -- selection pasted into it, as X's programs take it (SG20)
+                let
+                    hit =
+                        Array.findFirst (\b -> p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h) s.hits
+                            |> Maybe.map (\found -> found.value.target)
+                in
+                when hit is
+                    Just t ->
+                        input (SettingsWindow.Hit { target = t, count = 1 }) s
+                            |> Task.andThen
+                                (\after ->
+                                    if after.window.typing /= Nothing || after.window.focus == SettingsWindow.OnSearch then
+                                        Window.paste Window.Primary |> Task.map (\_ -> after)
+
+                                    else
+                                        Task.succeed after
+                                )
+
+                    Nothing ->
+                        meant Reason.OutOfRange Task.succeed s
+
             else if p.action == 0 && (p.button == 4 || p.button == 5) then
                 -- the wheel: a step up or down
                 input
@@ -492,6 +535,10 @@ one ev s =
 
             else
                 Task.succeed s
+
+        Window.Pasted _ ->
+            -- a paste's text as it comes, each piece put in at the caret
+            Window.pasted |> Task.andThen (\text -> input (SettingsWindow.Pasted (Bytes.toStringLossy text)) s)
 
         Window.Close ->
             Task.succeed { s | closed = True }
@@ -574,10 +621,20 @@ effect e s =
             else
                 connect (Config.host "" "") [ "shell" ] (Words.message "message.openedLocal") s
 
+        SettingsWindow.Copy text ->
+            -- a box's selection copied (SG20)
+            Window.select Window.Clipboard (Bytes.fromString text) |> Task.map (\_ -> s)
+
+        SettingsWindow.PasteAsked ->
+            -- its text comes as Pasted events (SG20)
+            Window.paste Window.Clipboard |> Task.map (\_ -> s)
+
         SettingsWindow.ForgetRecent recent ->
             when s.stateDir is
                 Just dir ->
-                    RecentFile.forget s.given.fs dir recent |> Task.map (\_ -> s)
+                    RecentFile.forget s.given.fs dir recent
+                        |> Task.andThen (\_ -> showRecents s.given.fs dir s.window.config.recentConnections)
+                        |> Task.map (\_ -> s)
 
                 Nothing ->
                     meant Reason.NotSet Task.succeed s

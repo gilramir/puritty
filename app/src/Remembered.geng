@@ -1,0 +1,117 @@
+module Remembered exposing (Change, Kept, Question(..), changesAt, keptFor, looksLikePassword, offered)
+
+{-| Remembered passwords and passphrases (`docs/saved-secrets.md` PW8):
+which questions of the built-in client may be answered from Windows'
+Credential Manager, and by what name; and what is written there once the
+session has logged in. Pure; `Main` reads and writes the store
+(`SecretStore`).
+
+A password is kept as `puritty:ssh:USER@HOST:PORT`, the connection's own
+(a jump host's its own), with the user beside it; a key's passphrase as
+`puritty:key:PATH`, the file as the client was given it. A
+keyboard-interactive question is one only when it asks a single thing
+that does not echo and says it is a password; a one-time code or a
+question is never kept.
+-}
+
+import Reason
+
+
+{-| What the built-in client asks, as far as remembering goes: `Main`
+makes one of `Ssh.Session.Ask` (this module is the app's, built for the
+node tests too, where the ssh package is not). -}
+type Question
+    = Password { account : String }
+    | Passphrase { file : String }
+    | Responses { prompts : Array { text : String, echo : Bool }, account : String }
+    | NotSecret
+
+
+{-| A secret's name in the store, and the user beside it there. -}
+type alias Kept =
+    { target : String, user : String }
+
+
+{-| What to do with a secret once the session has logged in: write it
+(`Just`), or take a saved one away (`Nothing`: it was refused, and the
+one typed after was not to be remembered). -}
+type alias Change =
+    { target : String, user : String, secret : Maybe String }
+
+
+{-| The name a question's answer is kept by, if it may be kept. -}
+keptFor : Question -> Maybe Kept
+keptFor ask =
+    when ask is
+        Password p ->
+            Just { target = "puritty:ssh:" ++ p.account, user = userOf p.account }
+
+        Passphrase p ->
+            Just { target = "puritty:key:" ++ p.file, user = p.file }
+
+        Responses r ->
+            when r.prompts is
+                [ one ] ->
+                    if not one.echo && looksLikePassword one.text then
+                        Just { target = "puritty:ssh:" ++ r.account, user = userOf r.account }
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        NotSecret ->
+            Nothing
+
+
+{-| Whether the box offers to remember: a question that may be kept, a
+store on this platform, and `remember_secrets` not `never`. -}
+offered : { available : Bool, setting : String } -> Question -> Maybe Kept
+offered o ask =
+    if o.available && o.setting /= "never" then
+        keptFor ask
+
+    else
+        Nothing
+
+
+{-| A prompt that asks for a password, as servers word it: "Password:",
+"user@host's password:", Korean "암호" or "비밀번호". -}
+looksLikePassword : String -> Bool
+looksLikePassword text =
+    let
+        t =
+            String.toLower text
+    in
+    String.contains "password" t || String.contains "passwd" t || String.contains "암호" t || String.contains "비밀번호" t
+
+
+userOf : String -> String
+userOf account =
+    when String.lastIndexOf "@" account is
+        Just i ->
+            String.takeFirst i account
+
+        Nothing ->
+            meant Reason.FromOutside account
+
+
+{-| The changes waiting for the login, with the answer just given to the
+question kept as `kept`: remembered, the saved one taken away (it was
+refused and this one is not to be remembered), or nothing; a change
+already waiting for the same name is replaced, since it was asked again. -}
+changesAt : { kept : Kept, remember : Bool, refused : Bool, secret : String } -> Array Change -> Array Change
+changesAt a waiting =
+    let
+        others =
+            Array.keepIf (\c -> c.target /= a.kept.target) waiting
+    in
+    if a.remember then
+        Array.pushLast { target = a.kept.target, user = a.kept.user, secret = Just a.secret } others
+
+    else if a.refused then
+        Array.pushLast { target = a.kept.target, user = a.kept.user, secret = Nothing } others
+
+    else
+        others

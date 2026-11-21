@@ -39,6 +39,7 @@ The survey's "biggest opening" is the work puritty already has planned.
 | **Key sounds** (Gilbert's request, §3) | Small to medium: audio is new | Soon, and the first new setting added through the settings UI. |
 | **Jump between and fold command outputs** | Medium; needs shell integration (OSC 133) | Later. |
 | **Pipe a pane's text to a command** (pull out URLs) | Small | Later. |
+| **OSC 5522 clipboard paste events** (kitty's protocol: a program on the host asks for `image/png` after the paste key) | Medium | Later (Gilbert, 2026-11-19), when tmux passes it (tmux#5837, declined 2026-11-04) and Claude Code reads it (claude-code#105520). `image-paste.md` IP2, IP6. |
 | **Inline images**: Sixel, Kitty graphics, iTerm2 | Large | Right after phase 4 (§4 below). |
 | **Smooth scrolling, animated cursor** | Medium; better with the GPU renderer | After phase 5, if at all. |
 
@@ -52,10 +53,13 @@ hosts:
    each host. Termius is the model.
 2. Quick-connect without first saving a host.
 3. Import from `~/.ssh/config`, PuTTY's registry sessions and MobaXterm's
-   session file.
+   session file. `~/.ssh/config`'s are listed (V63), PuTTY's too
+   (`settings-gui.md` SG21); MobaXterm's waits on a real file.
 4. Passwords and key passphrases in the Windows credential store, never in
-   `config.toml`.
+   `config.toml`. Surveyed in `saved-secrets.md` (PW1–PW6), with
+   questions for Gilbert.
 5. File transfer inside the session: an SFTP panel or drag-and-drop.
+   Surveyed in `sftp.md` (FT1–FT5), with questions for Gilbert.
 6. Reconnect, restoring tabs, layouts and titles. tmux control mode does much
    of this for free when the remote end runs tmux.
 7. None of MobaXterm's free-tier caps, which is easy since puritty has none.
@@ -309,3 +313,124 @@ and the settings window.
 **Where they go in §4's order**: the window-wide indicator any time after
 the settings window; the per-pane overlay and the tmux settings helper
 right after phase 4, before images.
+
+## 8. A pasted screenshot reaching a remote program (2026-11-17, built 2026-11-19)
+
+Gilbert, 2026-11-17: a screenshot taken on Windows, pasted into Claude
+Code running in puritty over ssh and tmux. Noted as a possible feature, to
+decide later.
+`image-paste.md` (2026-11-19) surveys how programs and terminals do it:
+no program takes an image through a paste; every one takes a path.
+Built 2026-11-19 as `sftp.md` FT13: the picture put where the tab's
+program runs, its path pasted (`[clipboard] paste_images`); since FT16 the
+user is asked first by default, naming the file, or it is allowed or
+denied always.
+Its folder on the host is a setting since FT15 (`paste_folder`).
+
+**Today** a paste is text only (`CF_UNICODETEXT` on Windows,
+`UTF8_STRING` on X11), so an image on the clipboard pastes nothing.
+
+**What Claude Code does** (read in its 2.1.326 binary, 2026-11-17):
+
+- Its image-paste key (`chat:imagePaste`: Ctrl+V, Alt+V on Windows) runs
+  a clipboard program on the machine Claude Code runs on: `xclip` or
+  `wl-paste` asked for `image/png`, then `image/bmp`; PowerShell's
+  `Clipboard.GetImage` on Windows and from WSL. Over ssh that machine is
+  the server, which cannot see the user's clipboard. It does not speak
+  Kitty's clipboard protocol (OSC 5522) or read images through OSC 52.
+- **Pasted text that is an absolute path ending in `.png`, `.jpg`,
+  `.jpeg`, `.gif` or `.webp`** (quotes and backslash escapes taken off) is
+  read as a file and attached as an image; BMP content is converted to PNG.
+  From WSL a Windows path (`C:\…`) is translated.
+- Measured: Claude Code in a tmux, a 40×20 PNG's path outside its working
+  folder pasted with bracketed paste (`paste-buffer -p`): the prompt read
+  `[Image #1]`.
+
+**Where it already works: a session with an X display that holds the
+clipboard.** Measured 2026-11-17 in an ETX desktop: a partial screenshot
+taken on Windows (Flameshot) pasted into Claude Code reached it in
+xfce4-terminal, Terminator and puritty, each with Claude Code run directly
+and inside tmux. ETX copies the Windows clipboard, images too, into its X
+server, which `DISPLAY` names, so Claude Code's own `xclip` finds
+`image/png` there; the terminal carries no image. The same should hold for
+`ssh -X` to an X server that does so (not measured). What follows is for a
+session with no such display: puritty's own ssh from Windows, or a plain
+ssh.
+
+**The design that follows**, when the paste key finds an image and no
+text on the clipboard:
+
+1. Read the image: Windows' registered `PNG` format as it is, where the
+   snipping tool puts one (not checked), else `CF_DIBV5`/`CF_DIB` made into
+   a PNG, which needs an encoder (puritty decodes PNG only); on X11,
+   `image/png` from the CLIPBOARD's targets.
+2. Put it on the machine the tab's program runs on. A built-in ssh tab
+   opens a second channel on its connection (an `exec` writing standard
+   input to a new file under `~/.cache/puritty/paste/`, mode 0600, older
+   files deleted) and learns the path. A local tab uses the temporary
+   folder.
+3. Paste the absolute path as text, bracketed as any paste. It passes
+   tmux and `tmux -CC` as text does, and tmux runs on the same machine.
+
+Where it can't work: `ssh` run as a program in a local tab (puritty cannot
+reach that server; it should say so rather than paste nothing), and a
+second ssh from the server (the path names a file on the wrong machine).
+Any other program receives a path, which in a shell is harmless.
+
+**The work**: `packages/ssh` holds one channel per connection
+(`Connection.ourChannel` is a constant), so a second channel beside the
+session is the main change, and the start of port forwarding or SFTP; then
+the Windows clipboard formats, a PNG encoder, and the paste. Open: on the
+normal paste key automatically (with a setting to turn it off), or a key
+of its own.
+
+## 9. A file dropped on the window, uploaded where the user chooses (2026-11-18, not implemented)
+
+Gilbert, 2026-11-18: a file dragged onto puritty's window is uploaded to
+the host the tab is connected to. **Not into a set folder**: a dialog
+opens and the user chooses the remote folder to put it in. Written down
+to build later.
+`sftp.md` surveys how other programs do it and what users say, and
+answers the open questions below with leanings (FT5).
+
+**Which tabs it can work in**, as for §8's screenshot:
+
+- A host from the host list on the built-in client (`client =
+  "built-in"`, the default on Windows): a second channel on the tab's
+  connection, the `sftp` subsystem, with no second login, through a jump
+  host as the session goes.
+- A host from the host list on OpenSSH, on Linux: `ssh` started with
+  `ControlMaster`/`ControlPath` on a socket of puritty's, and `sftp` over
+  that socket, the same connection again. Windows' OpenSSH is understood
+  not to share connections (general knowledge, not checked): there the
+  built-in client is the way.
+- Not `ssh` typed in a local tab's shell: puritty knows nothing of that
+  host, and should say so, not drop the file silently.
+
+**The dialog**: the remote folders, read over SFTP (`opendir`, `readdir`,
+`stat`), opened first at the shell's current folder where the shell
+reports it (OSC 7), else the home folder; move up and into folders, make
+a new one, choose. Then the upload with its progress and a cancel. A file
+of the same name already there is asked about (replace, keep both, skip),
+never replaced silently. Several files dropped at once go to one chosen
+folder.
+
+**The work**: the second channel on a connection (`packages/ssh` has one,
+`Connection.ourChannel`), shared with §8; an SFTP client (version 3, as
+OpenSSH speaks it: open, write, close, stat, opendir, readdir, mkdir);
+drops (XDND on X11; `IDropTarget` or `WM_DROPFILES` on Windows); the
+dialog.
+
+**Open, for Gilbert**:
+
+- Whether the dialog is puritty's own, drawn over the screen as its
+  prompts are (`ssh-client.md` SC23), or the platform's.
+- What a drop does in a local tab: paste the file's path, as most
+  terminals do, or nothing.
+- After an upload, whether the remote path is pasted (as §8 does) or not.
+- ~~Whether §8's screenshot should ask for its folder the same way~~:
+  answered 2026-11-19, a fixed folder of the user's choosing, a setting
+  with a host's own over it (`sftp.md` FT15); the shell's folder is for
+  drag-and-drop.
+- A server with SFTP turned off: refuse, or fall back to an `exec`
+  channel writing the file (`cat > …`), which needs only a shell.

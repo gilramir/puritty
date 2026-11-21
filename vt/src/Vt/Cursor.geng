@@ -57,6 +57,7 @@ import Vt.Dump exposing (..)
 import Vt.Keys as Keys
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
+import Vt.Placed as Placed
 import Vt.Reason as Reason
 import Vt.Recut exposing (recut)
 import Vt.Resize exposing (..)
@@ -484,7 +485,35 @@ off, which is when the ground state's fast paths may write a run (§VC5).
 Set wherever any of the four changes. -}
 withPlain : (taken t : Term) -> Term
 withPlain t =
-    { t | plain = t.single < 0 && slotSet t.gl t == 0 && t.autowrap && not t.insert && not (margined t) && not t.statusLine }
+    -- and no image on the screen that text may erase a cell of, Sixel's
+    -- or iTerm2's: the runs of text then go a character at a time
+    -- (`docs/images.md` IM26, IM27)
+    { t | plain = t.single < 0 && slotSet t.gl t == 0 && t.autowrap && not t.insert && not (margined t) && not t.statusLine && not (cellImages t) }
+
+
+{-| An image drawn into the cells on the screen: none to look for when
+there are no placements. The screen's top is `Vt.Scroll.pushedRows`', which
+this module is below. -}
+cellImages : Term -> Bool
+cellImages t =
+    if Array.isEmpty t.images.shown.placements then
+        False
+
+    else
+        let
+            ring =
+                if t.alt then
+                    when t.other is
+                        Just main ->
+                            main.hist
+
+                        Nothing ->
+                            meant Reason.NotOpen 0
+
+                else
+                    t.screen.hist
+        in
+        Placed.onScreen True (clamp 0 1073751017 (clamp 0 9193 ring + clamp 0 536870912 t.back.rows + clamp 0 536870912 t.back.gone)) t
 
 
 nextTab : (x : Int where 0 <= x && x < t.cols) -> Int -> (t : Term) -> (r : Int where 0 <= r && r < t.cols)

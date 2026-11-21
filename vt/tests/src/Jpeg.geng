@@ -1,0 +1,70 @@
+module Jpeg exposing (suite)
+
+{-| `Vt.Jpeg` (`docs/images-iterm.md` IT4): small JPEGs Pillow made
+(`gen-jpeg.py`, `JpegCases`), each decoded and held to the pixels libjpeg
+decodes it to. The two differ by their inverse transforms, libjpeg's in
+integers: measured, 2 at most, 3 where chroma is subsampled, hence 3.
+-}
+
+import Bytes exposing (Bytes)
+import Expect
+import JpegCases
+import Support
+import Test.Runner.UnitNode as U
+import UInt8
+import Vt.Base64 as Base64
+import Vt.Jpeg as Jpeg
+
+
+{-| The largest difference of a channel from libjpeg's, or -1 for an image
+not decoded or of another size. -}
+difference : JpegCases.Case -> Int
+difference c =
+    when Base64.decode (Bytes.fromString c.jpeg) |> Maybe.map (Jpeg.decode 100000000) is
+        Just (Ok img) ->
+            if img.width /= c.width || img.height /= c.height then
+                -1
+
+            else
+                Array.range 0 (c.width * c.height * 3 - 1)
+                    |> Array.foldl
+                        (\i acc ->
+                            let
+                                ours =
+                                    Maybe.withDefault -1 (Maybe.map UInt8.toInt (Bytes.get ((i // 3) * 4 + modBy 3 i) img.pixels))
+
+                                theirs =
+                                    Maybe.withDefault -1 (Array.get i c.rgb)
+                            in
+                            max acc (max (ours - theirs) (theirs - ours))
+                        )
+                        0
+
+        _ ->
+            -1
+
+
+suite : U.Suite
+suite =
+    Support.run "Jpeg"
+        (Array.map
+            (\c ->
+                { name = c.name ++ ": within 3 of libjpeg"
+                , test =
+                    \_ ->
+                        let
+                            d =
+                                difference c
+                        in
+                        Expect.equal { decoded = True, within = True } { decoded = d >= 0, within = d <= 3 }
+                }
+            )
+            JpegCases.cases
+            ++ [ { name = "a lossless JPEG (SOF3) says it is not decoded"
+                 , test =
+                    \_ ->
+                        Expect.equal (Err "a JPEG process not decoded (lossless, hierarchical or arithmetic)")
+                            (Jpeg.decode 100000000 (Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0xFF, 0xD8, 0xFF, 0xC3, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xD9 ])) |> Result.map .width)
+                 }
+               ]
+        )

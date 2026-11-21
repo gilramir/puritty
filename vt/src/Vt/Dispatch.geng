@@ -26,10 +26,12 @@ import Vt.Dcs exposing (..)
 import Vt.Dump exposing (..)
 import Vt.Edit exposing (..)
 import Vt.Keys as Keys
+import Vt.Kitty as Kitty
 import Vt.Modes exposing (..)
 import Vt.Osc exposing (..)
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
+import Vt.Placed as Placed
 import Vt.Print exposing (..)
 import Vt.Probe as Probe
 import Vt.Prompt exposing (..)
@@ -111,6 +113,96 @@ probed final priv inter params t =
         done
 
 
+{-| The DEC status reports (`CSI ? Ps n`) that have one answer, each
+what is true of the core, as the VT510 manual and xterm's ctlseqs give
+them (§VC71): no printer, user-defined keys locked (there are none), a
+North American keyboard, no DEC locator and its type
+unknown, no macro space, data integrity ready, no sessions. -}
+decStatus : Int -> Maybe String
+decStatus p =
+    when p is
+        15 ->
+            Just "\u{001B}[?13n"
+
+        25 ->
+            Just "\u{001B}[?21n"
+
+        26 ->
+            -- at the level DA says, VT220's: the language only
+            Just "\u{001B}[?27;1n"
+
+        55 ->
+            Just "\u{001B}[?50n"
+
+        56 ->
+            Just "\u{001B}[?57;0n"
+
+        62 ->
+            Just "\u{001B}[0*{"
+
+        75 ->
+            Just "\u{001B}[?70n"
+
+        85 ->
+            Just "\u{001B}[?83n"
+
+        _ ->
+            Nothing
+
+
+{-| XTSMGRAPHICS, `CSI ? Pi ; Pa ; Pv S`, while Sixel is on
+(`docs/images-sixel.md` SX2 10): item 1 the colour registers, 1024 to
+read, reset or read the most, set refused; item 2 the Sixel geometry,
+the window in pixels clamped to 10,000 to read, 10,000 by 10,000 the
+most, reset answered, set refused; any other item a bad item. -}
+xtsmgraphics : Array Int -> (taken t : Term) -> Term
+xtsmgraphics params t =
+    let
+        item =
+            param 0 0 params
+
+        action =
+            param 1 0 params
+
+        width =
+            min 10000 (t.cols * clamp 0 4096 t.config.cellWidth)
+
+        height =
+            min 10000 (t.rows * clamp 0 4096 t.config.cellHeight)
+
+        -- the answer's text, then one reply: a local function that took
+        -- the terminal made the result not fresh, and every caller copy
+        -- (`docs/images.md` IM24)
+        rest =
+            if item == 1 then
+                if action == 1 || action == 2 || action == 4 then
+                    "0;1024"
+
+                else if action == 3 then
+                    "3;0"
+
+                else
+                    "2;0"
+
+            else if item == 2 then
+                if action == 1 || action == 2 then
+                    "0;" ++ String.fromInt width ++ ";" ++ String.fromInt height
+
+                else if action == 4 then
+                    "0;10000;10000"
+
+                else if action == 3 then
+                    "3;0"
+
+                else
+                    "2;0"
+
+            else
+                "1;0"
+    in
+    reply ("\u{001B}[?" ++ String.fromInt item ++ ";" ++ rest ++ "S") t
+
+
 {-| A sequence the terminal does nothing with, said to the diagnostic log
 when it listens for them (DG6). -}
 ignoredCsi : Int -> Int -> Int -> Array Int -> (taken t : Term) -> Term
@@ -151,6 +243,9 @@ dispatchOther final priv inter params t =
                         )
             }
 
+        else if final == 0x53 && t.embedder.extraImages then
+            xtsmgraphics params t
+
         else if final == 0x6C then
             Array.foldl (\p acc -> setPrivate p False acc) t params
 
@@ -159,6 +254,11 @@ dispatchOther final priv inter params t =
 
         else if final == 0x72 then
             Array.foldl restoreMode t params
+
+        else if final == 0x6E && param 0 0 params == 63 then
+            -- DECCKSR: the memory checksum, for the id asked; the core
+            -- keeps no macros, so it is 0 (§VC71)
+            reply ("\u{001B}P" ++ String.fromInt (param 1 0 params) ++ "!~0000\u{001B}\\") t
 
         else if Array.length params > 1 then
             t
@@ -182,6 +282,15 @@ dispatchOther final priv inter params t =
 
         else if final == 0x6E && param 0 0 params == 6 then
             reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ ";1R") t
+
+        else if final == 0x6E then
+            when decStatus (param 0 0 params) is
+                Just answer ->
+                    reply answer t
+
+                Nothing ->
+                    -- a status the core has no answer for
+                    meant Reason.NotKnown ignoredCsi final priv inter params t
 
         else
             ignoredCsi final priv inter params t
@@ -328,39 +437,49 @@ dispatchRare final params t =
         eraseChars (param 0 1 params) t
 
     else if final == 0x40 then
-        if not (margined t) then
-            let
-                s =
-                    t.screen
-            in
-            { t | screen = insertCells (rowOffset s t.y) t.x (param 0 1 params) t.erase s, wrapNext = False }
+        let
+            area =
+                shiftedRow t
+        in
+        shifted area <|
+            if not (margined t) then
+                let
+                    s =
+                        t.screen
+                in
+                { t | screen = insertCells (rowOffset s t.y) t.x (param 0 1 params) t.erase s, wrapNext = False }
 
-        else if t.x >= t.left && t.x <= t.right then
-            let
-                s =
-                    t.screen
-            in
-            { t | screen = insertMargined (rowOffset s t.y) t.x (param 0 1 params) t.right t.erase s, wrapNext = False }
+            else if t.x >= t.left && t.x <= t.right then
+                let
+                    s =
+                        t.screen
+                in
+                { t | screen = insertMargined (rowOffset s t.y) t.x (param 0 1 params) t.right t.erase s, wrapNext = False }
 
-        else
-            { t | wrapNext = False }
+            else
+                { t | wrapNext = False }
 
     else if final == 0x50 then
-        if not (margined t) then
-            deleteChars (param 0 1 params) (resetWrap (splitAbove (t.x + min (param 0 1 params) (t.cols - t.x)) (splitAbove t.x t)))
+        let
+            area =
+                shiftedRow t
+        in
+        shifted area <|
+            if not (margined t) then
+                deleteChars (param 0 1 params) (resetWrap (splitAbove (t.x + min (param 0 1 params) (t.cols - t.x)) (splitAbove t.x t)))
 
-        else if t.x >= t.left && t.x <= t.right then
-            let
-                split =
-                    resetWrap (splitAbove (t.x + min (param 0 1 params) (t.right + 1 - t.x)) (splitAbove t.x t))
+            else if t.x >= t.left && t.x <= t.right then
+                let
+                    split =
+                        resetWrap (splitAbove (t.x + min (param 0 1 params) (t.right + 1 - t.x)) (splitAbove t.x t))
 
-                s =
-                    split.screen
-            in
-            { split | screen = setWrapped split.y False (deleteMargined (rowOffset s split.y) split.x (param 0 1 params) split.right split.erase s), wrapNext = False }
+                    s =
+                        split.screen
+                in
+                { split | screen = setWrapped split.y False (deleteMargined (rowOffset s split.y) split.x (param 0 1 params) split.right split.erase s), wrapNext = False }
 
-        else
-            t
+            else
+                t
 
     else if final == 0x72 && Array.length params <= 2 then
         let
@@ -377,67 +496,87 @@ dispatchRare final params t =
             t
 
     else if final == 0x53 then
-        if margined t then
-            marginUp (param 0 1 params) t.top t.bottom t
+        -- SU, and what it does to the Kitty graphics placements in the
+        -- region (`docs/images.md` IM14)
+        let
+            count =
+                min (count0 params) (t.bottom - t.top + 1)
+
+            -- numbers alone read before the scroll, so that it takes the
+            -- terminal unshared (IM24)
+            pushed =
+                pushedRows t
+
+            inPlace =
+                not (t.top == 0 && t.left == 0 && t.right == t.cols - 1 && (not (isAlt t) || t.bottom == t.rows - 1))
+
+            whole =
+                isAlt t && wholeRegion t
+
+            scrolled =
+                scrollUpRegion params t
+        in
+        if whole then
+            Placed.altScrolled count (pushedRows scrolled) scrolled
 
         else
-            -- no more rows to the scrollback than the region has; a
-            -- region that is not the screen's top, or on the alternate
-            -- screen not its bottom, is DL's and its rows stop wrapping, as
-            -- in Ghostty (§VC16)
-            let
-                scrolls =
-                    t.top == 0 && (not (isAlt t) || t.bottom == t.rows - 1)
-
-                top =
-                    t.top
-
-                bottom =
-                    t.bottom
-
-                up =
-                    regionUp (min (count0 params) (bottom - top + 1)) top bottom t
-            in
-            if scrolls then
-                up
-
-            else
-                unwrapRegion top bottom up
+            imagesMoved (0 - count) inPlace pushed scrolled
 
     else if final == 0x54 then
-        if margined t then
-            marginDown (param 0 1 params) t.top t.bottom t
+        let
+            pushed =
+                pushedRows t
 
-        else
-            unwrapRegion t.top t.bottom (regionDown (param 0 1 params) t.top t.bottom t)
+            count =
+                min (param 0 1 params) (t.bottom - t.top + 1)
+        in
+        imagesMoved count
+            True
+            pushed
+            (if margined t then
+                marginDown (param 0 1 params) t.top t.bottom t
+
+             else
+                unwrapRegion t.top t.bottom (regionDown (param 0 1 params) t.top t.bottom t)
+            )
 
     else if final == 0x4C then
-        if t.y < t.top || t.y > t.bottom then
-            t
-
-        else if margined t then
-            if t.x >= t.left && t.x <= t.right then
-                marginDown (param 0 1 params) t.y t.bottom { t | x = t.left, wrapNext = False }
-
-            else
+        let
+            area =
+                shiftedRows t
+        in
+        shifted area <|
+            if t.y < t.top || t.y > t.bottom then
                 t
 
-        else
-            unwrapRegion t.y t.bottom (regionDown (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False })
+            else if margined t then
+                if t.x >= t.left && t.x <= t.right then
+                    marginDown (param 0 1 params) t.y t.bottom { t | x = t.left, wrapNext = False }
+
+                else
+                    t
+
+            else
+                unwrapRegion t.y t.bottom (regionDown (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False })
 
     else if final == 0x4D then
-        if t.y < t.top || t.y > t.bottom then
-            t
-
-        else if margined t then
-            if t.x >= t.left && t.x <= t.right then
-                marginUp (param 0 1 params) t.y t.bottom { t | x = t.left, wrapNext = False }
-
-            else
+        let
+            area =
+                shiftedRows t
+        in
+        shifted area <|
+            if t.y < t.top || t.y > t.bottom then
                 t
 
-        else
-            unwrapRegion t.y t.bottom (scrollUpBy False (count0 params) t.y t.bottom { t | x = 0, wrapNext = False })
+            else if margined t then
+                if t.x >= t.left && t.x <= t.right then
+                    marginUp (param 0 1 params) t.y t.bottom { t | x = t.left, wrapNext = False }
+
+                else
+                    t
+
+            else
+                unwrapRegion t.y t.bottom (scrollUpBy False (count0 params) t.y t.bottom { t | x = 0, wrapNext = False })
 
     else if final == 0x62 then
         repeatLast (min 65535 (param 0 1 params)) t
@@ -699,3 +838,69 @@ rectChecksum params t =
 
     else
         Bitwise.and 0xFFFF (0 - sum)
+
+
+{-| SU's rows scrolled up. -}
+scrollUpRegion : Array Int -> (taken t : Term) -> Term
+scrollUpRegion params t =
+    if margined t then
+        marginUp (param 0 1 params) t.top t.bottom t
+
+    else
+        -- no more rows to the scrollback than the region has; a
+        -- region that is not the screen's top, or on the alternate
+        -- screen not its bottom, is DL's and its rows stop wrapping, as
+        -- in Ghostty (§VC16)
+        let
+            scrolls =
+                t.top == 0 && (not (isAlt t) || t.bottom == t.rows - 1)
+
+            top =
+                t.top
+
+            bottom =
+                t.bottom
+
+            up =
+                regionUp (min (count0 params) (bottom - top + 1)) top bottom t
+        in
+        if scrolls then
+            up
+
+        else
+            unwrapRegion top bottom up
+
+
+{-| The cells ICH and DCH move, the cursor's row from it to the right
+margin, and those IL and DL move, its row to the bottom margin between
+the margins: an image drawn into the cells loses them, where Windows
+Terminal moves its pixels with them (`docs/images.md` IM23). -}
+shiftedRow : Term -> { top : Int, bottom : Int, left : Int, right : Int }
+shiftedRow t =
+    { top = t.y
+    , bottom = t.y
+    , left = t.x
+    , right =
+        if margined t then
+            t.right
+
+        else
+            t.cols - 1
+    }
+
+
+shiftedRows : Term -> { top : Int, bottom : Int, left : Int, right : Int }
+shiftedRows t =
+    if t.y < t.top || t.y > t.bottom then
+        { top = 0, bottom = -1, left = 0, right = -1 }
+
+    else if margined t then
+        { top = t.y, bottom = t.bottom, left = t.left, right = t.right }
+
+    else
+        { top = t.y, bottom = t.bottom, left = 0, right = t.cols - 1 }
+
+
+shifted : { top : Int, bottom : Int, left : Int, right : Int } -> (taken t : Term) -> Term
+shifted area t =
+    Kitty.overwritten area.top area.bottom area.left area.right t

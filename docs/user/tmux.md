@@ -110,6 +110,14 @@ would take no more keys from puritty afterwards.
   give one more room. The pointer shows what a press would do: a
   two-headed arrow over a line or an edge that resizes, a four-headed one
   over a box's top edge, the plain arrow over the tab bar.
+- **In tmux's screens** (the session tree, the buffer and client lists,
+  customize mode), a click chooses a row and a double click picks it, as
+  Enter does; the wheel moves up and down the rows; and in the session
+  tree's preview, a click on a window or a pane picks it. From tmux 3.0
+  the right button chooses a row and opens tmux's menu for it (Select,
+  Tag, Kill and the rest, as the screen has them), or, outside the list,
+  Scroll Left, Scroll Right and Cancel. These work whether tmux's `mouse`
+  option is on or not.
 - **Programs that use the mouse**, such as vim or htop, get it in their
   own pane, at their own cell; hold **Shift** to select over them
   instead.
@@ -145,7 +153,11 @@ runs what tmux would run when you answer.
   and copy mode's search and counts (`/`, `?`, `3k`). Typing works as on
   tmux's prompt line: Left, Right, Home, End, Ctrl+A, Ctrl+E, Ctrl+U,
   Ctrl+K, Ctrl+W, Alt+B and Alt+F by word, Ctrl+T, and Up and Down (or
-  Ctrl+P and Ctrl+N) for earlier answers; at the command prompt **Tab**
+  Ctrl+P and Ctrl+N) for earlier answers. From tmux 3.3 those include
+  tmux's own history (what its prompts have had typed, by any client, and
+  its `history-file`), each kind of prompt its own: commands, searches.
+  What you type in puritty is kept for this connection only, since tmux
+  has no command to be given it. At the command prompt **Tab**
   completes a command's name. Escape cancels. Korean typed with an input
   method, or pasted, goes in.
 - **What a command prints**: `prefix ?` (the key bindings), `prefix #`
@@ -248,8 +260,7 @@ These are on purpose:
 
 Not yet:
 
-- `e` (edit in your editor) in customize mode and the buffer list, and the
-  mouse in customize mode.
+- `e` (edit in your editor) in customize mode and the buffer list.
 - With tmux 3.6, focus events for a program that asked for them before
   puritty attached; it gets them once it asks again.
 

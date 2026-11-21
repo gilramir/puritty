@@ -1,0 +1,97 @@
+diff --git a/src/terminal/device_status.zig b/src/terminal/device_status.zig
+index 809d1b251..9466df8d0 100644
+--- a/src/terminal/device_status.zig
++++ b/src/terminal/device_status.zig
+@@ -117,6 +117,18 @@ const entries: []const Entry = &.{
+     .{ .name = "cursor_position_extended", .value = 6, .question = true },
+     .{ .name = "color_scheme", .value = 996, .question = true },
+     .{ .name = "visibility", .value = 998, .question = true },
++    // The DEC reports with one answer, answered as puritty's core answers
++    // them, so its differential fuzzer compares the rest (puritty
++    // harness/oracle/patches; not a Ghostty bug).
++    .{ .name = "printer_status", .value = 15, .question = true },
++    .{ .name = "udk_status", .value = 25, .question = true },
++    .{ .name = "keyboard_status", .value = 26, .question = true },
++    .{ .name = "locator_status", .value = 55, .question = true },
++    .{ .name = "locator_type", .value = 56, .question = true },
++    .{ .name = "macro_space", .value = 62, .question = true },
++    .{ .name = "memory_checksum", .value = 63, .question = true },
++    .{ .name = "data_integrity", .value = 75, .question = true },
++    .{ .name = "multiple_sessions", .value = 85, .question = true },
+ };
+ 
+ test "encode color scheme report dark" {
+diff --git a/src/terminal/stream.zig b/src/terminal/stream.zig
+index 250685b8a..9d9f92235 100644
+--- a/src/terminal/stream.zig
++++ b/src/terminal/stream.zig
+@@ -355,6 +355,8 @@ pub const Action = union(Key) {
+ 
+     pub const DeviceStatus = struct {
+         request: device_status.Request,
++        /// DECCKSR's id (`CSI ? 63 ; id n`), 0 for the others (puritty).
++        id: u16 = 0,
+ 
+         pub const C = u16;
+ 
+@@ -2296,7 +2298,9 @@ pub fn Stream(comptime H: type) type {
+                     if (input.intermediates.len == 0 or
+                         input.intermediates[0] == '?')
+                     {
+-                        if (input.params.len != 1) {
++                        const checksum = input.params.len == 2 and input.params[0] == 63 and
++                            input.intermediates.len == 1 and input.intermediates[0] == '?';
++                        if (input.params.len != 1 and !checksum) {
+                             log.warn("invalid device status report command: {f}", .{input});
+                             return;
+                         }
+@@ -2315,7 +2319,10 @@ pub fn Stream(comptime H: type) type {
+                             return;
+                         };
+ 
+-                        self.handler.vt(.device_status, .{ .request = req });
++                        self.handler.vt(.device_status, .{
++                            .request = req,
++                            .id = if (checksum) input.params[1] else 0,
++                        });
+                         return;
+                     }
+ 
+diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
+index aa61fb9eb..2b11d6f8b 100644
+--- a/src/terminal/stream_terminal.zig
++++ b/src/terminal/stream_terminal.zig
+@@ -775,7 +775,7 @@ pub const Handler = struct {
+             .bell => self.bell(),
+             .show_desktop_notification => self.desktopNotification(value),
+             .device_attributes => self.reportDeviceAttributes(value),
+-            .device_status => self.deviceStatus(value.request),
++            .device_status => self.deviceStatus(value.request, value.id),
+             .enquiry => self.reportEnquiry(),
+             .kitty_keyboard_query => self.queryKittyKeyboard(),
+             .request_mode => self.requestMode(value.mode),
+@@ -1730,8 +1730,23 @@ pub const Handler = struct {
+         };
+     }
+ 
+-    fn deviceStatus(self: *Handler, req: device_status.Request) void {
++    fn deviceStatus(self: *Handler, req: device_status.Request, id: u16) void {
+         switch (req) {
++            // as puritty's core answers them (harness/oracle/patches)
++            .printer_status => self.writePty("\x1B[?13n"),
++            .udk_status => self.writePty("\x1B[?21n"),
++            .keyboard_status => self.writePty("\x1B[?27;1n"),
++            .locator_status => self.writePty("\x1B[?50n"),
++            .locator_type => self.writePty("\x1B[?57;0n"),
++            .macro_space => self.writePty("\x1B[0*{"),
++            .data_integrity => self.writePty("\x1B[?70n"),
++            .multiple_sessions => self.writePty("\x1B[?83n"),
++            .memory_checksum => {
++                var buf: [32]u8 = undefined;
++                const resp = std.mem.printSentinel(&buf, "\x1BP{}!~0000\x1B\\", .{id}, 0) catch return;
++                self.writePty(resp);
++            },
++
+             .operating_status => self.writePty("\x1B[0n"),
+ 
+             .cursor_position => {

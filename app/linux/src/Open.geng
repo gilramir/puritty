@@ -1,0 +1,21 @@
+module Open exposing (link)
+
+{-| A link opened as the desktop opens one (puritty `docs/claude-code.md`
+CL9), on Linux: `xdg-open`. `app/windows` asks the shell. -}
+
+import Os.Error
+import Os.Process as Process
+import Reason
+import Task exposing (Task)
+
+
+link : Maybe Process.Permission -> String -> Task x (Result String {})
+link cp uri =
+    when cp is
+        Just permission ->
+            Process.spawn permission "xdg-open" [ uri ] (Process.defaultSpawnOptions Process.Ignored)
+                |> Task.map (\_ -> Ok {})
+                |> Task.onError (\e -> Task.succeed (Err ("xdg-open: " ++ Os.Error.toString e)))
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed (Err "no permission to start programs")

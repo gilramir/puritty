@@ -4,11 +4,29 @@ puritty is a terminal for Linux and Windows. On Linux it runs your shell, or
 any program, in an X11 window, locally or over `ssh -X`. On Windows it is
 first of all an ssh terminal, with the ssh client built in.
 
-> **puritty is pre-release.** It is its author's daily terminal, and it will
-> be published with the first alpha of [Geng](https://geng-lang.org), the
-> language it is written in. Until then you build it from source.
+## Installing
+
+Download it from the [latest release](https://github.com/gilramir/puritty/releases/latest)
+on GitHub. Take the file for your system:
+
+| system | file | then |
+|---|---|---|
+| Windows 10 or 11 | `puritty-VERSION-windows-x64.zip` | Unzip it and run `puritty.exe`. It is not signed yet: if Windows says "Windows protected your PC", choose **More info**, then **Run anyway**. |
+| Ubuntu 24.04, Linux Mint 22 | `puritty_VERSION_ubuntu24.04_amd64.deb` | `sudo apt install ./puritty_*_ubuntu24.04_amd64.deb`, which adds it to the desktop's menu. Or the `.tar.gz` beside it, to unpack anywhere. |
+| RHEL 9 | `puritty-VERSION-rhel9-x64.tar.gz` | Unpack it anywhere and run `./puritty`. |
+| RHEL 8, or any other x86-64 Linux | `puritty-VERSION-linux-rhel8-x64.tar.gz` | Unpack it anywhere and run `./puritty`. Built on RHEL 8, it runs on any later Linux too. |
+
+No administrator rights are needed except for the `.deb`. On Linux puritty
+needs the X libraries every desktop has (xcb, xcb-util, xcb-util-image,
+xcb-util-renderutil, libxkbcommon-x11 and fontconfig);
+`ldd puritty | grep "not found"` lists any that are missing. On RHEL, see
+[Fonts for symbols](symbol-fonts.md) too.
 
 ## Building
+
+> **It cannot be built outside its author's machines yet.** The Geng
+> toolchain it needs has not been published; it will be with Geng's first
+> alpha. The steps below are how it is built then.
 
 puritty is a Geng program with a little C for X11 (or Win32), fonts and the
 input method. Until Geng's first release, a build needs a
@@ -60,5 +78,7 @@ shell; `start = "hosts"` in the settings makes it open the list there too.
 - [Settings](settings.md): the settings file, and the window that edits it.
 - [Copy and paste](copy-and-paste.md): the selection, the clipboard, and
   programs that take the mouse.
+- [Sending files to a host](file-transfer.md): files dropped on an ssh
+  tab, sent over its connection.
 - [tmux](tmux.md): tmux's panes drawn as puritty's own, floating panes
   included.

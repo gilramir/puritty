@@ -14,14 +14,19 @@ import Chord
 import Clock
 import Config
 import Diag
+import Dict
+import Drop
 import Expect exposing (Expectation)
 import Explorer
 import Hosts
 import I18Next
 import Int64
 import LastWindow
+import Links
 import Platform
+import Putty
 import Recent
+import Remembered
 import RestoreFile exposing (TabColor(..))
 import Schema
 import Screen
@@ -32,6 +37,7 @@ import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import TmuxTests
 import Toml
+import UInt8
 import Vt
 import Words
 
@@ -40,7 +46,7 @@ import Words
 (`native/`'s `NativeTests`). -}
 suites : Array U.Suite
 suites =
-    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, tabOrder, clock, TmuxTests.tmuxMode, Explorer.explorer ]
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, remembered, tabOrder, clock, drops, TmuxTests.tmuxMode, Explorer.explorer ]
 
 
 {-| The window's clock, which starts over every 2^30 ms (`docs/rhel8-etx.md`
@@ -76,6 +82,298 @@ clock =
                 \_ ->
                     Expect.equal [ "000001 00:00:00.020 note   x" ]
                         (Diag.start "log" { ms = late, dayMs = 0 } [] |> Diag.add 10 "note" "x" |> Diag.take 10 |> .bytes |> Bytes.toString |> Maybe.withDefault "" |> String.lines |> Array.keepIf (\l -> String.contains "note" l))
+          }
+        ]
+
+
+{-| Files dropped on the window (`docs/sftp.md` FT21, FT22): the lists
+the window's layers give, as Nemo, Dolphin and Explorer gave them, read
+into paths; and paths quoted for a shell, to be pasted. -}
+drops : U.Suite
+drops =
+    let
+        bytes ints =
+            Bytes.fromUInt8s (Array.map UInt8.fromInt ints)
+
+        -- 한글 in EUC-KR
+        euc =
+            bytes [ 0xC7, 0xD1, 0xB1, 0xDB ]
+
+        read text =
+            Drop.paths (Bytes.fromString text)
+    in
+    run "drops"
+        [ { name = "Nemo's list: a space and an EUC-KR name, each name's own bytes"
+          , test =
+                \_ ->
+                    Expect.equal { paths = [ Bytes.fromString "/tmp/x/a plain.txt", Bytes.flatten [ Bytes.fromString "/tmp/x/", euc, Bytes.fromString ".txt" ] ], others = 0 }
+                        (read "file:///tmp/x/a%20plain.txt\u{000D}\nfile:///tmp/x/%C7%D1%B1%DB.txt\u{000D}\n")
+          }
+        , { name = "a name Dolphin spoiled is read as Dolphin gave it"
+          , test = \_ -> Expect.equal [ Bytes.flatten [ Bytes.fromString "/t/", bytes [ 0xEF, 0xBF, 0xBD, 0xD1, 0xB1, 0xEF, 0xBF, 0xBD ] ] ] (read "file:///t/%EF%BF%BD%D1%B1%EF%BF%BD\u{000D}\n").paths
+          }
+        , { name = "Windows' paths, a line each, as they are"
+          , test = \_ -> Expect.equal { paths = [ Bytes.fromString "C:\\Users\\y\\한.txt", Bytes.fromString "C:\\prj\\go.mod" ], others = 0 } (read "C:\\Users\\y\\한.txt\u{000D}\nC:\\prj\\go.mod\u{000D}\n")
+          }
+        , { name = "a comment left out, and a web address counted as not a file"
+          , test = \_ -> Expect.equal { paths = [ Bytes.fromString "/a" ], others = 1 } (read "# from a browser\u{000D}\nhttps://example.com/a\u{000D}\nfile:///a\u{000D}\n")
+          }
+        , { name = "a file URI that names its host, and a last line with no end"
+          , test = \_ -> Expect.equal [ Bytes.fromString "/home/me/b c" ] (read "file://nene/home/me/b%20c").paths
+          }
+        , { name = "a % not followed by two hex digits is kept"
+          , test = \_ -> Expect.equal [ Bytes.fromString "/a%zz%4" ] (read "file:///a%zz%4").paths
+          }
+        , { name = "paths quoted for a POSIX shell, a quote and a dollar inside"
+          , test = \_ -> Expect.equal "'/tmp/a plain.txt' '/tmp/it'\\''s $HOME.txt' /tmp/b.txt " (Drop.quoted False [ "/tmp/a plain.txt", "/tmp/it's $HOME.txt", "/tmp/b.txt" ])
+          }
+        , { name = "a name past ASCII quoted, as its characters"
+          , test = \_ -> Expect.equal "'/tmp/한.txt' " (Drop.quoted False [ "/tmp/한.txt" ])
+          }
+        , { name = "paths quoted for Windows' shells, a backslash plain there"
+          , test = \_ -> Expect.equal "\"C:\\a b\\c.txt\" C:\\d.txt " (Drop.quoted True [ "C:\\a b\\c.txt", "C:\\d.txt" ])
+          }
+        ]
+
+
+{-| PuTTY's saved sessions as hosts (`docs/settings-gui.md` SG21). -}
+putty : U.Suite
+putty =
+    let
+        session name lines =
+            Putty.parseFile name (String.join "\n" lines)
+
+        one lines =
+            Putty.hosts [ session "s" lines ]
+
+        bare =
+            Config.host "s" "h.example.com"
+
+        sessions =
+            Putty.hosts
+                [ session "bastion" [ "Protocol=ssh", "HostName=b.example.com", "UserName=me" ]
+                , session "inner" [ "Protocol=ssh", "HostName=10.0.0.5", "ProxyMethod=6", "ProxyHost=bastion" ]
+                , session "build-box" [ "Protocol=ssh", "HostName=other.example.com" ]
+                ]
+
+        start =
+            SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [], putty = sessions, launcher = False }
+
+        typed inputs =
+            Screen.feedInputs ([ press 0xFF09, press 0xFF09 ] ++ Array.repeat (Array.length Schema.pages) (press 0xFF54) ++ [ press 0xFF53 ] ++ inputs) start
+
+        onInner =
+            -- PuTTY's rows are last, by name: bastion, inner
+            [ press 0xFF57 ]
+    in
+    run "PuTTY"
+        [ { name = "a name unescaped as PuTTY escapes it, its bytes UTF-8"
+          , test = \_ -> Expect.equal [ "my box.one", "한 %zz" ] [ Putty.unescape "my%20box%2Eone", Putty.unescape "%ED%95%9C%20%zz" ]
+          }
+        , { name = "the registry's text read as sessions"
+          , test =
+                \_ ->
+                    Expect.equal [ { name = "a b", host = "x" }, { name = "c", host = "y" } ]
+                        (Putty.parseSessions "[a b]\nHostName=x\nPortNumber=22\n[c]\r\nHostName=y\r\n" |> Array.map (\s -> { name = s.name, host = Maybe.withDefault "" (Dict.get "HostName" s.values) }))
+          }
+        , { name = "where it goes: user@ in the host name, a port that is not 22, the command and title"
+          , test =
+                \_ ->
+                    Expect.equal [ { bare | user = Just "root", port = Just 2222, command = Just "tmux a", title = Just "Prod" } ]
+                        (one [ "Protocol=ssh", "HostName=root@h.example.com", "UserName=ignored", "PortNumber=2222", "RemoteCommand=tmux a", "WinTitle=Prod" ])
+          }
+        , { name = "UserName where the host name has none; port 22 left out"
+          , test = \_ -> Expect.equal [ { bare | user = Just "me" } ] (one [ "Protocol=ssh", "HostName=h.example.com", "UserName=me", "PortNumber=22" ])
+          }
+        , { name = "telnet, serial, no host and Default Settings are left out"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (Putty.hosts
+                            [ session "t" [ "Protocol=telnet", "HostName=x" ]
+                            , session "serial" [ "Protocol=serial", "HostName=" ]
+                            , session "empty" [ "Protocol=ssh", "HostName=" ]
+                            , session "Default Settings" [ "Protocol=ssh", "HostName=x" ]
+                            ]
+                        )
+          }
+        , { name = "a jump through another session by its name, or user@host:port"
+          , test =
+                \_ ->
+                    Expect.equal [ Just "bastion", Just "me@b2.example.com:2200", Nothing ]
+                        (Array.map .jump
+                            (Putty.hosts
+                                [ session "bastion" [ "HostName=b.example.com" ]
+                                , session "c1" [ "HostName=a", "ProxyMethod=6", "ProxyHost=bastion" ]
+                                , session "c2" [ "HostName=a", "ProxyMethod=6", "ProxyHost=b2.example.com", "ProxyPort=2200", "ProxyUsername=me" ]
+                                , session "c3" [ "HostName=a", "ProxyMethod=2", "ProxyHost=socks.example.com" ]
+                                ]
+                                |> Array.keepIf (\h -> h.name /= "bastion")
+                            )
+                        )
+          }
+        , { name = "Use font encoding with a Hangul font is CP949; UTF-8 is the default"
+          , test =
+                \_ ->
+                    Expect.equal [ Just "cp949", Nothing, Nothing ]
+                        (Array.map .charset
+                            (Putty.hosts
+                                [ session "a" [ "HostName=x", "LineCodePage=Use font encoding", "FontCharSet=129" ]
+                                , session "b" [ "HostName=x", "LineCodePage=UTF-8" ]
+                                , session "c" [ "HostName=x", "LineCodePage=Use font encoding", "FontCharSet=0" ]
+                                ]
+                            )
+                        )
+          }
+        , { name = "PuTTY's default colors and font are puritty's; changed ones are taken"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { foreground = Nothing, background = Nothing, palette = Nothing, font = Nothing, points = Nothing }
+                        , { foreground = Nothing, background = Just 0x000040, palette = Just [ 0, 0xBB0000, 0x00BB00, 0xBBBB00, 0x0000BB, 0xBB00BB, 0x00BBBB, 0xBBBBBB, 0x555555, 0xFF8080, 0x55FF55, 0xFFFF55, 0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF ], font = Just "Consolas", points = Just 12 }
+                        ]
+                        (Array.map (\h -> { foreground = h.foreground, background = h.background, palette = h.palette, font = h.font, points = h.points })
+                            (Putty.hosts
+                                [ session "a" [ "HostName=x", "Colour0=187,187,187", "Colour2=0,0,0", "Font=Courier New", "FontHeight=10" ]
+                                , session "b" [ "HostName=x", "Colour2=0,0,64", "Colour9=255,128,128", "Font=Consolas", "FontHeight=12" ]
+                                ]
+                            )
+                        )
+          }
+        , { name = "listed after the hosts, from PuTTY, but not one the settings name"
+          , test =
+                \_ ->
+                    Expect.equal [ "bastion", "inner" ]
+                        (SettingsWindow.hostRows start |> Array.keepIf (\r -> r.putty /= Nothing) |> Array.map .name)
+          }
+        , { name = "Enter saves it, and the session it jumps through, then connects"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            typed (onInner ++ [ press 0xFF0D ])
+                    in
+                    Expect.equal { said = [ "put inner", "put bastion", "connect inner" ], jump = Just "bastion" }
+                        { said = said r.effects, jump = Hosts.named "inner" r.model.config |> .jump }
+          }
+        , { name = "Delete on one says it is PuTTY's, and removes nothing"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            typed (onInner ++ [ press 0xFFFF ])
+                    in
+                    Expect.equal { said = [], foot = "inner is PuTTY's; it is removed in PuTTY" } { said = said r.effects, foot = foot r.model }
+          }
+        , { name = "Right saves it and opens its form"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            typed (onInner ++ [ press 0xFF53 ])
+                    in
+                    Expect.equal { said = [ "put inner", "put bastion" ], form = Just "inner" } { said = said r.effects, form = r.model.form }
+          }
+        ]
+
+
+{-| Remembered passwords and passphrases (`docs/saved-secrets.md` PW8). -}
+remembered : U.Suite
+remembered =
+    let
+        on =
+            { available = True, setting = "ask" }
+
+        kept =
+            { target = "puritty:ssh:me@h:22", user = "me" }
+    in
+    run "Remembered"
+        [ { name = "OSC 8 links opened: web, mail and this machine's files; not another host's file or another scheme (CL9)"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, True, True, True, False, False, False ]
+                        (Array.map Links.openable
+                            [ "https://example.com/a?b=c"
+                            , "HTTP://example.com"
+                            , "mailto:me@example.com"
+                            , "file:///home/me/notes.txt"
+                            , "file://localhost/tmp/x"
+                            , "file://build-box/etc/passwd"
+                            , "javascript:alert(1)"
+                            , "vscode://open?file=/x"
+                            ]
+                        )
+          }
+        , { name = "Kitty's pictures from files are not read by default, and are with [images] read_files = true (KG9, Dnene64)"
+          , test =
+                \_ ->
+                    Expect.equal [ False, False, True ]
+                        [ (decoded Schema.example).imageFiles
+                        , (decoded "").imageFiles
+                        , (decoded "[images]\nread_files = true\n").imageFiles
+                        ]
+          }
+        , { name = "desktop notifications are on by default, and off with [notifications] desktop = false (CL8)"
+          , test =
+                \_ ->
+                    Expect.equal [ True, False ]
+                        [ (decoded Schema.example).desktopNotifications
+                        , (decoded "[notifications]\ndesktop = false\n").desktopNotifications
+                        ]
+          }
+        , { name = "a password by its connection, a passphrase by its file"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just { target = "puritty:ssh:me@h.example.com:2222", user = "me" }, Just { target = "puritty:key:C:\\Users\\me\\.ssh\\id_ed25519", user = "C:\\Users\\me\\.ssh\\id_ed25519" } ]
+                        [ Remembered.keptFor (Remembered.Password { account = "me@h.example.com:2222" })
+                        , Remembered.keptFor (Remembered.Passphrase { file = "C:\\Users\\me\\.ssh\\id_ed25519" })
+                        ]
+          }
+        , { name = "keyboard-interactive: one hidden prompt that says password, in English or Korean"
+          , test =
+                \_ ->
+                    let
+                        asked prompts =
+                            Remembered.keptFor (Remembered.Responses { prompts = prompts, account = "me@h:22" }) /= Nothing
+                    in
+                    Expect.equal [ True, True, True, False, False, False ]
+                        [ asked [ { text = "Password: ", echo = False } ]
+                        , asked [ { text = "비밀번호: ", echo = False } ]
+                        , asked [ { text = "암호:", echo = False } ]
+                        , asked [ { text = "Verification code: ", echo = False } ]
+                        , asked [ { text = "Password: ", echo = True } ]
+                        , asked [ { text = "Password: ", echo = False }, { text = "Code: ", echo = False } ]
+                        ]
+          }
+        , { name = "never offered on Linux, with remember_secrets never, or for a host key"
+          , test =
+                \_ ->
+                    let
+                        password =
+                            Remembered.Password { account = "me@h:22" }
+                    in
+                    Expect.equal [ False, False, False, True ]
+                        [ Remembered.offered { available = False, setting = "ask" } password /= Nothing
+                        , Remembered.offered { available = True, setting = "never" } password /= Nothing
+                        , Remembered.offered on Remembered.NotSecret /= Nothing
+                        , Remembered.offered on password /= Nothing
+                        ]
+          }
+        , { name = "checked: written at the login, in place of one waiting for the same name"
+          , test =
+                \_ ->
+                    Expect.equal [ { target = "puritty:ssh:me@h:22", user = "me", secret = Just "new" } ]
+                        (Remembered.changesAt { kept = kept, remember = True, refused = False, secret = "new" } [ { target = "puritty:ssh:me@h:22", user = "me", secret = Just "old" } ])
+          }
+        , { name = "a refused remembered one, not to be remembered again: forgotten; unchecked otherwise: nothing"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ [ { target = "puritty:ssh:me@h:22", user = "me", secret = Nothing } ], [] ]
+                        [ Remembered.changesAt { kept = kept, remember = False, refused = True, secret = "typed" } []
+                        , Remembered.changesAt { kept = kept, remember = False, refused = False, secret = "typed" } []
+                        ]
           }
         ]
 
@@ -256,7 +554,7 @@ schema =
           , test =
                 \_ ->
                     Expect.equal
-                        [ { name = "build-box", host = "build.example.com", user = Just "gilbert", port = Just 2222, identity = Just "~/.ssh/id_ed25519", jump = Just "bastion.example.com", command = Just "tmux new -A -s main", foreground = Nothing, background = Just 0x2A1010, tab = Just 0xC62828, palette = Nothing, font = Nothing, points = Just 13, charset = Just "euc-kr", title = Just "build", client = Just "built-in" } ]
+                        [ { name = "build-box", host = "build.example.com", user = Just "gilbert", port = Just 2222, identity = Just "~/.ssh/id_ed25519", jump = Just "bastion.example.com", command = Just "tmux new -A -s main", foreground = Nothing, background = Just 0x2A1010, tab = Just 0xC62828, palette = Nothing, font = Nothing, points = Just 13, charset = Just "euc-kr", title = Just "build", client = Just "built-in", pasteFolder = Nothing } ]
                         (decoded Schema.example).hosts
           }
         , { name = "a host with no host is reported and left out"
@@ -621,7 +919,7 @@ writing =
 
 opened : SettingsWindow.Model
 opened =
-    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [ "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ], aliases = [], launcher = False }
+    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [ "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ], aliases = [], putty = [], launcher = False }
 
 
 press : Int -> SettingsWindow.Input
@@ -637,6 +935,18 @@ typeIn text =
 ctrl : Char -> SettingsWindow.Input
 ctrl c =
     SettingsWindow.Key { sym = Char.toCode c, mods = 2, text = "" }
+
+
+{-| A key with modifiers: Shift 1, Ctrl 2. -}
+held : Int -> Int -> SettingsWindow.Input
+held mods sym =
+    SettingsWindow.Key { sym = sym, mods = mods, text = "" }
+
+
+{-| The text typed in the box being typed into, or "(none)". -}
+typedText : SettingsWindow.Model -> String
+typedText m =
+    Maybe.withDefault "(none)" (Maybe.map (\t -> String.fromArray t.chars) m.typing)
 
 
 k =
@@ -684,6 +994,12 @@ said effects =
                 SettingsWindow.OpenLocal ->
                     "open the local shell"
 
+                SettingsWindow.Copy text ->
+                    "copy " ++ text
+
+                SettingsWindow.PasteAsked ->
+                    "paste"
+
                 SettingsWindow.ForgetRecent r ->
                     "forget "
                         ++ (when r is
@@ -719,7 +1035,7 @@ onHostsWith : Array Recent.Recent -> Bool -> Array SettingsWindow.Input -> { sai
 onHostsWith recents launcher inputs =
     let
         start =
-            SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [ "work", "build-box" ], launcher = launcher }
+            SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [ "work", "build-box" ], putty = [], launcher = launcher }
                 |> SettingsWindow.withRecents recents
 
         toPage =
@@ -1060,6 +1376,76 @@ window =
                     Expect.equal [ [ "connect to me@h tmux -CC attach" ], [ "connect build-box" ] ]
                         [ (onHostsWith recents False [ k.down, k.down, k.down, k.enter ]).said, (onHostsWith recents False [ k.down, k.down, k.down, k.down, k.enter ]).said ]
           }
+        , { name = "in quick connect Ctrl+Left moves by a word, Shift+End selects, and what is typed replaces it (SG20)"
+          , test =
+                \_ ->
+                    Expect.equal "me@host tmux new"
+                        (typedText (onHostsWith [] False ([ k.enter ] ++ typeIn "me@host tmux attach" ++ [ held 2 0xFF51, held 1 0xFF57 ] ++ typeIn "new")).model)
+          }
+        , { name = "Ctrl+Backspace deletes a word, Ctrl+Left stops inside an address (SG20)"
+          , test =
+                \_ ->
+                    Expect.equal [ "me@host ", "me@" ]
+                        [ typedText (onHostsWith [] False ([ k.enter ] ++ typeIn "me@host tmux" ++ [ held 2 0xFF08 ])).model
+                        , typedText (onHostsWith [] False ([ k.enter ] ++ typeIn "me@host" ++ [ held 2 0xFF51, held 2 0xFFFF ])).model
+                        ]
+          }
+        , { name = "Ctrl+V and Shift+Insert ask for a paste, and its lines come joined by spaces (SG20)"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsWith [] False [ ctrl 'v', SettingsWindow.Pasted "me@h\ntmux -CC attach\n" ]
+                    in
+                    Expect.equal { said = [ "paste" ], shifted = [ "paste" ], text = "me@h tmux -CC attach" }
+                        { said = r.said, shifted = (onHostsWith [] False [ k.enter, held 1 0xFF63 ]).said, text = typedText r.model }
+          }
+        , { name = "Ctrl+A then Ctrl+C copies the box's text, Ctrl+X cuts it (SG20)"
+          , test =
+                \_ ->
+                    let
+                        cut =
+                            onHostsWith [] False ([ k.enter ] ++ typeIn "me@h" ++ [ ctrl 'a', ctrl 'x' ])
+                    in
+                    Expect.equal { copied = [ "copy me@h" ], cut = [ "copy me@h" ], left = "" }
+                        { copied = (onHostsWith [] False ([ k.enter ] ++ typeIn "me@h" ++ [ ctrl 'a', ctrl 'c' ])).said, cut = cut.said, left = typedText cut.model }
+          }
+        , { name = "F2 on a recent connection or a saved host puts its line into quick connect, and connects to nothing (SG20)"
+          , test =
+                \_ ->
+                    let
+                        recents =
+                            [ Recent.Quick "me@h tmux -CC attach", Recent.Saved "build-box" ]
+
+                        f2 n =
+                            onHostsWith recents False (Array.repeat n k.down ++ [ press 0xFFBF ])
+
+                        changedOne =
+                            onHostsWith recents False ([ k.down, k.down, k.down, press 0xFFBF, held 2 0xFF08 ] ++ typeIn "main" ++ [ k.enter ])
+                    in
+                    Expect.equal
+                        { quick = { said = [], row = 0, text = "me@h tmux -CC attach" }
+                        , saved = "gilbert@build.example.com:2222 tmux new -A -s main"
+                        , edited = [ "connect to me@h tmux -CC main" ]
+                        }
+                        { quick = { said = (f2 3).said, row = (f2 3).model.row, text = typedText (f2 3).model }
+                        , saved = typedText (f2 4).model
+                        , edited = changedOne.said
+                        }
+          }
+        , { name = "Up in empty quick connect brings back the recent connections, newest first; Down goes back (SG20)"
+          , test =
+                \_ ->
+                    let
+                        recents =
+                            [ Recent.Quick "me@h tmux -CC attach", Recent.Quick "old@h" ]
+
+                        at keys =
+                            typedText (onHostsWith recents False ([ k.enter ] ++ keys)).model
+                    in
+                    Expect.equal [ "me@h tmux -CC attach", "old@h", "old@h", "me@h tmux -CC attach", "" ]
+                        [ at [ k.up ], at [ k.up, k.up ], at [ k.up, k.up, k.up ], at [ k.up, k.up, k.down ], at [ k.up, k.down ] ]
+          }
         , { name = "Delete forgets a recent connection, and the saved host stays"
           , test =
                 \_ ->
@@ -1088,6 +1474,26 @@ window =
                 \_ ->
                     Expect.equal [ Just (Just "tmux -CC attach"), Just Nothing, Nothing ]
                         (Array.map (\t -> Hosts.quick t |> Maybe.map .command) [ "  me@h  tmux -CC attach ", "me@h ", "me@ ls" ])
+          }
+        , { name = "a recent connection starts puritty as the host list does, its name what the menu says (SG19)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { args = [ "--host", "build-box" ], name = "build-box" }, { args = [ "ssh", "me@h tmux -CC attach" ], name = "me@h tmux -CC attach" } ]
+                        (Array.map (\r -> { args = Recent.arguments r, name = Recent.name r }) [ Recent.Saved "build-box", Recent.Quick "me@h tmux -CC attach" ])
+          }
+        , { name = "a jump list's command line is quoted as the C runtime splits it (SG19)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "--host build-box"
+                        , "ssh \"me@h tmux -CC attach\""
+                        , "a\\b \"\" \"say \\\"hi\\\"\" \"C:\\my dir\\\\\" \"x\\\\\\\"y\""
+                        ]
+                        [ Recent.commandLine [ "--host", "build-box" ]
+                        , Recent.commandLine [ "ssh", "me@h tmux -CC attach" ]
+                        , Recent.commandLine [ "a\\b", "", "say \"hi\"", "C:\\my dir\\", "x\\\"y" ]
+                        ]
           }
         , { name = "Enter on the local shell opens it, and Right or Delete on it do nothing (SG15)"
           , test = \_ -> Expect.equal [ [ "open the local shell" ], [], [] ] [ (onHostsPage False [ k.down, k.down, k.enter ]).said, (onHostsPage False [ k.down, k.down, press 0xFF53 ]).said, (onHostsPage False [ k.down, k.down, k.delete ]).said ]

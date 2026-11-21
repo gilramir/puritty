@@ -48,6 +48,7 @@ type alias Look =
     , focusRow : Int
     , pageOn : Int
     , error : Int
+    , selection : Int
     }
 
 
@@ -66,6 +67,7 @@ look =
     , focusRow = 0x2A2D2E
     , pageOn = 0x37373D
     , error = 0xF14C4C
+    , selection = 0x264F78
     }
 
 
@@ -1119,11 +1121,31 @@ hostRow lang m i y rowH x0 vx valueW fieldH px body small here preedit d =
             Just h ->
                 -- a long name or command cut with "…" to its column, not
                 -- run under the next or off the window (SG14)
+                let
+                    -- the chosen row's pencil: its connection into quick
+                    -- connect, to edit (F2's, SG20)
+                    pencilW =
+                        if here then
+                            px 28
+
+                        else
+                            0
+
+                    pencil dd =
+                        if here then
+                            dd
+                                |> draw (text { x = vx + valueW - px 20, y = labelY, size = body, color = look.accentText, text = "✎" })
+                                |> target { x = vx + valueW - pencilW, y = y, w = pencilW, h = rowH } (OnEdit i)
+
+                        else
+                            dd
+                in
                 d
                     |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = fit body (vx - x0 - px 12) h.name })
                     |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = fit small (vx - x0 - px 12) (Words.say lang h.from) })
-                    |> draw (text { x = vx, y = labelY, size = body, color = look.text, text = fit body valueW (Words.say lang h.detail) })
+                    |> draw (text { x = vx, y = labelY, size = body, color = look.text, text = fit body (valueW - pencilW) (Words.say lang h.detail) })
                     |> target { x = vx, y = y, w = valueW, h = rowH } (OnValue i)
+                    |> pencil
 
             Nothing ->
                 d
@@ -1485,11 +1507,17 @@ footer lang m size px small d =
 
 
 {-| A field being typed into: the text with what the IME composes at the
-caret, underlined, and the caret after it; the caret's place the IME's
-spot. -}
+caret, underlined, the selection behind it, and the caret after it; the
+caret's place the IME's spot. Text wider than the box scrolls so the caret
+stays in it (SG20): it is drawn from its start until the caret would pass
+the right edge, then moved left to keep the caret at that edge, and a
+faint `…` says which end is cut. -}
 typingField : { x : Int, y : Int, w : Int, h : Int } -> SettingsWindow.Typing -> String -> Int -> (Int -> Int) -> Int -> Drawn -> Drawn
 typingField b t preedit border px body d =
     let
+        widthOf n =
+            Text.width body (String.fromArray (Array.takeFirst n t.chars))
+
         before =
             String.fromArray (Array.takeFirst t.caret t.chars)
 
@@ -1499,18 +1527,53 @@ typingField b t preedit border px body d =
         baseline =
             b.y + b.h // 2 + body // 3
 
-        x =
-            b.x + px 10
+        inner =
+            b.w - px 20
 
         bw =
             Text.width body before
 
         pw =
             Text.width body preedit
+
+        whole =
+            bw + pw + Text.width body after
+
+        shift =
+            max 0 (bw + pw - inner)
+
+        x =
+            b.x + px 10 - shift
+
+        from =
+            min t.caret t.anchor
+
+        to =
+            max t.caret t.anchor
+
+        dots =
+            "…"
+
+        dw =
+            Text.width body dots + px 4
+
+        -- an end cut: the field's color over the text there, and the dots
+        cutAt dx =
+            Bytes.flatten
+                [ box { x = dx, y = b.y + 2, w = dw, h = b.h - 4, r = 0, color = look.field }
+                , text { x = dx + px 2, y = baseline, size = body, color = look.dim, text = dots }
+                ]
     in
     { d | spot = { x = x + bw + pw, y = b.y } }
         |> draw (framed { x = b.x, y = b.y, w = b.w, h = b.h, r = px 4, color = look.field, border = border })
         |> draw (clip { x = b.x + 1, y = b.y, w = b.w - 2, h = b.h })
+        |> draw
+            (if from == to || preedit /= "" then
+                Bytes.empty
+
+             else
+                box { x = x + widthOf from, y = b.y + px 4, w = widthOf to - widthOf from, h = b.h - px 8, r = 0, color = look.selection }
+            )
         |> draw (text { x = x, y = baseline, size = body, color = look.strong, text = before })
         |> draw
             (if preedit == "" then
@@ -1521,3 +1584,17 @@ typingField b t preedit border px body d =
             )
         |> draw (text { x = x + bw + pw, y = baseline, size = body, color = look.strong, text = after })
         |> draw (box { x = x + bw + pw, y = b.y + px 6, w = 1, h = b.h - px 12, r = 0, color = look.strong })
+        |> draw
+            (if shift > 0 then
+                cutAt (b.x + 1)
+
+             else
+                Bytes.empty
+            )
+        |> draw
+            (if whole - shift > inner then
+                cutAt (b.x + b.w - 1 - dw)
+
+             else
+                Bytes.empty
+            )

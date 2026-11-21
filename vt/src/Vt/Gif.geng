@@ -1,0 +1,464 @@
+module Vt.Gif exposing (Decoded, decode)
+
+{-| GIF decoded to 8-bit RGBA for iTerm2's images (`docs/images-iterm.md`
+IT4), in Geng: the first frame only, as a still picture, placed on the
+logical screen, which is clear elsewhere. The global or the frame's own
+colour table, the transparent index of the frame's graphic control
+extension, LZW of up to 12 bits a code, and interlaced rows. Held to
+`most` bytes of pixels.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import UInt8
+import Vt.Cell exposing (byteAt)
+import Vt.Reason as Reason
+
+
+type alias Decoded =
+    { width : Int, height : Int, pixels : Bytes }
+
+
+u16 : Bytes -> Int -> (r : Int where 0 <= r && r <= 65535)
+u16 data at =
+    clamp 0 65535 (Bitwise.or (byteAt data at) (Bitwise.shiftLeftBy 8 (byteAt data (at + 1))))
+
+
+{-| The first frame, or why not. -}
+decode : Int -> Bytes -> Result String Decoded
+decode most data =
+    if byteAt data 0 /= 0x47 || byteAt data 1 /= 0x49 || byteAt data 2 /= 0x46 then
+        Err "not a GIF"
+
+    else
+        let
+            sw =
+                u16 data 6
+
+            sh =
+                u16 data 8
+
+            packed =
+                byteAt data 10
+
+            global =
+                if Bitwise.and 0x80 packed /= 0 then
+                    Bytes.slice 13 (13 + 3 * Bitwise.shiftLeftBy (Bitwise.and 7 packed + 1) 1) data
+
+                else
+                    Bytes.empty
+        in
+        blocks most data (13 + Bytes.length global) { width = sw, height = sh, global = global, transparent = -1 }
+
+
+{-| The blocks after the screen's descriptor, up to the first image. -}
+blocks : Int -> Bytes -> Int -> { width : Int, height : Int, global : Bytes, transparent : Int } -> Result String Decoded
+blocks most data at screen =
+    if at < 0 || at > 1000000000 then
+        Err "too long"
+
+    else
+        let
+            b =
+                byteAt data at
+        in
+        if b == 0x21 then
+            let
+                label =
+                    byteAt data (at + 1)
+
+                -- a graphic control extension: its transparent index, when
+                -- its flag says it has one
+                transparent =
+                    if label == 0xF9 && Bitwise.and 1 (byteAt data (at + 3)) /= 0 then
+                        byteAt data (at + 6)
+
+                    else
+                        screen.transparent
+            in
+            blocks most data (subBlocksEnd data (at + 2)) { screen | transparent = transparent }
+
+        else if b == 0x2C then
+            image most data at screen
+
+        else
+            Err "no image"
+
+
+{-| The position after a run of sub-blocks, past its empty one. -}
+subBlocksEnd : Bytes -> Int -> Int
+subBlocksEnd data at =
+    let
+        n =
+            byteAt data at
+    in
+    if n <= 0 || at > 1000000000 then
+        at + 1
+
+    else
+        subBlocksEnd data (at + 1 + n)
+
+
+{-| The sub-blocks' data, joined. -}
+subBlocks : Bytes -> Int -> Array Bytes -> Bytes
+subBlocks data at acc =
+    let
+        n =
+            byteAt data at
+    in
+    if n <= 0 || at > 1000000000 then
+        Bytes.flatten acc
+
+    else
+        subBlocks data (at + 1 + n) (Array.pushLast (Bytes.slice (at + 1) (at + 1 + n) data) acc)
+
+
+image : Int -> Bytes -> Int -> { width : Int, height : Int, global : Bytes, transparent : Int } -> Result String Decoded
+image most data at screen =
+    let
+        left =
+            u16 data (at + 1)
+
+        top =
+            u16 data (at + 3)
+
+        w =
+            u16 data (at + 5)
+
+        h =
+            u16 data (at + 7)
+
+        packed =
+            byteAt data (at + 9)
+
+        local =
+            if Bitwise.and 0x80 packed /= 0 then
+                Bytes.slice (at + 10) (at + 10 + 3 * Bitwise.shiftLeftBy (Bitwise.and 7 packed + 1) 1) data
+
+            else
+                screen.global
+
+        afterTable =
+            at
+                + 10
+                + (if Bitwise.and 0x80 packed /= 0 then
+                    Bytes.length local
+
+                   else
+                    0
+                  )
+
+        minSize =
+            byteAt data afterTable
+
+        -- the screen, or the frame where the screen is smaller
+        cw =
+            max screen.width (left + w)
+
+        ch =
+            max screen.height (top + h)
+    in
+    if w < 1 || h < 1 || cw > 10000 || ch > 10000 then
+        Err "dimensions"
+
+    else if cw * ch * 4 > most then
+        Err "too large"
+
+    else if minSize < 2 || minSize > 8 then
+        Err "LZW code size"
+
+    else
+        let
+            indices =
+                lzw (subBlocks data (afterTable + 1) []) minSize (w * h)
+
+            interlaced =
+                Bitwise.and 0x40 packed /= 0
+
+            -- the frame's row of decoded row `r`
+            rowOf r =
+                if not interlaced then
+                    r
+
+                else
+                    let
+                        p1 =
+                            (h + 7) // 8
+
+                        p2 =
+                            (h + 3) // 8
+
+                        p3 =
+                            (h + 1) // 4
+                    in
+                    if r < p1 then
+                        r * 8
+
+                    else if r < p1 + p2 then
+                        (r - p1) * 8 + 4
+
+                    else if r < p1 + p2 + p3 then
+                        (r - p1 - p2) * 4 + 2
+
+                    else
+                        (r - p1 - p2 - p3) * 2 + 1
+
+            -- the frame's pixels by their row, from the decoded order
+            byRow =
+                Array.foldl
+                    (\r acc -> Builder.setMany (rowOf r * w) (Array.slice (r * w) (r * w + w) indices) acc)
+                    (Builder.repeat (w * h) 0)
+                    (Array.range 0 (h - 1))
+                    |> Builder.toArray
+
+            pixel x y out =
+                let
+                    fx =
+                        clamp 0 10000 x - left
+
+                    fy =
+                        clamp 0 10000 y - top
+                in
+                if fx < 0 || fy < 0 || fx >= w || fy >= h then
+                    clear out
+
+                else
+                    let
+                        index =
+                            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 100000000 (clamp 0 10000 fy * clamp 0 10000 w) + fx) byRow)
+                    in
+                    if index == screen.transparent || 3 * index + 2 >= Bytes.length local then
+                        clear out
+
+                    else
+                        out
+                            |> Builder.pushLast (UInt8.fromInt (byteAt local (3 * index)))
+                            |> Builder.pushLast (UInt8.fromInt (byteAt local (3 * index + 1)))
+                            |> Builder.pushLast (UInt8.fromInt (byteAt local (3 * index + 2)))
+                            |> Builder.pushLast (UInt8.fromInt 255)
+        in
+        Ok { width = cw, height = ch, pixels = Bytes.fromUInt8s (Builder.toArray (pixels cw ch pixel 0 0 (Builder.empty (cw * ch * 4)))) }
+
+
+clear : (taken out : Builder UInt8) -> Builder UInt8
+clear out =
+    out |> Builder.pushLast (UInt8.fromInt 0) |> Builder.pushLast (UInt8.fromInt 0) |> Builder.pushLast (UInt8.fromInt 0) |> Builder.pushLast (UInt8.fromInt 0)
+
+
+pixels : Int -> Int -> (Int -> Int -> Builder UInt8 -> Builder UInt8) -> Int -> Int -> (taken out : Builder UInt8) -> Builder UInt8
+pixels w h pixel x y out =
+    if y >= h then
+        out
+
+    else if x >= w then
+        pixels w h pixel 0 (y + 1) out
+
+    else
+        pixels w h pixel (x + 1) y (pixel x y out)
+
+
+-- LZW
+
+
+{-| The table of codes: each code's prefix code, its last index, its first
+index and its length. -}
+type alias Lzw =
+    { prefix : Builder Int
+    , suffix : Builder Int
+    , first : Builder Int
+    , length : Builder Int
+    , out : Builder Int
+    }
+
+
+{-| `count` colour indices from the LZW data, codes of `minSize + 1` bits
+to 12, least significant bit first. -}
+lzw : Bytes -> Int -> Int -> Array Int
+lzw data minSize count =
+    let
+        clearCode =
+            Bitwise.shiftLeftBy minSize 1
+
+        seed =
+            -- each single index is a code of its own
+            { prefix = Builder.repeat 4096 -1
+            , suffix =
+                Builder.fromArray
+                    (Array.initialize 4096
+                        0
+                        (\i ->
+                            if i < clearCode then
+                                i
+
+                            else
+                                0
+                        )
+                    )
+            , first =
+                Builder.fromArray
+                    (Array.initialize 4096
+                        0
+                        (\i ->
+                            if i < clearCode then
+                                i
+
+                            else
+                                0
+                        )
+                    )
+            , length =
+                Builder.fromArray
+                    (Array.initialize 4096
+                        0
+                        (\i ->
+                            if i < clearCode then
+                                1
+
+                            else
+                                0
+                        )
+                    )
+            , out = Builder.repeat count 0
+            }
+    in
+    codes data clearCode 0 (minSize + 1) (clearCode + 2) -1 0 count seed
+        |> .out
+        |> Builder.toArray
+
+
+codes : Bytes -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> (taken t : Lzw) -> Lzw
+codes data clearCode pos width next prev at count t =
+    if at >= count || pos + width > Bytes.length data * 8 || pos > 1000000000 then
+        t
+
+    else
+        let
+            code =
+                bitsLsb data pos width 0 0
+        in
+        if code == clearCode then
+            codes data clearCode (pos + width) (minWidth clearCode) (clearCode + 2) -1 at count t
+
+        else if code == clearCode + 1 then
+            -- the end of the data
+            t
+
+        else if prev < 0 then
+            codes data clearCode (pos + width) width next code (at + 1) count { t | out = Builder.set at code t.out }
+
+        else
+            let
+                known =
+                    code < next
+
+                -- the string `code` stands for: its own, or for the code
+                -- not yet in the table, the previous one's and its first
+                base =
+                    if known then
+                        code
+
+                    else
+                        prev
+
+                baseLength =
+                    getOr base t.length
+
+                firstOfCode =
+                    getOr base t.first
+
+                len =
+                    if known then
+                        baseLength
+
+                    else
+                        baseLength + 1
+
+                written =
+                    spell base (at + baseLength - 1) t.prefix t.suffix t.out
+
+                out =
+                    if known then
+                        written
+
+                    else
+                        Builder.set (at + baseLength) firstOfCode written
+
+                -- the table grows by the previous string and this one's first
+                grown =
+                    if next < 4096 then
+                        { prefix = Builder.set next prev t.prefix
+                        , suffix = Builder.set next firstOfCode t.suffix
+                        , first = Builder.set next (getOr prev t.first) t.first
+                        , length = Builder.set next (getOr prev t.length + 1) t.length
+                        , out = out
+                        }
+
+                    else
+                        { t | out = out }
+
+                widened =
+                    if next + 1 >= Bitwise.shiftLeftBy width 1 && width < 12 then
+                        width + 1
+
+                    else
+                        width
+            in
+            codes data clearCode (pos + width) widened (min 4096 (next + 1)) code (at + len) count grown
+
+
+minWidth : Int -> Int
+minWidth clearCode =
+    if clearCode >= 256 then
+        9
+
+    else if clearCode >= 128 then
+        8
+
+    else if clearCode >= 64 then
+        7
+
+    else if clearCode >= 32 then
+        6
+
+    else if clearCode >= 16 then
+        5
+
+    else if clearCode >= 8 then
+        4
+
+    else
+        3
+
+
+getOr : Int -> Builder Int -> Int
+getOr i b =
+    Maybe.withDefault (meant Reason.FromOutside 0) (Builder.get i b)
+
+
+{-| A code's indices written backwards from `at`, its last first, along its
+prefixes. -}
+spell : Int -> Int -> Builder Int -> Builder Int -> (taken out : Builder Int) -> Builder Int
+spell code at prefix suffix out =
+    if code < 0 || at < 0 then
+        out
+
+    else
+        spell (getOr code prefix) (at - 1) prefix suffix (Builder.set at (getOr code suffix) out)
+
+
+{-| `count` bits at bit `pos`, the least significant first. -}
+bitsLsb : Bytes -> Int -> Int -> Int -> Int -> Int
+bitsLsb data pos count k acc =
+    if k >= count || k > 16 || pos < 0 || pos > 1000000000 then
+        acc
+
+    else
+        let
+            p =
+                pos + k
+
+            bit =
+                Bitwise.and 1 (Bitwise.shiftRightBy (modBy 8 p) (byteAt data (p // 8)))
+        in
+        bitsLsb data pos count (k + 1) (Bitwise.or acc (Bitwise.shiftLeftBy k bit))

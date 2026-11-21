@@ -1,12 +1,13 @@
-module Dialog exposing (Button, Dialog, Swatch, buttonAt, contrast, draw, scrollbar, scrollbarHit, searchBar, swatchAt)
+module Dialog exposing (Button, Check, Dialog, Swatch, buttonAt, checkAt, contrast, draw, noteBar, noteBarAt, scrollbar, scrollbarHit, searchBar, swatchAt)
 
 {-| A question asked over the terminal (`docs/ssh-client.md` SC23), as
 ChromeOS's Terminal asks for a password: a box in the middle of the
 window, in the settings window's look, drawn with the renderer's interface
 records after the terminal's cells, so nothing of the terminal lies over
 it. A title, lines of text, a field with what is typed (bullets for a
-secret) and a caret, a row of colors to choose from (`docs/tabs.md`
-TB9), and a line of the keys that answer, with buttons beside it for a
+secret) and a caret, a checkbox under the field (`docs/saved-secrets.md`
+PW10), a row of colors to choose from (`docs/tabs.md` TB9), and a line of
+the keys that answer, with buttons beside it for a
 mouse (`docs/tabs.md` TB12).
 -}
 
@@ -23,8 +24,19 @@ type alias Dialog =
     , lines : Array String
     , field : Maybe { typed : String, hidden : Bool, caret : Int }
     , swatches : Array Swatch
+    , check : Maybe Check
     , hint : String
     , buttons : Array Button
+    }
+
+
+{-| A checkbox under the field, with its label beside it: ticked or not,
+and whether it has the keyboard's focus, which the field then has not
+(drawn without its caret). -}
+type alias Check =
+    { label : String
+    , checked : Bool
+    , focused : Bool
     }
 
 
@@ -62,6 +74,8 @@ type alias Layout =
     , swatch : Int
     , swatchGap : Int
     , fieldY : Int
+    , checkY : Int
+    , checkH : Int
     , buttonH : Int
     , buttonY : Int
     , buttonXs : Array { x : Int, w : Int }
@@ -119,6 +133,22 @@ layout size d =
             else
                 px 8 + swatch
 
+        -- the checkbox's row, under the field
+        checkH =
+            when d.check is
+                Just _ ->
+                    px 26
+
+                Nothing ->
+                    meant Reason.NotSet 0
+
+        checkRow =
+            if checkH > 0 then
+                px 10 + checkH
+
+            else
+                0
+
         -- the last row: the hint, and the buttons at its right
         buttonH =
             px 30
@@ -151,6 +181,7 @@ layout size d =
                     Nothing ->
                         meant Reason.NotSet 0
                   )
+                + checkRow
                 + px 12
                 + rowH
                 + pad
@@ -185,6 +216,19 @@ layout size d =
     , swatch = swatch
     , swatchGap = swatchGap
     , fieldY = swatchY - px 8 + swatchRow + px 8
+    , checkY =
+        swatchY
+            - px 8
+            + swatchRow
+            + (when d.field is
+                Just _ ->
+                    px 8 + fieldH
+
+                Nothing ->
+                    meant Reason.NotSet 0
+              )
+            + px 10
+    , checkH = checkH
     , buttonH = buttonH
     , buttonY = by + bh - pad - buttonH
     , buttonXs = buttonXs
@@ -203,6 +247,25 @@ buttonAt size d p =
 
     else
         Nothing
+
+
+{-| Whether a point is on the checkbox or its label, which a click ticks,
+as in any dialog. -}
+checkAt : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> Dialog -> { x : Int, y : Int } -> Bool
+checkAt size d p =
+    when d.check is
+        Just c ->
+            let
+                l =
+                    layout size d
+
+                right =
+                    l.bx + l.pad + l.px 18 + l.px 10 + Text.width l.body c.label + l.px 6
+            in
+            p.y >= l.checkY && p.y < l.checkY + l.checkH && p.x >= l.bx + l.pad - l.px 4 && p.x < right
+
+        Nothing ->
+            meant Reason.NotSet False
 
 
 {-| The swatch under a point, by its place in the row. -}
@@ -319,6 +382,49 @@ draw size d =
         caretX =
             bx + pad + px 10 + min typedW (inner - px 20)
 
+        -- the field has the keys unless the checkbox has
+        fieldFocused =
+            when d.check is
+                Just c ->
+                    not c.focused
+
+                Nothing ->
+                    meant Reason.NotSet True
+
+        checkRecords =
+            when d.check is
+                Just c ->
+                    let
+                        side =
+                            px 18
+
+                        x =
+                            bx + pad
+
+                        y =
+                            l.checkY + (l.checkH - side) // 2
+                    in
+                    [ if c.focused then
+                        framed { x = x - px 3, y = y - px 3, w = side + px 6, h = side + px 6, r = px 6, color = look.bg, border = look.accent }
+
+                      else
+                        Bytes.empty
+                    , if c.checked then
+                        framed { x = x, y = y, w = side, h = side, r = px 4, color = look.accent, border = look.accent }
+
+                      else
+                        framed { x = x, y = y, w = side, h = side, r = px 4, color = look.field, border = look.fieldLine }
+                    , if c.checked then
+                        text { x = x + (side - Text.width body "✓") // 2, y = y + side // 2 + body // 3, size = body, color = contrast look.accent, text = "✓" }
+
+                      else
+                        Bytes.empty
+                    , text { x = x + side + px 10, y = l.checkY + l.checkH // 2 + body // 3, size = body, color = look.text, text = fit body (inner - side - px 10) c.label }
+                    ]
+
+                Nothing ->
+                    meant Reason.NotSet []
+
         hintY =
             if Array.isEmpty d.buttons then
                 by + bh - pad - lineH // 2 + small // 3
@@ -386,16 +492,34 @@ draw size d =
                 ++ swatchRecords
                 ++ (when d.field is
                         Just _ ->
-                            [ framed { x = bx + pad, y = fieldY, w = inner, h = fieldH, r = px 5, color = look.field, border = look.accent }
+                            [ framed
+                                { x = bx + pad
+                                , y = fieldY
+                                , w = inner
+                                , h = fieldH
+                                , r = px 5
+                                , color = look.field
+                                , border =
+                                    if fieldFocused then
+                                        look.accent
+
+                                    else
+                                        look.fieldLine
+                                }
                             , clip { x = bx + pad + 1, y = fieldY, w = inner - 2, h = fieldH }
                             , text { x = bx + pad + px 10, y = fieldY + fieldH // 2 + body // 3, size = body, color = look.strong, text = shown }
-                            , box { x = caretX, y = fieldY + px 7, w = 1, h = fieldH - px 14, r = 0, color = look.strong }
+                            , if fieldFocused then
+                                box { x = caretX, y = fieldY + px 7, w = 1, h = fieldH - px 14, r = 0, color = look.strong }
+
+                              else
+                                Bytes.empty
                             , noClip
                             ]
 
                         Nothing ->
                             meant Reason.NotSet []
                    )
+                ++ checkRecords
                 ++ [ text { x = bx + pad, y = hintY, size = small, color = look.dim, text = fit small hintW d.hint } ]
                 ++ buttonRecords
     in
@@ -526,6 +650,77 @@ searchBar size b =
     }
 
 
+{-| A note at the window's bottom right, above the tab bar's row (puritty
+`docs/sftp.md` FT13): one line of what puritty did or could not do, such
+as a picture sent to the host and pasted, in the search bar's look, red
+for a failure. It takes no keys; a click on it cancels what it shows the
+progress of, a batch of files sent (`noteBarAt`, docs/sftp.md FT25). -}
+noteBar : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> { text : String, failed : Bool } -> Bytes
+noteBar size n =
+    let
+        w =
+            size.cols * size.cellWidth
+
+        h =
+            size.rows * size.cellHeight
+
+        k =
+            toFloat size.cellHeight / 17
+
+        px v =
+            max 1 (Math.round (toFloat v * k))
+
+        body =
+            px 13
+
+        most =
+            min (w - px 28) (px 560)
+
+        textW =
+            min (most - px 24) (Text.width body n.text)
+
+        bw =
+            textW + px 24
+
+        bh =
+            px 32
+
+        bx =
+            w - bw - px 14
+
+        by =
+            h - bh - size.cellHeight - px 6
+    in
+    Bytes.flatten
+        [ framed
+            { x = bx
+            , y = by
+            , w = bw
+            , h = bh
+            , r = px 8
+            , color = look.bg
+            , border =
+                if n.failed then
+                    look.error
+
+                else
+                    look.fieldLine
+            }
+        , text
+            { x = bx + px 12
+            , y = by + bh // 2 + body // 3
+            , size = body
+            , color =
+                if n.failed then
+                    look.error
+
+                else
+                    look.strong
+            , text = fit body (most - px 24) n.text
+            }
+        ]
+
+
 {-| The scrollbar (`docs/phase3-select.md` §23): a thumb at the window's
 right edge, as tall as the view is of all there is and as far down as the
 view is, for a view `back` rows up of `most`. -}
@@ -600,3 +795,38 @@ barGeometry size v =
             top + room - (room * clamp 0 v.most v.back) // max 1 v.most
     in
     { x = w - width - px 3, width = width, top = top, track = track, thumbY = thumbY, thumbH = thumbH }
+
+
+{-| Whether a point is on the note bar `noteBar` draws with this text
+(docs/sftp.md FT25: a click on the progress cancels it). -}
+noteBarAt : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> String -> { x : Int, y : Int } -> Bool
+noteBarAt size text at =
+    let
+        w =
+            size.cols * size.cellWidth
+
+        h =
+            size.rows * size.cellHeight
+
+        k =
+            toFloat size.cellHeight / 17
+
+        px v =
+            max 1 (Math.round (toFloat v * k))
+
+        most =
+            min (w - px 28) (px 560)
+
+        bw =
+            min (most - px 24) (Text.width (px 13) text) + px 24
+
+        bh =
+            px 32
+
+        bx =
+            w - bw - px 14
+
+        by =
+            h - bh - size.cellHeight - px 6
+    in
+    at.x >= bx && at.x < bx + bw && at.y >= by && at.y < by + bh

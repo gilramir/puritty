@@ -1040,6 +1040,46 @@ certificate, and `signtool verify /pa` on beelink1 checks it. An installer
 publisher's signed exe may still meet SmartScreen's warning until it has
 reputation; signing ends "unknown publisher" and shows tampering.
 
+**The certificate (2026-11-17).** Gilbert's is Certum's Open Source Code
+Signing, its key in Certum's cloud and reached through SimplySign (the
+desktop client logs in with a one-time code from the SimplySign phone
+app, and while it is logged in shows the certificate to Windows as a
+virtual smart card). The certificate itself, which every signed exe
+carries, is `app/signing/certum-2026-11-17.pem`:
+
+| | |
+|---|---|
+| subject | `CN = Open Source Developer Gilbert Ramirez, O = Open Source Developer, ST = Texas, C = US` |
+| issuer | `Certum Code Signing 2021 CA` (Asseco Data Systems) |
+| valid | 2026-11-17 to 2027-11-17 (renew before; a timestamped signature outlives it) |
+| key, use | RSA 3072, Code Signing |
+| SHA-256 | `60:0C:E6:E3:FA:84:EC:B1:82:EC:41:A3:5C:73:C8:3B:17:77:F4:90:CD:87:61:02:CD:02:9D:6F:C0:2A:AA:23` |
+
+**Signed over ssh (2026-11-17).** With SimplySign Desktop logged in in
+Gilbert's session on beelink1, an ssh session there sees the certificate
+in `Cert:\CurrentUser\My` with its private key (thumbprint
+`8BFCB2EA9F2D53D0497E39EA1C6C08D32796D8C2`), and signs with it:
+
+    signtool sign /sha1 8BFCB2EA9F2D53D0497E39EA1C6C08D32796D8C2 /fd sha256 /tr http://time.certum.pl /td sha256 puritty.exe
+
+(signtool from `Windows Kits\10\bin\10.0.26100.0\x64`; the login shell
+is PowerShell 5, so `&` before the quoted path and `;`, not `&&`). The
+thumbprint, not `/n`, so that no other certificate in the store is
+chosen. `signtool verify /pa` verifies it, chained to Certum Code Signing
+2021 CA and timestamped by Certum Timestamp 2026, and
+`Get-AuthenticodeSignature` says Valid. Tried on that day's cross-built
+puritty.exe. Still open: whether `osslsigncode` can sign here through
+Certum's Linux client (not needed while beelink1 can).
+
+**In the release (2026-11-17).** `scripts/sign-windows.sh FILE` copies an
+exe to beelink1, signs and verifies it there as above, and copies it back
+over the file (refusing one that did not grow, and saying to log in to
+SimplySign when signing fails); `scripts/prerelease.sh --sign` runs it on
+puritty.exe before the zip (`releasing.md` RL1). Tried on that day's exe:
+7,642,012 bytes, 7,652,336 signed; `osslsigncode verify` here sees the
+signer and Certum's timestamp too. Every login needs Gilbert's phone, so a release is signed
+while he is there.
+
 ## WS29 · A profile-guided puritty.exe (2026-11-11)
 
 *Gilbert, 2026-11-11:* profile-guided on Windows as on Linux, before the
@@ -1127,3 +1167,25 @@ A first build without `Rescaled` passed the terminal's rows and failed the
 host list's: its frame shrank at 120 and its text, laid out by the old
 cell, was cut off at the right and the bottom. No second monitor was at hand: a move
 between two is the same message with another rectangle.
+
+## WS31 · Minimizing keeps the screen (2026-11-19)
+
+Gilbert, on 0.2.0: "if I have content on the puritty screen (even w/o
+tmux), and the minimize the puritty window ..., and then I open puritty
+again by clicking its icon on the task bar, the contents of the screen
+are now gone; the shell prompt is there". Windows sends `WM_SIZE` with
+`SIZE_MINIMIZED` and a client area of 0x0 when a window is minimized, and
+the window procedure passed it on as a size like any other: the terminal
+was resized to one column and one row (`size_in` holds it at least 1x1),
+which kept one cell of the screen, and restoring brought the size back but
+not the text. It has been so since the window procedure was written
+(`ac135d8`, 11-10), so 0.1.0, 0.1.1 and 0.2.0 all have it. A minimized
+window's `WM_SIZE` is now ignored; restoring sends the size the window had,
+which the terminal already has, so nothing is resized. X11 sends no such
+size when a window is iconified.
+
+Checked on beelink1 with `harness/windows/minimize/run.sh`: puritty
+running `lines.cmd` (30 lines, then `cmd /k`), minimized and restored with
+`ShowWindow` (no keys sent), the desktop pictured before and after. 0.2.0's
+exe kept only the prompt, cut at the window's left edge; the one built
+with the fix kept all 30 lines and the prompt.

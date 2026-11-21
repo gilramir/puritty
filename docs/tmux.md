@@ -133,7 +133,7 @@ terminfo and `COLORTERM`).
 | overline | SGR 53 | yes, drawn | no | same |
 | margins | `?69`, DECSLRM | yes | no | DA1 21 |
 | hyperlinks | OSC 8 | **no** (ignored; `vt-core.md` §VC9) | no | build OSC 8 first |
-| osc7 | OSC 7 | **no** | no | build first |
+| osc7 | OSC 7 | yes, kept for a drop's folder (`sftp.md` FT29) | no | under `-CC` tmux keeps it as `pane_path`, which puritty asks for (FT23); a row is not needed for that |
 | progressbar | OSC 9;4 | **no** (only `9;12`) | no | build first |
 | rectfill | DECFRA | no | no | leave DA1 28 unclaimed |
 | sixel | DCS sixel | no (after phase 4) | no | then DA1 4 |
@@ -1530,6 +1530,10 @@ they are, each showing the part of its screen around the cursor; for a
 session, its windows side by side, each its active pane, the current one
 marked. puritty does the same with what it asks tmux.
 
+*Corrected by TM88:* tmux draws a window's panes side by side, as a
+session's windows, not where they are in the window; puritty's look keeps
+them where they are, and tmux's look now draws them as tmux does.
+
 **Asked.** When the tree has loaded, and after every key in it, puritty
 looks at the chosen row; if it is not the row already previewed, it asks
 `list-panes -t @W` (each pane's id, place, size, whether active, index)
@@ -2668,7 +2672,7 @@ rebinding, all `same`. Tests: tmux package 93 (22 for customize), app
   the editor in a popup on the client, which a control client has not;
   puritty says so. On 3.8 a floating pane could host it.
 - The mouse in the mode (a click chooses a row, a double click sets it,
-  the right button its menu).
+  the right button its menu): done (TM86, TM87).
 - 3.8's monitor hooks and user hooks (`@name` hooks): no command says
   which options they are; they show as options.
 - A filter's variables only where it names them as `#{name}`
@@ -2866,7 +2870,8 @@ have, the current window among them, moved by the offset no further than
 the first and last window; `<` and `>` drawn at the sides with a line
 inside them. The offset goes back to 0 on another row, as tmux's. A
 window's preview stays puritty's (its panes where they are, TM35), so
-there they do nothing. `i` (3.8) shows the row's information in the
+there they do nothing; in tmux's look they move a window's panes too
+(TM88). `i` (3.8) shows the row's information in the
 preview's place, `window_tree_draw_info`'s lines (a pane's, its window's,
 its session's, as many as the row has), asked of tmux in one
 `display-message -t ROW` and drawn with their styles, a line across
@@ -3253,3 +3258,895 @@ nothing said. A command run for the user that runs others (`source-file`,
 puritty-fence`, and what comes before the fence's reply is that command's
 output, shown as such. The drag's line waits for a reply per command.
 App tests 199.
+
+
+## TM74 · A window's tab goes when tmux before 3.8 says the window closed as unlinked (2026-11-15)
+
+Window 6 (docs/tmux-checks.md TK11): before 3.8 tmux tells a control client
+`%unlinked-window-close`, not `%window-close`, when a window of its own
+session closes, by its last pane's program ending or by `kill-window`.
+puritty now asks the tabs again for an `%unlinked-window-close` of a window
+that is one of its tabs, and renames a tab for `%unlinked-window-renamed`.
+Its diagnostic log has a `tmux=` line, what it shows of tmux (tabs, the
+window, its panes), each time that changes.
+
+
+## TM75 · The window asked again after tmux's bindings and the user's commands (2026-11-15)
+
+tmux does not tell a control client every change to a window's panes:
+`rotate-window` says only which pane is active, on every tmux, and
+`swap-pane` says nothing before 3.0 (docs/tmux-checks.md TK12.1). puritty
+now asks the window (`windowQuery`) after each binding of tmux's runs (on
+3.4 and later when the binding's block arrives, since `send-keys -K` runs
+it after the next line; before 3.4 right after it sends the binding's
+command) and after the commands the user runs at the prompt or from a
+menu; not for keys in copy mode or the tree.
+
+
+## TM76 · 2.7's conditions, and the status line's timer after its probe (2026-11-15)
+
+Two faults on tmux 2.7, RHEL8's, found by the fake answering as each
+recorded tmux (`docs/tmux-versions.md` TV10, `docs/tmux-checks.md` TK10.9):
+
+- **A condition on a name 2.7 does not have is true there.**
+  `#{?pane_marked,M,}` gives `M` on 2.7, which has no `pane_marked`; from
+  2.8 it gives nothing. puritty's tree rows, status questions and info view
+  wrote their conditions on bare names; each is now `#{?#{name},…}`,
+  which every version takes as false for a name it does not have. A test
+  holds every question puritty asks 2.7 in the scenarios to it: none tests
+  a bare name 2.7 lacks, or a user option. With the fix taken out it names
+  `#{?pane_marked`.
+- **The status line's timer started before puritty knew `#{T:…}`.** The
+  probe, `#{T:version}`, and the timer were started together; a poll
+  before the probe's answer asked 2.7 for `#{T:status-left}` and the rest,
+  which it answers empty. The timer now starts when the probe is answered.
+
+App tests 244 (forty more from the four versions added, and the 2.7
+check).
+
+
+## TM77 · The tree as each tmux writes it (2026-11-15)
+
+puritty asks tmux to write the tree's rows with the tree's own default
+format (TM44), and used 3.6a's on every tmux before 3.8. tmux's source
+(`window-tree.c`, `mode-tree.c`, every release from 2.7) has four:
+
+| tmux | a window's row | a pane's row | a marked row |
+|---|---|---|---|
+| 2.7 to 3.1 | `name flags (N panes)`, and its pane's `"title"` when it has one pane | `command "title"` | as any other |
+| 3.2 to 3.6 | `name flags`, and `: "title"` when it is not the host's | `command*M: "title"` | reversed |
+| 3.7 | the same | `command` and `pane_flags`, a floating pane in italics | reversed |
+| 3.8 | the same, in its theme's colors | the same, a floating pane underlined | magenta |
+
+And two of the list's own: before 3.2 a row's key is `(0)  `, padded to
+four, or six when there are more than ten rows (`(M-a) `), where from 3.2
+the keys are padded to the longest and one space; and before 3.6 a window
+with one pane has no row for it, so nothing to open (`+`).
+
+puritty now asks for each version's format (`treeQueries`), drops a
+window's only pane before 3.6, and writes the old keys in tmux's look.
+**Checked:** `record-tmux.py` records each tmux's tree as it draws it
+(`prefix w`, a client of its own in an outer tmux) with the menus, and a
+test holds puritty's rows in tmux's look to them on all six recorded
+versions: before the change 2.7, 3.0, 3.2a and 3.4 failed it ("(1) └─> +
+0: sh*" where 3.4 draws "(1) └─> 0: sh*"); after, all pass. App tests
+252.
+
+
+## TM78 · A resize while attaching is kept (2026-11-15)
+
+Found by the explorer (`docs/tmux-checks.md` TK10.10): puritty tells tmux
+its size once it knows the form this tmux takes (`refresh-client -C 80x24`
+from 3.0, `80,24` before, TM72), from the answer to `list-commands`. It
+sent the size the window had when attaching began, so a window resized
+before that answer (a window manager maximizing it as it opens) left tmux
+at the old size until the next resize; and the resize itself was sent at
+once, in 3.x's form, which 2.x refuses. Now a resize before the answer
+resizes puritty's canvas and sends nothing (`capsKnown`), and the answer
+sends the size the window has then (`wantedSize`).
+
+
+## TM79 · `status off` on 2.7, the panes' letters, and a pane's `%N` filled whole (2026-11-15)
+
+From going through the "Not yet" lists of this document against today's
+code and each tmux's source. Several were done since they were written
+(S-Up/S-Down and C-h in the tree, TM65; `status off` and `status 2` to `5`,
+TM54); three were not as written, and three faults came up:
+
+- **`status off` on 2.7 and 2.8** is the flag `0` (`1` on), where 2.9 and
+  later write `off`. puritty took `0` as one status line, so under tmux's
+  look on RHEL8's tmux a row was kept from the panes. `0` is now none. A
+  test on each version, the fake answering `status` as that version writes
+  it, requires tmux's window to be the whole of puritty's; with the fix
+  taken out it fails on 2.7 alone.
+- **The panes' numbers** (`prefix q`): TM28's "an index of two digits
+  cannot be chosen, tmux waits for the second" was not so. No tmux waits:
+  from 3.2 panes 10 to 35 are drawn and chosen as `a` to `z`
+  (`cmd-display-panes.c`; 3.8's `window-panes.c`), and before 3.2 a pane
+  from 10 up cannot be chosen at all. puritty drew the letter but took only
+  digits; it now takes the letter from 3.2, and draws it only from 3.2.
+  And the command is filled with the pane's id, `%5`, as every tmux fills
+  it, where puritty put the key typed, which `select-pane -t` happened to
+  take as an index. A test on each version: `3` chooses `%3`, and `b`
+  `%11` from 3.2 and nothing before.
+- **A template filled with an answer that holds `%` and a digit**
+  (`Syntax.fill`): the first answer was put in for `%%`, then the whole
+  result read again for `%1` to `%9`, so `%3` came out empty and `%11` as
+  `%111`. The tree's choose command is filled with a pane row's target, so
+  choosing a pane in the tree ran `switch-client -t ''` for `%2` to `%9`
+  (only `%1` worked, by chance), and a window renamed `50%1 done` at the
+  prompt lost its `%1`. tmux's `cmd_template_replace` reads the template
+  once for each answer and never what it put in, each `%%` the next answer
+  in turn. `fill` now does so across the template's words and blocks; the
+  tmux suite holds `%3`, `%11`, `50%1 done` and two `%%` taking two
+  answers (123).
+
+App tests 264.
+
+
+## TM80 · C-y at the prompt, and choose-buffer's `e` (2026-11-15)
+
+**C-y**, as each tmux's (`status.c`'s `status_prompt_paste`; 3.8's
+`prompt.c`), measured against the source of 2.7, 3.0 to 3.7c and 3.8:
+
+- before 3.0, the newest buffer, read a byte at a time up to the first
+  that is not printable ASCII;
+- from 3.0, what C-w last cut (C-k saves nothing on any version, where
+  TM39's list said 3.8 does), else the newest buffer up to its first
+  control character, UTF-8 kept.
+
+puritty keeps what C-w cut in the prompt (`Asking.cut`), and when C-y has
+nothing of it to put in, asks tmux for the newest buffer (`show-buffer`,
+`Command.showTopBuffer`) and puts its first line in at the caret when the
+answer comes, if the prompt is still up; with no buffer tmux refuses it,
+and nothing changes. Tests on each version: `abc def`, C-w, C-y gives
+`abc def` from 3.0 and, on 2.7, `abc ` or with a buffer `abc hello w`;
+with nothing cut, a buffer `hello wörld` and a second line gives `hello
+wörld` from 3.0 and `hello w` on 2.7. With C-y taken out, all twelve fail.
+
+**`e` in choose-buffer** says that editing is not done under `tmux -CC`,
+as customize mode's `e` does: tmux edits a buffer in an editor popup on its
+client's terminal, which a control client has not. *Gilbert, 2026-11-15:*
+no editor of puritty's own for now; it may come later.
+
+App tests 276.
+
+
+## TM81 · choose-buffer searches a buffer's whole text; case by version (2026-11-15)
+
+tmux's `window_buffer_search` (2.7 to 3.8) takes a buffer whose name holds
+the search, or whose whole text does (`memmem` over the buffer's data);
+puritty searched the sample in the row, so a match past the first line, or
+past the sample's length, was not found. Now a search in choose-buffer
+first asks tmux for the text of each buffer not yet in (`show-buffer -b
+NAME`, one a buffer), keeps them in the list (`Listing.contents`, dropped
+when the buffers are listed again), and searches name, then text, once the
+last is in; `n` and `N` search the kept texts.
+
+**Case**, from `mode-tree.c`: from 3.6 a search with no capitals ignores
+case (`search_icase`); before 3.6 every search minds case. puritty ignored
+case on every version, in the tree, in choose-buffer and choose-client,
+and in customize mode; each now follows its tmux.
+
+The fake answers `list-buffers` and `show-buffer -b`, its buffers named
+as tmux names them (`buffer2` the newest). A test on each version:
+`zebra`, on the second line of the middle buffer, chooses it; `two`
+chooses `Two Bananas` from 3.6, and before it no row, the first staying
+chosen. With the old search (the sample, case ignored on every version)
+the first fails on every version and the second before 3.6.
+
+App tests 282.
+
+
+## TM82 · A popup's title, and each pane's own border status (2026-11-15)
+
+**`-T`.** TM56 left a popup's title out, since the pane's title is what the
+default status line shows. Measured on 3.8: a floating pane whose own
+options are `pane-border-format TITLE` and `pane-border-status top` has the
+title on its box's top line, `┌──title──`, one cell further in than a
+popup's `┌─title─`, and the pane's title and the window's other panes
+untouched. puritty now sets those two on the popup's pane, on the line
+that makes it.
+
+**Each pane's own `pane-border-status`.** puritty drew a title on a
+floating pane's box only when the window's border status was top or
+bottom, and read that status without a pane (`puritty-borders`), which
+tmux answers for the current pane: once the modal popup was current, its
+own `top` was taken for every pane's, and the tiled pane got a title row
+over its first line (seen side by side). tmux draws each pane by its own
+option, inherited from the window's. puritty now subscribes to each pane's
+(`puritty-pstatus`), draws a pane's title by it, and lays out and draws the
+tiled panes by theirs (`tiledBorderStatus`), the value without a pane only
+until a pane's is told.
+
+**Checked:** a test on each version: `display-popup -T hello -E true` at
+the prompt gives, on 3.8, one `new-pane` line with the title and `top`,
+and before 3.8 none. Side by side on 3.8 (`popup`, `-T title`): the title
+on the box, and the tiled pane whole, where without the second fix its
+first line was covered.
+
+**Not yet:** `-B` (a floating pane has its box), `-x`/`-y` as `P`, `M`,
+`W`, `S` or `R`, `-e`, `-EE`; the box a row down and a column right of a
+popup's (TM56).
+
+App tests 288.
+
+
+## TM83 · The buttons in a pane's title (2026-11-15)
+
+tmux 3.8's default `pane-border-format` ends, with `mouse` on, in three
+buttons, `#[range=control|7][f]`, `[z]` and `[x]`, and a click on one is
+the key `MouseDown1Control7` to `9` (`server-client.c`), bound in the root
+table to floating or joining the pane, zooming it, and a menu to kill it
+(`key-bindings.c`; the corpus's dumps write the root table as `USER`, the
+dump's own user name having been `root`). TM59 drew them; a click did
+nothing.
+
+puritty now finds where a pane's title puts each `control|N` range
+(`titleControls`: the title laid out as it is drawn, its part after
+`#[align=right]` against the pane's right edge, shown when it fits), and a
+left press on one runs the root table's `MouseDown1ControlN` with that pane
+as the mouse's (`-t =`), before a press on a floating pane's box starts a
+drag. Other ranges a title may have (a user's own) are left alone.
+
+**Checked:** a test on each version: with `mouse on` and
+`pane-border-status top`, the `z` of `[z]` on puritty's screen, clicked,
+sends `resize-pane -Z` on 3.8; before 3.8 the default format has no
+buttons.
+
+`display-menu -O`, the kill menu's, is read since TM84.
+
+App tests 294.
+
+
+## TM84 · A menu's `-O` and `-C` (2026-11-15)
+
+From `menu.c` and `cmd-display-menu.c` (3.8), and the usage lines of each
+dumped tmux:
+
+- **`-O`** (from 3.2): the menu stays open when the button that opened it is
+  let go; a press on an item chooses it, a press outside closes it, and a
+  release does neither; a line or a name that cannot be chosen keeps it
+  open. 3.8's kill menu (`MouseDown1Control9`, TM83) has it.
+- **`-C N`** (from 3.4): opened from the keyboard, item N is chosen, or the
+  next that can be, going round; past the last, the last that can be; `-`
+  none. Without it the first that can be, which puritty did already
+  (measured: 3.4, 3.6a and 3.8 each highlight the window menu's first item
+  that can be chosen).
+
+`Syntax.menuOf` reads both (`stayOpen`, `start`), and the menu puritty
+draws follows them (`readied`, `menuPointer`).
+
+**Checked:** the tmux suite reads `-O -C 2`, `-C -` and neither (124); a
+test on each version from 3.4: `-C 1` and Enter run the second item; with
+`-O` a press on an item runs it, and without it a press runs nothing. With
+the change taken out, Enter runs the first item and the press nothing.
+
+App tests 300.
+
+
+## TM85 · What is left (2026-11-16)
+
+The -CC items not yet done, gathered from TM57's "not yet" and the
+sections since:
+
+- **`status-keys vi`** at the prompt: done (TM100).
+- **tmux's own prompt history** (3.3 on), shared with other clients:
+  done (TM89).
+- **Completing options and targets** at the prompt, and the matches' menu:
+  commands, options and layouts as each tmux, and 3.8's list, done
+  (TM96); targets before 3.2 (TM97) and 3.2–3.7's menus (TM98) done.
+- **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
+  in customize mode: done (TM86, TM87).
+- **`bell-action`** and **`visual-bell`**: done (TM99).
+- **Editing a buffer** (choose-buffer's `e`): not under -CC for now (TM80).
+
+## TM86 · The mouse in tmux's modes (2026-11-16)
+
+The first of TM85's items. tmux's modes take the mouse in `mode_tree_key`
+(`mode-tree.c`), the tree's preview in `window_tree_mouse`
+(`window-tree.c`), read in every release from 2.7 to 3.8:
+
+| from | what |
+|---|---|
+| 2.7 | a press (`MouseDown1Pane`) chooses the row under it; a double click (`DoubleClick1Pane`) chooses it and is Enter; the wheel is Up and Down, a row each; a press in the tree's preview chooses the window (a session's) or the pane (a window's) under it and is Enter, and on `<` or `>` is that key |
+| 3.0 | the right button (`MouseDown3Pane`) chooses the row too and opens the mode's menu (`mode_tree_display_menu`): the mode's items on a row, Scroll Left, Scroll Right and Cancel outside the list |
+
+puritty draws these modes, so it reads the press itself: `modeClick` finds
+what is under it from the same frame the drawing uses (`treeFrame` and
+`previewRects`, taken out of `drawTree` and `drawPreview`;
+`modeListHeight`, the height rule `drawTree` and `drawListing` both had;
+`customizeListHeight` and the customize mode's offset), and `modeClicked`
+does it with the mode's own keys: the row made the chosen one as the keys
+that move do, then Enter, Up, Down, `<` or `>` given to `treeKey`,
+`listKey` or `customizeKey`. A press is the mode's when no prompt, menu,
+printed lines or panes' numbers are over it; one off the list (the
+preview of a list, the detail of customize mode) is kept and does
+nothing, as tmux's.
+
+**Not tied to tmux's `mouse` option.** tmux's client sends the mode the
+mouse only with `mouse on`; puritty takes a click in a mode it draws
+either way, since a click that does nothing in a window is only worse.
+The right button's selection waits for 3.0, as tmux's; its menu is TM87.
+
+**Checked:** three app tests on each of the six tmuxes (318): in
+choose-buffer a press then Enter pastes the row pressed, a double click
+pastes it, the wheel moves a row, the right button chooses only from 3.0;
+a double click on the tree's session row sends what `g` and Enter send; a
+press on a window in the session tree's preview chooses `@0`. With
+`modeClick` switched off, all 18 fail. Side by side on real 3.8
+(`bench/tmux/compare/scenes_mouse.py`): the same row chosen in the tree,
+choose-buffer and customize-mode, and the same window (2) chosen from the
+preview. The checker holds the new arithmetic, the cells held to 16384 as
+`modePlace` holds them.
+
+## TM87 · A mode's menu on the right button (2026-11-16)
+
+From 3.0 a right press in a mode opens `mode_tree_display_menu`'s menu:
+on a row, that row chosen and the mode's own items under its name; below
+the last row, the chosen row's; off the list (the preview, customize
+mode's detail), `mode_tree_menu_items`, Scroll Left, Scroll Right and
+Cancel, with no title. Its left edge is half its width left of the
+pointer, its top on the pointer's row. An item gives the mode its key
+(`mode_tree_menu_callback`), so Cancel is `q` and closes the mode.
+
+The items, read from every release from 3.0 to 3.8 (three sets):
+
+| mode | 3.0–3.1 | 3.2–3.7 | 3.8 |
+|---|---|---|---|
+| tree | Select `E`, Expand `R`, Tag, Tag All, Tag None, Kill, Kill Tagged, Cancel | Select Enter, Expand Right, Mark `m`, the rest as before | as 3.2 |
+| buffer | Paste, Paste Tagged, Tag, Tag All, Tag None, Delete, Delete Tagged, Cancel | the same | the same |
+| client | Detach, Detach Tagged, Tag, Tag All, Tag None, Cancel | the same | the same |
+| customize | (none: from 3.2) | Select, Expand, Tag, Tag All, Tag None, Cancel | adds Edit `e` and Changed Only `C` |
+
+3.0 and 3.1's Select and Expand send `E` and `R`, which no mode key takes:
+they do nothing there, and do nothing in puritty either. Tag All is
+Ctrl-T, shown `C-t` before 3.5 and `[DC4]` from 3.5, when
+`key_string_lookup_key` began naming C0 controls; its shortcut is C-t
+either way. A menu (`Menuing.forMode`) whose items are keys: choosing one
+gives `keyNamed` of it to `modeKeyed`, and the menu's keyboard takes an
+item by the key it shows or the key it gives.
+
+**Checked:** an app test on each tmux (324): the right button on buffer0
+then `p` pastes buffer0 through the menu, and before 3.0 reaches the list
+(buffer2); the menu shows Delete Tagged; a right press under the list
+opens Scroll Right. With the menu not opened, it fails on the five from
+3.0. Side by side on real 3.8 (`scenes_mouse.py`'s `mouse-menu-*`): the
+buffer, tree, customize and outside menus each in tmux's place, with its
+title, items, lines and keys (`[DC4]`). The harness's right press holds
+the button, so each menu is its own scene.
+
+## TM88 · The tree's preview in tmux's look, as tmux draws it (2026-11-16)
+
+Gilbert, after TM86's side-by-side shots: fix the tmux look. What tmux
+draws below the tree (`window_tree_draw_session`, `_window`, `_label`,
+read in every release from 2.7 to 3.8):
+
+- **A session's windows and a window's panes alike**: side by side, each
+  its full height, a line between them, as many as fit at 24 cells each
+  with `<` and `>` past them (the same span, `sessionSpan`, now a window's
+  too in tmux's look, `previewSideBySide`; `<` and `>` move it).
+- **A pane's row**: that pane's screen over the whole area, no label.
+- **The label**, boxed in the middle of each item:
+
+| | text | box |
+|---|---|---|
+| before 3.7 | ` index:name ` for a window (` index ` when wider than it), ` index ` for a pane, in display-panes' colors | its own width plus two, only with room on both sides; a pane's centred in the width each is given, a window's in its own |
+| 3.7 on | `tree-mode-preview-format` as tmux expands it for the window or pane (default `#{?pane_format,#{pane_index}:#{pane_title},#{window_index}:#{window_name}}`), cut to the width less four, in `tree-mode-preview-style` | two cells wider each side, its inside cleared; 3.8's in `tree-mode-border-style` |
+
+puritty draws each item's lines over its whole height in tmux's look
+(`drawPreview`), the lines between, and `previewLabel`; from 3.7 it asks
+the label as `#{E:tree-mode-preview-format}` in the preview's
+`list-windows` and `list-panes`. puritty's look is unchanged: the label on
+a line at the top, a window's panes where they are. The press on a pane
+in the preview (TM86) reads the same layout (`previewRects` takes the
+look).
+
+**The fake** answers `tree-mode-preview-format` and `pane_format` (0 in
+`list-windows`, 1 elsewhere), held to real answers recorded again
+(`record-tmux.py`, whose pane now ends `sleep 600; exit 0`: this
+machine's `sh` replaced itself with its last command, which made the
+pane's command `sleep` in a fresh recording).
+
+**Checked:** an app test on each tmux (330): in tmux's look the session
+tree's window is labelled `│ 0:sh │`, a window's pane `│ 0:host │` on 3.8
+and `│ 0 │` before 3.7, and no label on a line. Side by side on real 3.8
+and 3.6a (`scenes_mouse.py`'s `tree-preview-labels`): a session's windows,
+a window's three panes (3.8: `0:nene`, `1:nene`, `2:nene` in their
+colors, the lines between) and a pane's row, each as tmux draws it. What
+each item's lines show still differs a little: tmux shows the rows around
+the cursor (`screen_write_preview`), puritty the last rows with text.
+
+## TM89 · tmux's own prompt history (2026-11-16)
+
+The second of TM85's items. tmux keeps what its prompts have had typed in
+the server (`prompt-history.c`, before 3.8 `status.c`): every non-empty
+answer on Enter, kept to `prompt-history-limit`, loaded from and saved to
+`history-file`. Before 3.3 one list for every prompt, which no command
+reads; from 3.3 a list per prompt type, which `show-prompt-history -T TYPE`
+prints (`History for TYPE:`, a blank line, `N: line` oldest first, a
+blank line; measured on 3.4, 3.6a and 3.8) and `clear-prompt-history`
+clears. The types: `command`, `search`, `target` and `window-target` from
+3.3, `command` and `search` in 3.8. `command-prompt -T` picks one
+(`command` without it); confirm-before is `command`; the modes' searches
+and filters are `search`, their value prompts `command`.
+
+**No command adds to it.** Only tmux's own prompt does, and under `-CC`
+puritty draws the prompt and runs what is typed itself. So what is typed
+in puritty stays puritty's, for the connection, and reaches neither tmux's
+other clients nor its `history-file`.
+
+**Built.** A prompt that opens (one that was not open, or another than
+the one open: one prompt's answer can open the next) asks
+`show-prompt-history -T TYPE` when the server has the command
+(`Command.promptHistoryKept`, from the commands it lists at attach, not
+its version), from wherever it opened: a key (`typed`), a click (a menu's
+item, `pointer`) or a reply (`read`). Up and Down go through tmux's list
+and then what was typed here of that type (`historyFor`); what is typed is
+kept by type (`promptKind`). Before 3.3 one list, `all`, as tmux's.
+`Syntax.Prompt` keeps `-T` (`kind`).
+
+**The fake** answers `show-prompt-history` as each tmux does, refusing it
+before 3.3 (`parse error: unknown command`), from a history a test sets
+(`promptHistory`), held to recordings of all six.
+
+**Checked:** an app test on each tmux (336): a command typed here then
+Up, Up: it, then tmux's; a `-T search` prompt's Up gives tmux's search,
+not a command; before 3.3, puritty's own only. Without the question, it
+fails on the three from 3.3. Side by side on real 3.8
+(`bench/tmux/compare/scenes_history.py`, a server given a history file):
+Up at `:` shows `set -g @seeded 1` and at the search prompt `needle` in
+both.
+
+## TM90 · A burst of a pane's output is drawn as it ends (2026-11-16)
+
+Gilbert, 2026-11-16: in a pane running Claude Code in its scrolling (not
+full-screen) mode with a long transcript, Ctrl-Z then `fg` scrolled the
+pane's whole history past before it showed the end; puritty attached to
+tmux without `-CC` did not. Coming back, such an app clears the screen and
+its scrollback and prints its whole transcript again. A plain tmux client
+sees only tmux's redraw of the screen as it ends; under `-CC` tmux hands
+every byte to puritty as `%output`.
+
+**Why it showed.** Each read of tmux's output made the frame urgent
+(`Main.feed`, since TM14's first commit), so puritty drew a frame for every
+chunk it read: the reprint drawn a few kilobytes at a time. Without tmux,
+a read only marks a frame pending, drawn at most every `frameMs` (16 ms).
+
+**Measured** (`bench/tmux/burst/run.sh`: puritty in Xvfb attached to tmux
+3.8 by `-CC`, a stand-in printing 5000 colored lines, about 500 KB, then on
+a key clearing and printing them all again): tmux handed the reprint over
+in 131 reads within 40 ms; puritty drew about 176 frames more than without
+the reprint (218 against 42 over the same 11 s). Xvfb draws fast, so here
+it went by in a blink; on a real display, and over remote X, each frame
+costs milliseconds and the reprint is seen scrolling for as long.
+
+**Changed.** tmux's output now marks the frame pending, as a program's
+own output does: the reprint costs 3 frames (9 against 6), and an idle
+`-CC` window draws fewer frames too (6 against 42), since tmux's own
+reads (subscriptions, the status line) no longer each force one. A key's
+echo is not delayed: a frame is due at once when the last was more than
+`frameMs` ago. `harness/puppet.py --all` holds puritty to every tmux from
+2.7 to 3.8 after each step as before: 24 of 24.
+
+**Not done:** synchronized output (mode 2026) per pane under `-CC`. Without
+tmux, puritty holds frames while a program has it set (`syncHeld`); under
+`-CC` the panes' own modes are not looked at. Claude Code asks whether the
+terminal has it and, under tmux, waits for the answer before using it.
+
+## TM91 · A selection goes when its pane changes under it (2026-11-16)
+
+Gilbert, 2026-11-16: under `-CC`, rows selected with the mouse at zsh's
+prompt stayed highlighted after `nano` started over them; attached
+without `-CC` they went. Without tmux puritty drops a selection after
+output when the screen is no longer the one it was made on (a program
+entering or leaving the alternate screen), or when one of its rows still
+on the screen has changed: each of its rows' hashes is kept when it is
+made (`Main.kept`, `rowHashes`). Under `-CC` a pane's selection (`Sel`)
+kept neither.
+
+Now it keeps both (`alt`, `hashes`), and after each output of its pane
+(`feedPane`) `selKept` drops it as `Main.kept` does. **Checked:** an app
+test on each tmux (342): rows 2 to 4 of `%0` dragged over; the pane's
+`ESC[?1049h` drops it, a character on another row keeps it, text written
+on row 4 drops it. With the check taken out, the alternate screen and the
+overwrite keep it.
+
+## TM92 · Nothing is sent after what detaches this client (2026-11-16)
+
+Gilbert, 2026-11-16: after `prefix d` under `-CC`,
+`display-message -p 'W #{window_id} #{pane_id} #{window_visible_layout}
+#{window_name}'` was found typed into his shell. That is `windowQuery`:
+after a binding's command runs (a reply block not puritty's, `reply`) the
+window is asked again, since tmux does not tell every change its bindings
+make to the panes (TK12). For `detach-client` the reply comes as tmux
+detaches; the question is written after the control client has stopped
+reading, and the shell it leaves reads it.
+
+**Changed.** A key whose binding, or a typed line, ends this client
+(`endsClient`: `detach-client` or `detach` without `-a`, `kill-server`)
+marks the state `ending`; the batch that carries it goes, and after it
+`Main.sendCommands` sends nothing (logging it as `tmux-`) until `%exit`
+resets the state. Any question in flight at that moment is covered, not
+only this one.
+
+**Checked:** an app test on each tmux (348): ending after `prefix d` and
+after `detach` typed at the prompt, not after `prefix c` or
+`detach-client -a`. Against real tmux 3.8 (puritty in Xvfb running
+`tmux -CC attach; cat > FILE`, `prefix d` pressed by xdotool): the build
+before wrote that line into the file on three runs of three, this one
+nothing.
+
+## TM93 · A reconnect starts outside tmux (2026-11-16)
+
+Gilbert, 2026-11-16, on his Windows laptop with puritty's own ssh client:
+moved off the docking station's ethernet to wifi and back, after half an
+hour the tab said it was disconnected; R reconnected, and then the window
+showed the old session, its text selectable, and nothing happened.
+
+The connection dropped while `tmux -CC` was attached, so tmux never said
+`%exit`, and nothing reset puritty's tmux state: not the session's
+failure, nor R (`Main`, the lost screen's `r`). After the reconnect the new
+shell's output went to `TmuxMode.read`, which takes only control-mode
+lines, and every key went out as a tmux command (`send-keys -K -H …`):
+the old panes stayed on the screen, and the shell read the commands.
+
+**Changed.** R starts the new connection outside tmux (`freshTmux`, the
+settings' look, bar and background, as a new tab starts), its selection
+gone. While the session is down the old panes stay to be read.
+
+**Checked:** `harness/sshwindow.py`'s `tmux-then-reconnect` (the built-in
+client against a local sshd): the first connection attaches `tmux -CC`
+and kills its sshd two seconds later; after R the second reads a line.
+Before the change the line it read was `send-keys -K -H 68` (the `h` of
+`hello`, sent to tmux); now `hello`. All 14 cases pass.
+
+## TM94 · A paste reaches tmux 2.x as it was copied (2026-11-16)
+
+Found chasing a paste Gilbert saw jumbled (below). Under `-CC` a paste is
+given to tmux as a buffer (`set-buffer` with the text in one
+double-quoted word, then `paste-buffer -p`, TM64), every byte that is not
+printable ASCII written as an octal escape (`\012`). tmux 3.0's parser
+(`cmd-parse.y`) reads those; 2.x's (`cmd-string.c`, 2.7 to 2.9a) knows only
+`\e`, `\r`, `\n` and `\t` and drops the backslash from any other, so on
+2.7 a paste's line ends arrived as the text `015012`, and UTF-8 (Korean)
+as digits too. Measured with puritty in Xvfb, CRLF text on the clipboard
+and Ctrl+Shift+V into a program that records what it reads.
+
+`Command.quoteBytes` now writes Escape, CR, LF and Tab as those four
+escapes, which every tmux reads, and valid UTF-8 as its characters, which
+both parsers take as they are; only another byte (one not UTF-8, as an
+EUC-KR pane's) is still octal, which 2.x cannot be given at all. Checked:
+the tmux suite (125, a case for the four escapes and a byte in octal; the
+UTF-8 case now as characters); measured again, 2.7 `-CC` gives the
+recorder the clipboard's bytes exactly, line ends, a tab and Korean,
+bracketed, as 3.8 `-CC` and plain tmux do.
+
+What Gilbert saw was another thing (TM95).
+
+## TM95 · A paste's line ends are CR, bracketed or not (2026-11-16)
+
+Gilbert, 2026-11-16, on Windows with tmux 3.8 on the host: four lines
+copied from Notepad and pasted into nano came out as one line of the first
+three and one of the fourth, through tmux and through `-CC`; into nano
+without tmux, and in xfce4-terminal and PuTTY with or without tmux, they
+came out as copied. His nano does not turn on auto-indent.
+
+**Why.** puritty encodes a paste as Ghostty does (`Vt.Paste`, held to
+libghostty-vt by the paste gate): a line end goes as CR when the program
+has not asked for bracketed paste, and as LF inside the brackets when it
+has. Through tmux the program asking is tmux's client (every tmux turns
+bracketed paste on in its terminal) or, under `-CC`, tmux is given the
+paste as a buffer; tmux then brackets it only for a pane whose program
+asked, and passes the LFs on as they are to one that did not. An LF is
+Ctrl-J to that program, and to an older nano Ctrl-J is Justify, which
+joined the pasted lines into one paragraph. Without tmux puritty saw that
+nano had not asked and sent CR. Windows' clipboard reading makes CRLF LF
+(`read_clipboard`), so the Windows build always pasted LFs.
+
+Measured with `bench/tmux/paste/run.sh` (a recorder for the program,
+turning bracketed paste on or not): with it off, the program got CR
+without tmux and LF through tmux and through `-CC` (3.8).
+
+**Changed.** `Main.lineEnds`, after `Vt.Paste`'s encoding: every LF goes as
+CR, bracketed or not, as xterm, VTE (xfce4-terminal), PuTTY and Windows
+Terminal paste, and CRLF as one CR. `Vt.Paste` stays Ghostty's, and its
+gate with it; this is puritty's difference from Ghostty. **Checked:** the
+recorder without brackets gets CR in all three ways; with brackets (a
+newer nano) CR inside them, and a CRLF clipboard one CR a line; a real
+nano, which asks for brackets, saves the four lines as copied in all three
+ways and through puritty's own ssh client to tmux 3.8, plain and `-CC`.
+
+## TM96 · Tab at the prompt as each tmux completes (2026-11-16)
+
+The third of TM85's items. TM57 completed a first word from the
+commands' names and nothing else. What tmux's prompt completes, read in
+every release (`status_prompt_complete`, `_list`; 3.8's
+`prompt_complete`):
+
+| tmux | a first word | another word | several matches, no further to go |
+|---|---|---|---|
+| 2.7, 2.8 | commands, options, layouts | the same | nothing |
+| 2.9–3.1 | and `command-alias`'s names | the same | nothing |
+| 3.2–3.4 | commands, their short aliases (`splitw`), `command-alias`'s | those, options, layouts | a menu |
+| 3.5–3.7 | the same | the same, and the two `-mirrored` layouts | a menu |
+| 3.8 | commands, `command-alias`'s | nothing | listed after the line, underlined |
+
+Before 3.8 a word after `-t` or `-s` completes a session, then a window
+(`session:name`, `session:index`; 3.2–3.7 in a window menu). TM57's
+measurement that "tmux completes no alias" held for a first word with no
+`command-alias` entry under it; 3.8 does complete `command-alias`'s names
+(`spl` gives `split`, as `splitp` and `split-pane` match).
+
+**Built.** `completions` gives the lists by version: the commands' names
+and short aliases from `list-commands`' usage lines (TM72), the options
+from customize-mode's tables for the version (`Customize.table`), the
+layouts, and `command-alias`'s names, asked once at attach
+(`show-options -g -v command-alias`; 2.7, which has no such option,
+refuses it). `completed` completes the word at the caret (from the last
+space), one match whole with a space after it, more as far as they agree;
+on 3.8, when they agree no further, it keeps them (`Asking.matches`),
+drawn after the line underlined while the caret is at its end, in
+puritty's look in the box's hint line, and gone with the next key
+(`prompt_clear_complete`).
+
+**Checked:** an app test on each tmux (354): `spl` (`split-window ` on
+2.7, `split` from 3.0), `select-` (3.8 lists `select-layout select-pane
+select-window`), `set -g status-k` (`status-keys ` before 3.8, nothing on
+3.8), `select-layout even-h` (`even-horizontal ` before 3.8). Side by
+side on real 3.8 and 3.6a (`bench/tmux/compare/scenes_complete.py`): the
+same line and, on 3.8, the same underlined list. The fake answers
+`show-options` from the recordings.
+
+**Not yet:** targets after `-t` and `-s`, and 3.2–3.7's menu of matches.
+
+## TM97 · A `-t` word completed before 3.2 (2026-11-16)
+
+Before 3.2 Tab on a word beginning `-t` or `-s` completes a target
+(`status_prompt_complete`, the same from 2.7 to 3.1): a session's name,
+`:` after one alone (a word ending `:` is matched without it); if no
+session matches, a window, of the client's session for `:…` and of any
+for `session:…`, by its name or else its index, a space after one alone;
+more matches as far as they agree. 3.2 to 3.7 complete a session the same
+way but give a window's in a menu; 3.8 completes no target.
+
+puritty keeps neither every session nor their windows, so Tab on such a
+word asks tmux (`display -p '#{session_name}'`, the client's session, and
+`list-windows -a`; `client_session` in `list-windows -a` is empty on 3.4
+and 3.6a, measured) and completes when the answer comes, if the line is
+as it was (`ForTargets`, `targetCompleted`).
+
+**Checked:** an app test on each tmux (360): `select-window -tma` gives
+`-tmain:` and `select-window -t:s` gives `-t:sh ` on 2.7 and 3.0, and from
+3.2 neither changes. Side by side on real 2.7
+(`scenes_complete.py`'s `complete-target-*`, and its earlier scenes): the
+same `-tmain:`, `-t:second `, `split-window ` and `status-keys `.
+
+## TM98 · 3.2 to 3.7's menu of matches, and their targets (2026-11-16)
+
+From 3.2 to 3.7, when Tab's matches agree no further than what is typed,
+tmux opens a menu of them (`status_prompt_complete_list_menu`): at most
+ten, the last ten when there are more, numbered from 0, over the status
+line's row (under it when the status line is at the top), its left edge
+two cells left of the word, the first item chosen; a key takes the menu,
+and an item, by its digit or Enter, takes the word's place without a
+space after it (`status_prompt_menu_callback`). A `-t` or `-s` word: with
+no `:` a session, `name:`, the matches as far as they agree and the same
+menu when no further; with `:` a window of that session (the client's for
+`:…`) by its index, one alone written, more in a menu of
+`session:index (name)` (`status_prompt_complete_window_menu`), each such
+menu from after the `-t`.
+
+**Built.** A menu that completes (`Menuing.completes`): its items' commands
+are the text for the word (`wordReplaced`); it takes the keys before the
+prompt does (`typedHere`). Tab on 3.2 to 3.7 opens it (`completionMenu`)
+for the matches, and for a target when tmux's sessions and windows come
+(`targetMenu`, asked as TM97 asks them).
+
+**Checked:** an app test on each tmux (366): `select-` and Tab opens a
+menu showing `select-window` on 3.2a, 3.4 and 3.6a, `1` making the line
+`select-pane`; on the others no menu; TM97's test now has 3.2 to 3.7
+completing `-tma` to `-tmain:`. Side by side on real 3.6a
+(`scenes_complete.py`'s `complete-select`, `complete-window-menu`): the
+same menus in the same place, with the same items, keys and first item
+chosen, and `1` giving `-tmain:1`.
+
+## TM99 · A bell as `bell-action`, `visual-bell` and `monitor-bell` say (2026-11-16)
+
+The fourth of TM85's items. puritty sounded every pane's bell, whatever
+tmux's options. tmux (`alerts_check_bell`, `alerts_action_applies`,
+`alerts_set_message`, the same from 2.7 to 3.8): with the window's
+`monitor-bell` off nothing; the window's tab is flagged (`!`) whatever
+else; the session's `bell-action` (any, none, current, other) says
+whether to alert; then `visual-bell` off sounds the client's bell, on
+puts `Bell in current window` or `Bell in window N` on the status line in
+its place, and both does both; once for a session however many panes
+rang.
+
+**Built.** The three options join those the status line asks (`optionNames`,
+by subscription from 3.2, by the poll before). A read notes each pane's
+bells before tmux's output and, for those that rang, applies tmux's rules
+once (`bellsRung`): `TmuxMode.bells`, which `Main` sounds, counts the
+bells allowed to sound (`audible`), and the message is said at the bar;
+another window's number is asked of tmux (`display -t %N
+'#{window_index}'`). `monitor-bell` is read for the window shown.
+
+**Checked:** an app test on each tmux (372): pane `%0`'s `\a` sounds once
+by default; with `visual-bell on` says `Bell in current window` and does
+not sound; with `both` does both; with `bell-action none` or `other` or
+`monitor-bell off` neither. Side by side on real 3.8
+(`bench/tmux/compare/scenes_bell.py`): `Bell in current window` and, from
+a window not shown, `Bell in window 1`.
+
+## TM100 · `status-keys vi` at the prompt (2026-11-16)
+
+The last of TM85's items. With `status-keys vi` tmux's prompt has vi's
+modes (`status_prompt_translate_key`; 3.8's `prompt_translate_key`). In
+insert mode the editing keys this tmux passes go as the emacs keys do,
+Escape enters command mode with the caret one left, and any other key is
+typed. In command mode: `h`, `l`, Backspace (left), `0`, `^`, `$`, `x`,
+`X`, `D`, `d` (the line), `p` (as C-y), `j`, `k`; `i`, `a`, `A`, `I`, `s`,
+`S`, `C` back to insert mode, some after an edit; anything else nothing.
+What differs by version, read in every release:
+
+| | 2.7–3.1 | 3.2 | 3.3–3.6 | 3.7–3.8 |
+|---|---|---|---|---|
+| insert mode passes | C-c, C-h, Tab, C-u, C-w, Enter, BSpace, DC, the arrows, Home, End | and C-g | and C-a, C-e, C-k, C-n, C-p, C-t, C-y, C-Left, C-Right | and C-v; C-[ as Escape |
+| `q` (cancel) | no | yes | yes | yes |
+| `w` `W` `e` `E` | each `M-f`: to the next separator, then back one | the same | vi's motions (`prompt_forward_word`, `_end_word`), `W` and `E` without separators | the same |
+| `b` `B` | `M-b` | the same | `b` by the separators, `B` without | the same |
+| Escape in command mode | back to insert mode | the same | the same | nothing |
+
+The separators are the session's `word-separators` (by default ` -_@`
+before 3.0, a space to 3.2, and from 3.3 the ASCII punctuation but `_`).
+Command mode draws the prompt in `message-command-style`.
+
+**Built.** `status-keys` and `word-separators` join the options the status
+line asks; `Asking.commandMode`; `viKey` translates a key and gives it to
+`emacsKey` (the prompt's keys as they were) or moves the caret itself
+(`viForward`, `viEnd`, `viBackward`, and before 3.3 `oldForward`,
+`oldBackward`). The recordings the fake answers from were made with
+`$EDITOR` set to vim, so tmux recorded `status-keys` and `mode-keys` as
+vi: `record-tmux.py` now starts its servers without `EDITOR` and
+`VISUAL` and sets `mode-keys vi` itself, so what it records is the same
+whoever runs it.
+
+**Checked:** an app test on each tmux (378): `hello world`, Escape, `0`,
+`x`, `A`, `!` give `ello world!`; `abc def`, Escape, `0`, `w`, `x` give
+`abc ef` from 3.3 and `ab def` before; Escape, `q` closes the prompt from
+3.2; C-a in insert mode moves from 3.3 and before it is not typed. Side by
+side on real 3.8, 3.6a and 2.7 (`bench/tmux/compare/scenes_vi.py`): the
+same lines and caret, `abc de-ghi` on 2.7 and `abc defghi` from 3.3 for
+`0 w w x` over `abc def-ghi`, and command mode in `message-command-style`.
+The harness waits a second after Escape, which tmux otherwise reads with
+the next key as one Meta key.
+
+The emacs word keys' separators were `docs/review.md` RV2, done in TM104.
+
+## TM101 · Leaving copy mode left the view scrolled (2026-11-16)
+
+Reported on 0.1.0 (Windows, ssh, tmux 3.8, prefix C-a): `prefix [`, C-b
+(a page up in vi's copy mode), Enter; the pane stayed on the page it was
+scrolled to, and only a key typed after it (or output) brought the
+prompt back. tmux had left copy mode at the first Enter: the diagnostic
+log shows `pane-mode-changed` and copy mode's state with no scroll
+position.
+
+**Why.** puritty asks copy mode's state after each key it sends in copy
+mode, so a key that leaves it is answered with an empty state, and that
+answer comes before the one to `pane-mode-changed`'s question. `copyLine`
+took the empty state as the end of copy mode and dropped the pane's
+`copy`, but kept `back`, how far the view is scrolled; the modes' answer
+clears `back` only for the panes still in `copy`, so nothing did. Any key
+that leaves copy mode did it (q, Enter after a motion); `prefix [` and
+Enter straight away did not, since nothing was scrolled.
+
+**Fixed:** the empty state clears `back` too. An app test on each tmux
+(384): copy mode scrolled up, `q`, and the top row is the live screen's;
+it failed before on each. Side by side on real 3.8
+(`bench/tmux/compare/scenes_copyenter.py`, with prefix C-b and C-a, vi
+and emacs keys): puritty's picture is tmux's after the Enter.
+
+## TM102 · State left behind: a review after TM101 (2026-11-16)
+
+TM101 was per-pane state that one path cleared and another did not. The
+tmux code was read again for the same mistake: each piece of state kept
+per pane or per session, where it is cleared, and whether an answer can
+come in an order that leaves some of it behind, or reopen something
+closed.
+
+**Found and fixed:**
+
+- **Control mode ending kept the session's state.** `Exited` cleared the
+  panes, the prompt, a menu and the numbers, but not puritty's own views
+  (the tree, a list, customize), copy mode's view and scroll, the panes'
+  modes or a selection; and the window keeps the same state for the
+  next `tmux -CC` in that shell (only a reconnect, TM93, made it anew).
+  So a tree open when the session was killed or the client detached from
+  elsewhere was drawn over the panes of the next attach, and took its
+  keys. `Exited` now starts from `idle`, keeping only the settings (look,
+  bar, background), the prompts' history, the clock, the serial and the
+  bells already rung (the window rings on a rise in their count). An app
+  test on each tmux (390): the tree open, `%exit`, attached again, and the
+  top row is the live screen's; it failed before on each.
+- **Another session's copy mode was not shown.** The panes' modes are
+  asked on attach for the attached session only (`list-panes -s`); a
+  `switch-client` to a session whose pane was already in copy mode drew
+  it live, and keys went to copy mode unseen. `%session-changed` now asks
+  them too. Side by side on real 3.8
+  (`bench/tmux/compare/scenes_session.py`): the other session's pane in
+  copy mode at `[27/34]` in both, and `q` leaves it in both.
+
+**Read and found sound:** the answers for puritty's tree, lists and
+customize update a view only while it is open (`Maybe.map` over it), so
+one that comes after it closed does not reopen it; their previews carry a
+serial. The prompt's answers check that a prompt is open. The window's
+own scroll, search and selection belong to the terminal under tmux,
+which control mode does not change.
+
+**Left, then done in TM103:** a pane closed in copy mode kept and asked
+about again; copy mode's label without the top line's time.
+
+## TM103 · A pane closed in copy mode; the top line's time (2026-11-16)
+
+TM102's two remaining items.
+
+**A pane closed in copy mode.** tmux says nothing when a pane in copy
+mode is killed (no `%pane-mode-changed`), so puritty kept it as in copy
+mode, and each time another pane's mode changed it asked copy mode's
+state of the dead pane again (`ForModes` asks it of every pane it has in
+copy mode). tmux answers `ok` with every field empty. Measured with
+`bench/tmux/compare/scenes_deadpane.py` and the diagnostic log, on real
+3.8: a pane put in copy mode and killed, then `prefix [`, `q` twice in
+the other: 3 questions about the dead pane before, 1 after. The copy
+state's question now carries its pane (`ForCopy pane`), and an answer
+with no pane id forgets that pane in every map kept by pane
+(`forgetPane`: `copy`, `copyAsked`, `back`, `modes`, `paneModes`). A
+closed pane not in copy mode still keeps its small entries in `modes`
+and `paneModes` (tmux never gives its id again); nothing asks about it.
+
+**The top line's time.** tmux's copy mode label, read in every release:
+
+| | label |
+|---|---|
+| 2.7–3.3 | `[3/14]`; a search's count first: `(15 results) [3/14]` |
+| 3.4–3.5 | the top line's time, with seconds, first: `(15 results) 21:39:52 [3/14]` |
+| 3.6 on | `copy-mode-position-format`: `21:39 [3/14] (15 results)` |
+
+From 3.6 the time is `#{t/p:top_line_time}` (empty for a line with no
+time) and puritty now asks it with copy mode's state, a word before the
+search string, and draws it first. Before 3.6 tmux has no
+`top_line_time` (nor `search_count` before 3.5), so 3.4 and 3.5's time
+and 3.4's count are not puritty's to show; 3.5's count is now drawn
+first, as 3.5 does.
+
+**Checked:** the app tests (390) with the recordings made again, which
+give `12:00` for the fixed time 1700000000 (`timed` in the tests: 3.6a
+and 3.8 show it, the others not). Side by side on real tmux
+(`scenes_session.py`): 3.8 `21:39 [27/34]` in both; a search's label on
+3.8 `[0/14] (15 results)` and 3.5a `(15 results) [0/14]` in both; 3.4
+`(15 results) [0/14]` in tmux and `[0/14]` in puritty, as above.
+
+## TM104 · The prompt's emacs word keys by `word-separators` (2026-11-16)
+
+RV2, decided: as tmux. puritty's M-b, M-f, C-w and Ctrl+Left/Right at the
+prompt stopped at spaces only. tmux's, read in every release:
+
+| | 2.7–2.9 | 3.0–3.2 | 3.3 on |
+|---|---|---|---|
+| default `word-separators` | ` -_@` | a space | the ASCII punctuation but `_` |
+| M-f | past separators, on to the next one | the same | `prompt_forward_word`: over the caret's class (separators or not) to a space or the other class, spaces skipped first |
+| M-b, C-w | back over separators, to the word's start | the same | `prompt_backward_word`, C-w the same: a run of separators is a word |
+| Ctrl+Left, Ctrl+Right | nothing | as M-b, M-f | as M-b, M-f |
+
+`editLine` now takes the version and the separators (`wordRules`), with
+the ports TM100 made for the vi keys (`oldForward`, `oldBackward`,
+`viForward`, `viBackward`); before the options are known a version's
+own default is used. **Checked:** an app test on each tmux (396):
+M-f from the start of `a--b c`, M-b at the end of `a b--`, C-w after
+`new-window -n my_logs`, Ctrl+Left in `ab c`, each with a mark typed
+after; side by side on real 3.8, 3.2a and 2.7
+(`bench/tmux/compare/scenes_words.py`), tmux's line and caret in each:
+`aX--b c`, `a bX--`, `new-window -n `, `ab Xc` on 3.8; `a--bX c`,
+`a Xb--`, `new-window -n `, `ab Xc` on 3.2a; and on 2.7 `my_` kept by
+C-w and Ctrl+Left doing nothing.

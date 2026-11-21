@@ -20,7 +20,7 @@ IMAGES = ROOT / "docs" / "images"
 REPO = "https://github.com/gilramir/puritty/blob/main/"
 
 # the guide's order; a guide not named here comes after these
-ORDER = ["getting-started", "settings", "fonts", "copy-and-paste", "tabs", "tmux", "diagnostics"]
+ORDER = ["getting-started", "settings", "fonts", "symbol-fonts", "copy-and-paste", "file-transfer", "tabs", "tmux", "images", "claude-code", "diagnostics"]
 
 
 def link(m):
@@ -57,8 +57,9 @@ def main():
         guide(src, i + 1)
     images = SITE / "static" / "images"
     images.mkdir(parents=True, exist_ok=True)
-    for png in IMAGES.glob("*.png"):
-        shutil.copy2(png, images / png.name)
+    for png in IMAGES.rglob("*.png"):
+        (images / png.relative_to(IMAGES)).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(png, images / png.relative_to(IMAGES))
     # the bells puritty plays, for the home page to play (A nod to nostalgia)
     sounds = SITE / "static" / "sounds"
     sounds.mkdir(parents=True, exist_ok=True)
@@ -67,7 +68,7 @@ def main():
     for size in (32, 64, 256):
         shutil.copy2(ROOT / "app" / "icon" / "png" / f"{size}.png", SITE / "static" / f"icon-{size}.png")
     shutil.copy2(ROOT / "app" / "icon" / "puritty.ico", SITE / "static" / "favicon.ico")
-    print(f"{len(names)} guides, {len(list(IMAGES.glob('*.png')))} pictures")
+    print(f"{len(names)} guides, {len(list(IMAGES.rglob('*.png')))} pictures")
 
 
 if __name__ == "__main__":

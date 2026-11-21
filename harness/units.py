@@ -80,13 +80,31 @@ def runs_of(folder: str, node: bool = True) -> list[Run]:
 
 
 SUITES = [
-    # 100 since DG6: what the diagnostic log hears, six
-    Suite("vt", 100, runs_of("vt/tests")),
+    # 100 since DG6: what the diagnostic log hears, six; 102 since VC71:
+    # the DEC status reports and # colors; 103 since IM3: the cell size
+    # after a zoom; 104 since IM16: the Kitty protocol off at a limit of 0;
+    # 118 since SX2: Sixel's decoding, placing, cursor and reports, fourteen;
+    # 121 since TB19: a reconnect resets the modes, keeps the screen;
+    # 132 since IT2: iTerm2's images, eleven; 141 since IM23: text and
+    # erases over an image drawn into the cells, nine; 153 since IT4: JPEG,
+    # seven, and GIF, five; 161 since IT6: Exif orientation, four,
+    # progressive, four, the progressive "says so" made a lossless one;
+    # 163 since IM30: Kitty's images in tmux's panes, two; 174 since IM35:
+    # Kitty's Unicode placeholders, eleven; 185 since CL7: the Program
+    # Status Protocol (OSC 7501), eleven; 192 since CL8: desktop
+    # notifications by OSC 9, 777 and 99, seven; 199 since CL9: OSC 8
+    # hyperlinks, seven; 208 since KG9: Kitty's pictures from files, nine;
+    # 211 since FT29: OSC 7 kept, the last one said, cleared by RIS, three
+    Suite("vt", 211, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
-    # through a model of tmux 2.7, four
-    Suite("tmux", 121, runs_of("packages/tmux/tests")),
+    # through a model of tmux 2.7, four; 123 since TM79: an answer with
+    # % and a digit filled whole, and each %% the next answer
+    # 124 since TM84: a menu's -O and -C read; 125 since TM94: a paste's
+    # line ends and UTF-8 written for every tmux's parser; 133 since TK13:
+    # a line not tmux's, once it has begun, ends control mode
+    Suite("tmux", 133, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
@@ -100,8 +118,40 @@ SUITES = [
         # say, on each; 199 since TK10: the fake's lines held to every
         # dumped tmux, and the explorer (check 3); 201 since ST35: a font
         # the file names that cannot be used, said and kept in the list;
-        # 202 since ST36: the Han characters' regions named
-        202,
+        # 202 since ST36: the Han characters' regions named; 203 since TK11:
+        # the fake's windows held to every tmux's notifications; 244 since
+        # TV10: the per-version tests on 3.4, 3.2a, 3.0 and 2.7 too, forty,
+        # and no condition 2.7 would take as true; 246 since SG19: a
+        # recent's arguments, and the jump list's quoting; 252 since TM77:
+        # the tree's rows as each tmux draws them, on each; 264 since TM79:
+        # status off and the panes' letters, on each; 276 since TM80: C-y
+        # at the prompt, on each; 282 since TM81: a buffer's whole text
+        # searched, case by version; 288 since TM82: a popup's title, on
+        # each; 294 since TM83: a title's [z] clicked, on each; 300 since
+        # TM84: a menu's -C and -O, on each; 318 since TM86: the mouse in
+        # choose-buffer, a tree row's double click and its preview, on each;
+        # 324 since TM87: a mode's menu by the right button, on each; 330
+        # since TM88: the tree's preview labels in tmux's look, on each;
+        # 336 since TM89: tmux's prompt history at the prompt, on each;
+        # 342 since TM91: a selection dropped as its pane changes, on each;
+        # 348 since TM92: nothing sent after what detaches, on each; 354
+        # since TM96: Tab at the prompt as each tmux completes, on each;
+        # 360 since TM97: a -t word's session and window before 3.2; 366
+        # since TM98: 3.2 to 3.7's menu of matches, on each; 372 since
+        # TM99: a bell as bell-action, visual-bell and monitor-bell say;
+        # 378 since TM100: status-keys vi at the prompt, on each;
+        # 384 since TM101: leaving copy mode shows the live screen;
+        # 390 since TM102: nothing of an ended session comes back;
+        # 396 since TM104: the prompt's word keys by word-separators;
+        # 402 since IM18: a pane's image on the canvas, on each;
+        # 408 since SG20: the host list's boxes edited, F2 and Up's recall;
+        # 420 since SG21: PuTTY's sessions read and listed as hosts, twelve;
+        # 425 since PW8: what is remembered, by what name, and when; 426
+        # since CL8: desktop notifications' setting; 427 since CL9: which
+        # links are opened; 428 since KG9: the setting for pictures from
+        # files; 437 since FT22: a drop's list read and its paths quoted,
+        # nine
+        437,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
@@ -124,7 +174,8 @@ SUITES = [
     ),
     Suite(
         "ssh-known-hosts",
-        34,
+        # 40 since SC28: a changed key put in place of the old, six
+        40,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "known-hosts", "known-hosts.txt"], cwd="packages/ssh/tests"),
             Run(
@@ -152,9 +203,29 @@ SUITES = [
         ],
     ),
     Suite(
-        # since SC27: a channel message that does not read ends the session
+        # sftp.md FT14: Ssh.Sftp reading packets split and joined, 64-bit
+        # sizes, and the streams it refuses; 9 since FT18: the shell's
+        # upload paced by its queue, and cancelled while it opens; 10 since
+        # FT19: an EUC-KR name in its command as its own bytes
+        "ssh-sftp",
+        10,
+        [
+            Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "sftp"], cwd="packages/ssh/tests"),
+            Run(
+                "windows",
+                ["packages/ssh/tests/build.sh", "--windows"],
+                ["sftp"],
+                exe="packages/ssh/tests/ssh-tests.exe",
+            ),
+        ],
+    ),
+    Suite(
+        # since SC27: a channel message that does not read ends the session;
+        # 7 since sftp.md FT12: a side channel's bad data closes only it, and
+        # its data waits for a pump; 8 since FT17: writes kept in pieces go in
+        # order, each pump saying what waits
         "ssh-connection",
-        5,
+        8,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "connection"], cwd="packages/ssh/tests"),
             Run(
@@ -255,12 +326,16 @@ def main() -> int:
     # every tmux command made from Tmux.Command's catalog, and the catalog's
     # test reading the dumps as they are (docs/tmux-checks.md TK2); every
     # format variable asked, against each tmux's (TK8); the lines of
-    # several commands each tmux answered, as the explorer reads them (TK10)
+    # several commands each tmux answered, as the explorer reads them (TK10);
+    # every notification a tmux sends, with what puritty does with it (TK11);
+    # and every piece from elsewhere with its notice (THIRD-PARTY-NOTICES.md)
     commands_ok = True
     for name, cmd in [("tmux-commands", [sys.executable, str(ROOT / "scripts" / "tmux-commands.py")]),
                       ("tmux-formats", [sys.executable, str(ROOT / "scripts" / "tmux-formats.py")]),
                       ("tmux-versions", [sys.executable, str(ROOT / "packages" / "tmux" / "tests" / "gen-versions.py"), "--check"]),
-                      ("tmux-lines", [sys.executable, str(ROOT / "app" / "tests" / "gen-lines.py"), "--check"])]:
+                      ("tmux-lines", [sys.executable, str(ROOT / "app" / "tests" / "gen-lines.py"), "--check"]),
+                      ("tmux-notices", [sys.executable, str(ROOT / "scripts" / "tmux-notices.py")]),
+                      ("notices", [sys.executable, str(ROOT / "scripts" / "notices.py")])]:
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
         out = (r.stdout + r.stderr).strip().splitlines()
         print(f"[{'  ok  ' if r.returncode == 0 else ' FAIL '}] {name:<24} {out[-1] if out else ''}")
@@ -283,11 +358,16 @@ def main() -> int:
         (WORK / "checks.log").write_text(text)
         totals = next((l.strip() for l in text.splitlines() if "checks hold" in l and "fallbacks never run" in l), "")
         against = next((l.strip() for l in text.splitlines() if "entries against" in l), "")
-        checks_ok = checked.returncode == 0
+        # a program that does not compile has no report, and geng checks
+        # has said so with status 0: no report is a failure either way
+        checks_ok = checked.returncode == 0 and against != ""
         print(f"[{'  ok  ' if checks_ok else ' FAIL '}] {'checks':<24} {totals}; {against} ({time.monotonic() - start_checks:.0f} s)")
         if not checks_ok:
             for line in [l for l in text.splitlines() if l.startswith(("NEW", "  STALE", "  UNUSED", "  open"))][:40]:
                 print("         " + line)
+            if not against:
+                for line in [l for l in text.splitlines() if l.startswith("-- ")][:10]:
+                    print("         " + line)
             print(f"         the whole report: {(WORK / 'checks.log').relative_to(ROOT)}")
     sys.stdout.flush()
     why_not = None if args.no_windows else windows_ready()

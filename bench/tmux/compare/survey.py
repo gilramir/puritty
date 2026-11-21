@@ -111,6 +111,10 @@ class Run:
         # the plain client, inside the outer tmux
         self.t(O, "new-session", "-d", "-s", "o", "-x", str(COLS), "-y", str(ROWS),
                f"env -u TMUX TERM=tmux-256color {self.a.tmux} -L {A} attach -t main", conf=self.out / "outer.conf")
+        # its size made so: 3.2a takes a detached session's size from the
+        # client that ran the command, not -x and -y (docs/tmux-versions.md
+        # TV6)
+        self.t(O, "resize-window", "-t", "o", "-x", str(COLS), "-y", str(ROWS))
         # puritty, control mode
         cfg = self.out / "config.toml"
         cfg.write_text(f'[window]\ncolumns = {COLS}\nrows = {ROWS}\n\n[tmux]\nlook = "{self.a.look}"\n'

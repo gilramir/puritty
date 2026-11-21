@@ -1,0 +1,601 @@
+module Sending exposing (Out(..), Sending, answer, begin, cancel, conflictBox, isAsking, isOver, jobsFor, localFailed, localRead, owns, progressText, side, summary)
+
+{-| Files dropped on an ssh tab, sent to the folder chosen (`docs/sftp.md`
+FT25): `Ssh.Transfer` over an SFTP channel of its own, or, where the host
+refuses SFTP and `[files] upload_through_shell` allows it, `Ssh.ShellTransfer`
+over the shell (FT18). Pure: it answers what to do (`Out`), session inputs
+to send and pieces of local files to read, which the caller does and tells
+back; and what the window shows: the conflict question, the progress, and
+at the end what was sent.
+-}
+
+import Bytes exposing (Bytes)
+import Dialog
+import Int64
+import Math
+import Os.Directory as Directory
+import Os.File as File
+import Os.Path as Path exposing (Path)
+import Reason
+import Ssh.Connection as Connection
+import Ssh.Session as Session
+import Ssh.ShellTransfer as ShellTransfer
+import Ssh.Transfer as Transfer exposing (Choice(..), Conflict, Event(..), Job(..), Local(..))
+import Task exposing (Task)
+import Time
+
+
+type Engine
+    = BySftp Transfer.Transfer
+    | ByShell ShellTransfer.ShellTransfer
+    | Ended
+
+
+type alias Sending =
+    { ref : Int
+    , tab : Int
+    , folder : Bytes
+    , jobs : Array Job
+    , allowShell : Bool
+    , shellRefs : Bool
+    , engine : Engine
+    , began : Int
+    , progress : Maybe { bytes : Int64, total : Int64, file : Int, files : Int, name : Bytes }
+    , asking : Maybe (Array Conflict)
+    , done : Int
+    , skipped : Int
+    , failed : Array String
+    , refused : Array String
+    , over : Maybe String
+    -- when the progress was last put in the note bar, -1 never: a few
+    -- times a second, since each puts a frame on the screen (FT27)
+    , shownAt : Int
+    }
+
+
+{-| What the caller does: an input to the tab's session, or a piece of a
+local file read and told back with `localRead` (or `localFailed`). -}
+type Out
+    = Input Session.Input
+    | Read { job : Int, path : Path, offset : Int64, length : Int }
+
+
+type alias Step =
+    { sending : Sending, out : Array Out }
+
+
+-- THE JOBS
+
+
+{-| The jobs for `paths` sent to `folder`: a file an upload, a folder made
+on the host and what it holds after it, each name in the host's character
+set by `name` (`Err` why not); a path that can't be read, or a name that
+can't be written there, refused, saying why. -}
+jobsFor : File.Permission -> { folder : Bytes, paths : Array Bytes, name : Bytes -> Result String Bytes } -> Task x { jobs : Array Job, refused : Array String }
+jobsFor fs r =
+    Array.foldl
+        (\p acc -> acc |> Task.andThen (\soFar -> jobsOf fs r.name r.folder (Path.fromBytes p) soFar))
+        (Task.succeed { jobs = [], refused = [] })
+        r.paths
+
+
+jobsOf : File.Permission -> (Bytes -> Result String Bytes) -> Bytes -> Path -> { jobs : Array Job, refused : Array String } -> Task x { jobs : Array Job, refused : Array String }
+jobsOf fs toHost dir path acc =
+    let
+        local =
+            Path.filenameAsBytes path
+
+        shown =
+            Bytes.toStringLossy local
+    in
+    when toHost local is
+        Err why ->
+            -- a name the host's character set can't take
+            meant Reason.FromOutside (Task.succeed { acc | refused = Array.pushLast (shown ++ ": " ++ why) acc.refused })
+
+        Ok name ->
+            File.metadata fs path
+                |> Task.map Ok
+                |> Task.onError (\e -> Task.succeed (Err e))
+                |> Task.andThen
+                    (\got ->
+                        when got is
+                            Ok m ->
+                                if m.kind == File.Directory then
+                                    let
+                                        there =
+                                            joined dir name
+                                    in
+                                    Directory.list fs path
+                                        |> Task.map (\entries -> Array.sortBy (\e -> Path.toString e.path) entries)
+                                        |> Task.onError (\_ -> Task.succeed [])
+                                        |> Task.andThen
+                                            (\entries ->
+                                                Array.foldl
+                                                    (\e inner -> inner |> Task.andThen (\soFar -> jobsOf fs toHost there e.path soFar))
+                                                    (Task.succeed { acc | jobs = Array.pushLast (MakeDir { path = there }) acc.jobs })
+                                                    entries
+                                            )
+
+                                else
+                                    Task.succeed
+                                        { acc
+                                            | jobs =
+                                                Array.pushLast
+                                                    (Upload
+                                                        { local = path
+                                                        , size = m.size
+                                                        , mtime = Just (Time.posixToMillis m.modified // Int64.fromInt 1000)
+                                                        , dir = dir
+                                                        , name = name
+                                                        }
+                                                    )
+                                                    acc.jobs
+                                        }
+
+                            Err _ ->
+                                meant Reason.Refused (Task.succeed { acc | refused = Array.pushLast (shown ++ ": it can't be read here") acc.refused })
+                    )
+
+
+joined : Bytes -> Bytes -> Bytes
+joined dir name =
+    if Bytes.get (Bytes.length dir - 1) dir == Bytes.get 0 (Bytes.fromString "/") then
+        Bytes.flatten [ dir, name ]
+
+    else
+        Bytes.flatten [ dir, Bytes.fromString "/", name ]
+
+
+-- THE BATCH
+
+
+{-| A batch begun: an SFTP channel opened (`ref`), the engine's first bytes
+queued on it. -}
+begin : { ref : Int, tab : Int, folder : Bytes, jobs : Array Job, refused : Array String, allowShell : Bool, ms : Int } -> Step
+begin b =
+    let
+        st =
+            Transfer.start { piece = 32768, most = 64 } b.jobs
+    in
+    stepped
+        { sending =
+            { ref = b.ref
+            , tab = b.tab
+            , folder = b.folder
+            , jobs = b.jobs
+            , allowShell = b.allowShell
+            , shellRefs = False
+            , engine = BySftp st.transfer
+            , began = b.ms
+            , progress = Nothing
+            , asking = Nothing
+            , done = 0
+            , skipped = 0
+            , failed = []
+            , refused = b.refused
+            , over = Nothing
+            , shownAt = -1
+            }
+        , out = [ Input (Session.OpenSubsystem { ref = b.ref, name = "sftp" }) ]
+        }
+        (fromSftp st)
+
+
+{-| Whether a side channel's events are this batch's: its SFTP channel, or
+the shell's channels after it. -}
+owns : Int -> Sending -> Bool
+owns ref s =
+    ref == s.ref || (s.shellRefs && ref > s.ref)
+
+
+{-| A side channel's event. -}
+side : { ref : Int, event : Connection.Event } -> Sending -> Step
+side e s =
+    when s.engine is
+        BySftp t ->
+            if e.ref /= s.ref then
+                { sending = s, out = [] }
+
+            else
+                when e.event is
+                    Connection.Output b ->
+                        stepped { sending = s, out = [] } (fromSftp (Transfer.received b t))
+
+                    Connection.Refused why ->
+                        if s.allowShell then
+                            -- SFTP off: the shell's commands, on channels
+                            -- numbered after the SFTP one (FT18)
+                            stepped { sending = { s | shellRefs = True }, out = [] }
+                                (fromShell (ShellTransfer.start { piece = 32768, ahead = 262144, ref = s.ref + 1 } s.jobs))
+
+                        else
+                            finish ("SFTP is turned off on this host (" ++ why ++ "), and nothing was sent; [files] upload_through_shell = true sends through its shell instead") { sending = s, out = [] }
+
+                    Connection.Ended ->
+                        if s.over == Nothing then
+                            finish "The host closed the SFTP channel before the files were sent" { sending = s, out = [] }
+
+                        else
+                            { sending = s, out = [] }
+
+                    _ ->
+                        { sending = s, out = [] }
+
+        ByShell t ->
+            stepped { sending = s, out = [] } (fromShell (ShellTransfer.told e t))
+
+        Ended ->
+            { sending = s, out = [] }
+
+
+{-| A piece of a local file, read. -}
+localRead : { job : Int, offset : Int64, bytes : Bytes } -> Sending -> Step
+localRead r s =
+    when s.engine is
+        BySftp t ->
+            stepped { sending = s, out = [] } (fromSftp (Transfer.localRead r t))
+
+        ByShell t ->
+            stepped { sending = s, out = [] } (fromShell (ShellTransfer.localRead r t))
+
+        Ended ->
+            { sending = s, out = [] }
+
+
+localFailed : { job : Int, why : String } -> Sending -> Step
+localFailed r s =
+    when s.engine is
+        BySftp t ->
+            stepped { sending = s, out = [] } (fromSftp (Transfer.localFailed r t))
+
+        ByShell t ->
+            stepped { sending = s, out = [] } (fromShell (ShellTransfer.localFailed r t))
+
+        Ended ->
+            { sending = s, out = [] }
+
+
+{-| The conflict question answered, for the batch. -}
+answer : Choice -> Sending -> Step
+answer choice s0 =
+    let
+        s =
+            { s0 | asking = Nothing }
+    in
+    when s.engine is
+        BySftp t ->
+            stepped { sending = s, out = [] } (fromSftp (Transfer.answer choice t))
+
+        ByShell t ->
+            stepped { sending = s, out = [] } (fromShell (ShellTransfer.answer choice t))
+
+        Ended ->
+            { sending = s, out = [] }
+
+
+{-| Stop: what is being sent left with no part on the host, the rest not
+sent. -}
+cancel : Sending -> Step
+cancel s0 =
+    let
+        s =
+            { s0 | asking = Nothing }
+    in
+    when s.engine is
+        BySftp t ->
+            stepped { sending = s, out = [] } (fromSftp (Transfer.cancel t))
+
+        ByShell t ->
+            stepped { sending = s, out = [] } (fromShell (ShellTransfer.cancel t))
+
+        Ended ->
+            { sending = s, out = [] }
+
+
+type alias Common =
+    { engine : Engine, out : Array Out, events : Array Event, local : Array Local }
+
+
+fromSftp : Transfer.Step -> Common
+fromSftp st =
+    { engine = BySftp st.transfer
+    , out =
+        if Bytes.isEmpty st.send then
+            []
+
+        else
+            -- the SFTP channel is the batch's `ref`, filled in by `stepped`
+            [ Input (Session.SideWrite { ref = -1, bytes = st.send }) ]
+    , events = st.events
+    , local = st.local
+    }
+
+
+fromShell : ShellTransfer.Step -> Common
+fromShell st =
+    { engine = ByShell st.transfer
+    , out =
+        Array.map
+            (\c ->
+                when c is
+                    ShellTransfer.Open o ->
+                        Input (Session.OpenExec o)
+
+                    ShellTransfer.Write w ->
+                        Input (Session.SideWrite w)
+
+                    ShellTransfer.Eof ref ->
+                        Input (Session.SideEof ref)
+
+                    ShellTransfer.Close ref ->
+                        Input (Session.SideClose ref)
+            )
+            st.channel
+    , events = st.events
+    , local = st.local
+    }
+
+
+{-| An engine's step taken in: its outs, its local reads, its events. -}
+stepped : Step -> Common -> Step
+stepped acc c =
+    let
+        s =
+            acc.sending
+
+        withRef o =
+            when o is
+                Input (Session.SideWrite w) ->
+                    if w.ref == -1 then
+                        Input (Session.SideWrite { w | ref = s.ref })
+
+                    else
+                        o
+
+                _ ->
+                    o
+
+        reads =
+            Array.mapAndKeepJust
+                (\l ->
+                    when l is
+                        ReadPiece p ->
+                            Just (Read { job = p.job, path = p.path, offset = p.offset, length = p.length })
+
+                        _ ->
+                            -- the rest are a download's
+                            Nothing
+                )
+                c.local
+    in
+    Array.foldl event { sending = { s | engine = c.engine }, out = acc.out ++ Array.map withRef c.out ++ reads } c.events
+
+
+event : Event -> Step -> Step
+event e acc =
+    let
+        s =
+            acc.sending
+    in
+    when e is
+        Conflicts cs ->
+            { acc | sending = { s | asking = Just cs } }
+
+        Progress p ->
+            { acc | sending = { s | progress = Just p } }
+
+        Done _ ->
+            { acc | sending = { s | done = s.done + 1 } }
+
+        Skipped _ ->
+            { acc | sending = { s | skipped = s.skipped + 1 } }
+
+        Failed f ->
+            let
+                name =
+                    when Array.get f.job s.jobs is
+                        Just (Upload u) ->
+                            Bytes.toStringLossy u.name
+
+                        Just (MakeDir m) ->
+                            Bytes.toStringLossy m.path
+
+                        Just (Download d) ->
+                            Bytes.toStringLossy d.remote
+
+                        Nothing ->
+                            meant Reason.NotKnown "a file"
+            in
+            { acc | sending = { s | failed = Array.pushLast (name ++ ": " ++ f.why) s.failed } }
+
+        Finished f ->
+            finish
+                (capitalized
+                    (if f.cancelled then
+                        "cancelled: " ++ summary s
+
+                     else
+                        summary s
+                    )
+                )
+                acc
+
+        Broken why ->
+            finish ("The host's SFTP stopped making sense, and the sending stopped: " ++ why) acc
+
+
+{-| The batch over, said, its SFTP channel closed. -}
+finish : String -> Step -> Step
+finish said acc =
+    let
+        s =
+            acc.sending
+    in
+    { sending = { s | over = Just said, engine = Ended, asking = Nothing }
+    , out =
+        if s.shellRefs then
+            acc.out
+
+        else
+            Array.pushLast (Input (Session.SideClose s.ref)) acc.out
+    }
+
+
+isOver : Sending -> Bool
+isOver s =
+    s.over /= Nothing
+
+
+isAsking : Sending -> Bool
+isAsking s =
+    s.asking /= Nothing
+
+
+{-| What was sent, failed and was refused, in a line, its first letter
+small. -}
+summary : Sending -> String
+summary s =
+    let
+        n k what =
+            String.fromInt k
+                ++ " "
+                ++ what
+                ++ (if k == 1 then
+                        ""
+
+                    else
+                        "s"
+                   )
+
+        parts =
+            Array.keepIf (\p -> p /= "")
+                [ if s.done > 0 then
+                    "sent " ++ n s.done "item"
+
+                  else
+                    "nothing sent"
+                , if s.skipped > 0 then
+                    n s.skipped "item" ++ " skipped"
+
+                  else
+                    ""
+                , if Array.isEmpty s.failed && Array.isEmpty s.refused then
+                    ""
+
+                  else
+                    n (Array.length s.failed + Array.length s.refused) "failure" ++ ": " ++ String.join "; " (s.refused ++ s.failed)
+                ]
+    in
+    String.join ", " parts
+
+
+capitalized : String -> String
+capitalized text =
+    String.toUpper (String.takeFirst 1 text) ++ String.dropFirst 1 text
+
+
+{-| The progress, for the note bar, once a second has gone (FT6): the
+file, which of how many, bytes of the total, the rate, the time left. -}
+progressText : Int -> Sending -> Maybe String
+progressText ms s =
+    let
+        elapsed =
+            ms - s.began
+    in
+    when s.progress is
+        Just p ->
+            if elapsed < 1000 then
+                Nothing
+
+            else
+                let
+                    rate =
+                        -- bytes a second
+                        Int64.toFloat p.bytes * 1000 / toFloat (max 1 elapsed)
+
+                    left =
+                        if rate > 0 then
+                            Int64.toFloat (p.total - p.bytes) / rate
+
+                        else
+                            0
+                in
+                Just
+                    -- short, so that the note bar holds it to its end in a
+                    -- window of 80 columns (FT30)
+                    (Bytes.toStringLossy p.name
+                        ++ (if p.files > 1 then
+                                " " ++ String.fromInt p.file ++ "/" ++ String.fromInt p.files
+
+                            else
+                                ""
+                           )
+                        ++ ": "
+                        ++ figure (Int64.toFloat p.bytes / 1000000)
+                        ++ "/"
+                        ++ figure (Int64.toFloat p.total / 1000000)
+                        ++ " MB, "
+                        ++ figure (rate / 1000000)
+                        ++ " MB/s, "
+                        ++ String.fromInt (Math.round left)
+                        ++ " s · click to cancel"
+                    )
+
+        Nothing ->
+            meant Reason.NotYet Nothing
+
+
+{-| A number to a tenth. -}
+tenths : Float -> String
+tenths x =
+    let
+        t =
+            Math.round (x * 10)
+    in
+    String.fromInt (t // 10) ++ "." ++ String.fromInt (modBy 10 t)
+
+
+{-| A number to a tenth under 10, else whole. -}
+figure : Float -> String
+figure x =
+    if x < 10 then
+        tenths x
+
+    else
+        String.fromInt (Math.round x)
+
+
+{-| The conflict question (FT4): the names there already, and the four
+answers for the batch. -}
+conflictBox : (Bytes -> String) -> Array Conflict -> Dialog.Dialog
+conflictBox decode cs =
+    let
+        shown =
+            Array.takeFirst 6 cs |> Array.map (\c -> "  " ++ decode c.name)
+
+        more =
+            if Array.length cs > 6 then
+                [ "  and " ++ String.fromInt (Array.length cs - 6) ++ " more" ]
+
+            else
+                []
+    in
+    { title =
+        if Array.length cs == 1 then
+            "A file of that name is in the folder already"
+
+        else
+            String.fromInt (Array.length cs) ++ " files of those names are in the folder already"
+    , lines = shown ++ more ++ [ "", "R: replace    K: keep both    S: skip    N: replace if newer" ]
+    , field = Nothing
+    , swatches = []
+    , check = Nothing
+    , buttons =
+        [ { label = "Replace", primary = True }
+        , { label = "Keep both", primary = False }
+        , { label = "Skip", primary = False }
+        , { label = "Replace if newer", primary = False }
+        ]
+    , hint = "Esc: cancel sending"
+    }

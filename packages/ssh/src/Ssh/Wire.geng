@@ -11,7 +11,9 @@ module Ssh.Wire exposing
     , string
     , take
     , uint32
+    , uint32Bits
     , uint32Clamped
+    , uint64
     , wrapInt
     , writeBool
     , writeByte
@@ -19,6 +21,7 @@ module Ssh.Wire exposing
     , writeString
     , writeText
     , writeUint32
+    , writeUint64
     )
 
 {-| SSH's data types (RFC 4251 §5) read from and written to bytes
@@ -34,6 +37,7 @@ kept, wrapped.
 
 import Bitwise
 import Bytes exposing (Bytes)
+import Int64
 import Ssh.Reason as Reason
 import UInt8
 
@@ -103,6 +107,49 @@ uint32Clamped r =
 
     else
         uint32 r
+
+
+{-| A `uint32` that is bits, not a length: flags, a file's mode, a user's
+id. Any value is read, 2^31 and more wrapped to a negative `Int` of the same
+bits, which [`writeUint32`](#writeUint32) writes back unchanged. -}
+uint32Bits : Reader -> Result String { value : Int, next : Reader }
+uint32Bits r =
+    if remaining r < 4 then
+        Err "a uint32 past the end"
+
+    else
+        Ok { value = wrapInt (Bytes.slice r.at (r.at + 4) r.bytes), next = { r | at = r.at + 4 } }
+
+
+{-| A `uint64` (SFTP's sizes and offsets, puritty `docs/sftp.md` FT14) that
+must be below 2^63, as an `Int64`. -}
+uint64 : Reader -> Result String { value : Int64, next : Reader }
+uint64 r =
+    if remaining r < 8 then
+        Err "a uint64 past the end"
+
+    else if byteAt r.at r.bytes >= 128 then
+        Err "a uint64 of 2^63 or more"
+
+    else
+        let
+            high =
+                wrapInt (Bytes.slice r.at (r.at + 4) r.bytes)
+
+            low =
+                wrapInt (Bytes.slice (r.at + 4) (r.at + 8) r.bytes)
+        in
+        Ok { value = Bitwise.shiftLeftBy 32 (Int64.fromInt high) + unsigned low, next = { r | at = r.at + 8 } }
+
+
+{-| An `Int`'s 32 bits as an unsigned number. -}
+unsigned : Int -> Int64
+unsigned n =
+    if n < 0 then
+        Int64.fromInt n + Bitwise.shiftLeftBy 32 (Int64.fromInt 1)
+
+    else
+        Int64.fromInt n
 
 
 {-| Four bytes, big-endian, as an `Int`, wrapped to 32 bits signed. -}
@@ -197,3 +244,9 @@ writeText s =
 writeNameList : Array String -> Bytes
 writeNameList names =
     writeText (String.join "," names)
+
+
+{-| An `Int64` as a `uint64`, its 64 bits as they are. -}
+writeUint64 : Int64 -> Bytes
+writeUint64 n =
+    Bytes.flatten [ writeUint32 (Int64.toIntWrap (Bitwise.shiftRightBy 32 n)), writeUint32 (Int64.toIntWrap n) ]

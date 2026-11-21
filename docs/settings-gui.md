@@ -432,7 +432,13 @@ client, is the host list with made-up hosts.
 **Found, not this work's:** `harness/hosts.py` fails three cases
 (`menu-connects`, `double-click-host`, `settings-connects`) at the commit
 before this work too: in each, one puritty starts another, which runs no
-ssh. The gate is not in the unit gate; left to look into.
+ssh. The gate is not in the unit gate; left to look into. *Fixed
+2026-11-15:* the cases' positions were stale, not puritty: the menu had
+gained New tab, Rename tab…, Tab color… and Reopen closed tab, so six Downs
+chose "Reopen closed tab" where "Connect to bastion" is now the eighth
+item; and the host list's local shell (SG15) is its third row, so the two
+settings cases opened a shell where they meant the first host. With the
+cases moved, 13 of 13 pass.
 
 
 ## SG15 · The local shell in the host list (2026-11-14)
@@ -543,3 +549,221 @@ quick connect does (SG14): `#000000, #cd0000, #00cd00, …` for a palette,
 `#1e1e1e` for a color, `Ctrl+Shift+T` for a key.
 
 Each changed text is changed in Korean too (`Words.geng`).
+
+
+## SG19 · Recent connections in the menu and the jump list (2026-11-15)
+
+SG14's recent connections were offered only by the host list. Now:
+
+- **The menu** (Ctrl and the right button; on Windows also the title bar's
+  system menu) lists "Connect to …" for each recent connection, newest
+  first, then the saved hosts not among them, so a saved host is there
+  once. Chosen, one starts puritty as the host list does: `--host NAME`
+  for a saved host, `ssh TEXT` for what quick connect was given
+  (`Recent.arguments`). A window reads `recent.txt` as it starts and again
+  when it gains the focus, so that another window's connection is offered
+  too; the system menu is made again when they changed.
+- **The taskbar's jump list** on Windows: a category, "Recent
+  connections", of links to puritty itself with those arguments, each named
+  as the menu names it (`Window.jumpList`, `ICustomDestinationList`; on X11
+  it does nothing). It is made as every window starts, which is when a
+  connection is made and remembered, and again when the host list
+  remembers or forgets one. A link the user took off the list is not put
+  back (Windows refuses a category that has one). Windows takes no list
+  when it is set not to show recently opened items; the window's
+  diagnostic log then says so with Windows' reason (`HRESULT 0x80070005`).
+  A link's arguments are one command line, quoted as the C runtime splits
+  it (`Recent.commandLine`, as `Os.Process` quotes a child's).
+
+**Checked:** app tests 246 (two new: a recent's arguments and name, and
+the command line's quoting, empty arguments, quotes and trailing
+backslashes among them). On Linux under Xvfb, with `build-box` and a quick
+connection recent and `build-box` and `other` saved, Ctrl and the right
+button showed "Connect to build-box", "Connect to me@example.com tmux -CC
+attach", then "Connect to other". On beelink1, puritty run from a folder of
+its own with its state folder there too (Gilbert's own untouched), started
+as a local shell: Windows wrote the jump list's file, which holds "Recent
+connections", the titles, and the links' arguments `--host build-box` and
+`ssh "me@example.com tmux -CC attach"` to that `puritty.exe`. Opened by a
+right-click on its taskbar button, the list showed "Recent connections",
+then build-box and the quick connection (its name cut by Windows), each with
+puritty's icon, above Windows' own items. The probe, its folder and its
+jump list's file were removed after.
+
+
+## SG20 · Text boxes that behave, and a connection edited before it is made (2026-11-18)
+
+Gilbert, connecting from the host list on Windows with a long quick
+connect line, `HOST tmux -CC attach -t main`, which needed `tmux`'s full
+path (the remote zsh puts it on `PATH` in a file a command's shell does
+not read):
+
+- **The box did not scroll.** It is drawn from its first character and
+  cut at its right edge, so the caret ran off it and what was typed could
+  not be seen.
+- **Ctrl+V did nothing.** `quickKey` drops every key with Ctrl held, and
+  no box reads the clipboard.
+- **A recent connection could not be edited**, only connected to, so
+  changing `tmux` to its full path meant typing the whole line again.
+
+**Decided** (Gilbert, 2026-11-18, "I agree; go ahead"):
+
+1. **Every text box** of the host list and the settings window (they
+   share the drawing): the text scrolls to keep the caret in view, a faint
+   `…` at an end that is cut; Ctrl+V, Shift+Insert and the paste mouse
+   button paste, the lines of a paste joined by spaces; Ctrl+Left and
+   Right move by a word, Ctrl+Backspace deletes one; Shift with the arrows,
+   Home and End selects, Ctrl+A selects all, Ctrl+C and Ctrl+X copy and
+   cut, and what is typed replaces a selection.
+2. **F2 on a row** (a recent connection or a saved host) puts its
+   connection line into quick connect, the caret at its end, and connects
+   to nothing; Enter on a row still connects. A small pencil on the row
+   chosen does the same with the mouse. → is not used for it: on a recent
+   connection it already saves it as a host (SG14).
+3. **Up in quick connect while it is empty** brings back the recent
+   connections one at a time, newest first, as a shell's history does;
+   Down goes back towards the newest, and from it into the list as now.
+4. **Delete on a recent** forgets it, as SG14 built, so the wrong line can
+   go once the right one has been used.
+
+With it, a session whose program fails says so (`docs/ssh-client.md`
+SC29): the line that was wrong is then seen, not only logged.
+
+**Built.** `TextEdit` (new, pure) takes a box's keys and says what they
+did: the text or the caret changed, a copy, a paste asked, or a key not
+its own (Enter, Esc, Tab, Up, Down), which the box's own handling keeps.
+A word's separators are blanks and `/ \ @ : . , ; =`, so Ctrl+Left stops
+inside `user@host:/path`; Ctrl+Right goes to the next word's start, as
+Windows' boxes do. `Typing` gains the selection's other end (`anchor`)
+and `recall`, Up's place among the recents. The window asks the program
+for a paste (`PasteAsked`: the clipboard, through `Window.paste`; the
+middle button clicks the box under it, then pastes the primary
+selection) and gets its text as `Pasted`, made one line (`oneLine`);
+Ctrl+V or Shift+Insert where nothing is typed yet pastes into the search,
+or into quick connect or a new host's name. A copy is `Copy` (`Window.select`).
+`typingField` draws the selection and scrolls: the text from its start
+until the caret would pass the right edge, then moved left to keep the
+caret there, a dim `…` at an end that is cut. It holds for every typed
+box (quick connect, a new host, a setting's value, a font), the search
+field aside, which takes a paste but is not typed with a caret.
+
+F2 on a host row, or the chosen row's pencil (`✎`, `OnEdit`), puts its
+line in quick connect: a recent quick connection's own; a saved host's
+`user@host:port` and command (`Hosts.spec`, now exposed); an alias of
+~/.ssh/config's, its name. A saved host's other settings (key, jump host,
+colors) are not in a quick line, and a connection made from it is a quick
+one. The hints at the foot say F2 and Up (English and Korean), and the
+user guide's host list says the keys.
+
+**Measured**: six tests in the app suite (408, from 402): a word left and
+a selection typed over; Ctrl+Backspace and Ctrl+Delete by words; Ctrl+V
+and Shift+Insert asking a paste and its two lines joined; Ctrl+A with
+Ctrl+C, and Ctrl+X; F2 on a recent and on a saved host, connecting to
+nothing until Enter, and an edited line connected to; Up and Down through
+two recents and back to empty. On Xvfb, `puritty hosts`: a 96-character
+line scrolled to its end with the dots at the left, a selection drawn,
+a real Ctrl+V of two lines set by xclip pasted as one, the pencil on the
+chosen row, and F2 filling quick connect. Not yet seen on Windows.
+
+## SG21 · PuTTY's saved sessions in the host list (2026-11-18, Dnene62)
+
+The Windows product's third item (`feature-plan.md`, "The Windows
+product"): bring in the hosts a PuTTY or MobaXterm user already has.
+`~/.ssh/config`'s are listed already (V63). This section is PuTTY's;
+MobaXterm's waits on a real MobaXterm (below).
+
+**Where PuTTY keeps them**, read from its source (`vendor/putty`):
+
+- **Windows**: a registry key a session under
+  `HKCU\Software\SimonTatham\PuTTY\Sessions`
+  (`windows/storage.c`). The key's name is the session's name
+  %-escaped (`windows/utils/escape_registry_key.c`: space, `\ * ? %`,
+  control characters, bytes past `~`, and a leading `.`) in the **ANSI
+  code page**, so a Korean name is CP949 bytes, not UTF-8. A string is
+  `REG_SZ`, a number `REG_DWORD`.
+- **Linux**: a file a session in PuTTY's folder (`unix/storage.c`'s
+  `make_filename`): `$PUTTYSESSIONS`, else `$PUTTYDIR/sessions`, else
+  `$XDG_CONFIG_HOME/putty/sessions` when that folder exists, else
+  `~/.putty/sessions`. The file's name is the session's escaped with an
+  opt-in list (letters, digits, `+ - . @ _`), its lines `Key=Value`.
+- **Every setting is written**, so a session is whole without "Default
+  Settings" (`settings.c`'s save loop), which is itself a session of that
+  reserved name.
+
+**What a host takes** (`app/src/Putty.geng`):
+
+| PuTTY | host |
+|---|---|
+| `HostName` (may be `user@host`) | `host`, and `user` when it has one |
+| `UserName` | `user`, when `HostName` has none |
+| `PortNumber` | `port`, unless 22 |
+| `Protocol` | only `ssh` is listed (telnet, serial, raw, rlogin, supdup are not); a session with none is ssh, Default Settings' default |
+| `RemoteCommand` | `command` |
+| `ProxyMethod` 6 ("SSH to proxy and use port forwarding", 0.77 on), `ProxyHost`, `ProxyPort`, `ProxyUsername` | `jump`: the session's name when `ProxyHost` names one, as `proxy/sshproxy.c` tries first, else `user@host:port`. PuTTY's other proxies (SOCKS, HTTP, telnet, a local command, `ProxyMethod` 1 to 5, 7, 8) are not jump hosts and are not taken |
+| `LineCodePage` | `charset`: "Use font encoding" with a Hangul font (`FontCharSet` 129) is `cp949`, since PuTTY on Windows refuses a multi-byte code page by name (`decode_codepage` answers −3); UTF-8 and the rest are left unset |
+| `Colour0`, `Colour2`, `Colour6`–`Colour21` (`r,g,b`) | `foreground`, `background`, and the sixteen (each normal, then bold) as `palette`; each only where it differs from PuTTY's defaults, so a session that kept PuTTY's look takes puritty's |
+| `Font`, `FontHeight` | `font` unless Courier New (Windows' default) or a `server:` font (Linux's); `points` unless 10 |
+| `WinTitle` | `title` |
+| `PublicKeyFile` | **not taken**: a `.ppk`, which neither OpenSSH nor the built-in client reads (`ssh-crypto` loads `openssh-key-v1` only). A PuTTY user's keys are usually in Pageant, which the built-in client uses (SC19) |
+
+Port forwardings, X11 and agent forwarding, keepalives, terminal modes,
+logging and the rest of PuTTY's 200-odd settings have no host field and
+are not taken.
+
+**Decided** (Dnene62, mine; for Gilbert's review): PuTTY's sessions are
+**listed, not imported**. They join the host list after the settings'
+own and `~/.ssh/config`'s, marked "from PuTTY", skipping a name either
+already has; the list reads them each time it opens. Enter on one makes
+it a host of the settings (`PutHost`) and connects; → makes it one and
+opens its form; Delete says it is PuTTY's and changes nothing; F2 puts
+its line in quick connect. A session it jumps through is made a host
+with it, so the `jump` names a host. The other way, an "Import" that
+copies every session once, would put sessions nobody uses into
+`config.toml` and need a step and a dialog; listed, PuTTY's sessions
+work at once, and only those used become puritty's. A user done with
+PuTTY who wants them gone removes them in PuTTY (or deletes the
+registry key); a setting to hide them can come if anyone asks.
+
+**Built.** `Putty` (pure): `unescape`, `parseFile` (Linux's files),
+`parseSessions` (Windows' text), `hosts`. Windows reads the registry in
+C (`puritty_win32_puttySessions`, `packages/win32`'s new `Registry`
+module): each key unescaped and read in the ANSI code page
+(`MultiByteToWideChar` in the machine's code page, below), its values as `[name]` and `Key=Value`
+lines in UTF-8, a control character in a name or value made a space.
+`app/linux/src/PuttyStore.geng` and `app/windows/src/PuttyStore.geng`
+read each platform's place; `SettingsProgram` reads them as the window
+opens, beside `~/.ssh/config`; `SettingsWindow`'s rows gain `putty`, the
+host a session becomes; `fromPutty` makes it and its jump chain hosts.
+English and Korean words for "from PuTTY" and the two messages; the user
+guide's Hosts section says what is taken.
+
+**Measured**: twelve tests in the app suite (420, from 408): names
+unescaped (a space, a dot, UTF-8, a `%` that is not an escape); the
+registry's text; a host's address, user, port, command and title;
+`UserName` and port 22; telnet, serial, an empty host and Default
+Settings left out; a jump by a session's name, by `user@host:port`, and
+a SOCKS proxy not taken; CP949 from "Use font encoding" and a Hangul
+font; default and changed colors and font; the rows listed after the
+hosts, without a name the settings have; Enter saving the session and its
+jump host, then connecting; Delete; Right.
+
+**On beelink1** (Windows 11, its ANSI code page 1252), six sessions
+written to the registry as PuTTY writes them (`Default%20Settings`,
+`prod%20web`, `Caf%E9`, `bastion`, `inner` through `bastion`, and
+`router`, telnet) and `puritty.exe hosts` opened: five hosts listed after
+`~/.ssh/config`'s two, "PuTTY의 세션", Default Settings and the telnet one
+left out. The first build showed `Caf�`: Geng's manifest makes the
+process's ANSI code page UTF-8 (`activeCodePage`, geng-lang
+`runtime/windows/geng_sys.c`), so `CP_ACP` in puritty is not the code
+page PuTTY wrote the name in. The name is now read in the machine's
+(`Nls\CodePage\ACP` in the registry, else the system locale's), and
+showed `Café`. The registry key and the probe's files were removed after.
+
+**MobaXterm, not built.** Its sessions are lines of `[Bookmarks]` and
+`[Bookmarks_N]` sections (`SubRep` the folder): `name=#109#0%host%port%user%…`,
+`%`-separated groups after `#`. MobaXterm does not document the format;
+third parties' readings agree on the first fields (type, host, port,
+user) and give a key file and jump host further on, but disagree on
+where, and on where the installed edition keeps the file (`MobaXterm.ini`
+beside the program, under `%APPDATA%\MobaXterm`, or the registry). Not
+built until it is read against what a real MobaXterm writes.

@@ -1,4 +1,4 @@
-module Hosts exposing (jumpSpec, named, quick, session, sshCommand)
+module Hosts exposing (jumpSpec, named, quick, session, spec, sshCommand, sshOptions)
 
 {-| Starting an ssh session from a host (`docs/settings.md` ST10, V61-V64):
 the command OpenSSH is run with, and the settings the session's window
@@ -113,15 +113,8 @@ and jump host as `ssh` takes them, and a command run there on a terminal
 is written as that host's `user@host:port`. -}
 sshCommand : Config -> Host -> Array String
 sshCommand config h =
-    let
-        jumpTo =
-            jumpSpec config h
-    in
     [ "ssh" ]
-        ++ option "-p" (Maybe.map String.fromInt h.port)
-        ++ option "-l" h.user
-        ++ option "-i" h.identity
-        ++ option "-J" jumpTo
+        ++ sshOptions config h
         ++ (if h.command /= Nothing then
                 [ "-t" ]
 
@@ -136,6 +129,17 @@ sshCommand config h =
                 Nothing ->
                     meant Reason.NotSet []
            )
+
+
+{-| The options `ssh` connects to a host with: its port, user, key and
+jump host, as `sshCommand` gives them before the host (docs/sftp.md FT31:
+the helpers that send files through the tab's connection take them too). -}
+sshOptions : Config -> Host -> Array String
+sshOptions config h =
+    option "-p" (Maybe.map String.fromInt h.port)
+        ++ option "-l" h.user
+        ++ option "-i" h.identity
+        ++ option "-J" (jumpSpec config h)
 
 
 option : String -> Maybe String -> Array String

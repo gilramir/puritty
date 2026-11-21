@@ -135,13 +135,41 @@ measured.
   outside a buffer's context on 3.2. RHEL9 and Ubuntu 22.04 ship 3.2a.
 - **2.9** ends the control client at `select-pane -t %0` after a split
   and a resize; 2.9a does not. No target ships 2.9.
+- **3.7 ends the server** on `break-pane` with no name, as `prefix !`
+  gives it (3.7a's CHANGES: "Fix crash in break-pane when no name is
+  provided"); found by the puppet (`docs/tmux-checks.md` TK12.1), which
+  leaves that step out on 3.7. No target ships 3.7.
 - **3.3 and 3.3a end the server** on `kill-pane -t` with its argument
   missing: they take it as `kill-pane`, which kills the session's only
   pane (every other tmux refuses the line, `-t expects an argument`;
   `docs/tmux-checks.md` TK10). puritty always gives `-t` a pane. Debian
   12 ships 3.3a.
 
-All three are fixed in later releases; nothing to report.
+- **3.2 to 3.7c hang in customize mode** at a filter that leaves out any
+  row (`f`, then `0`, `#{m:*-time*,#{option_name}}` or
+  `#{==:#{option_name},history-limit}`): the server spins at 100% CPU and
+  answers no client; 3.8 does not. Found by the survey's customize-filter
+  scene on 3.2a and 3.4; measured on 3.2, 3.2a, 3.3, 3.3a, 3.4, 3.5a,
+  3.6a and 3.7c. No issue on tmux's tracker names it, and 3.8's CHANGES
+  does not either. puritty under `-CC` is not touched: it draws customize
+  mode itself and filters by asking formats (TM62), and the `-CC` server
+  stayed idle while the plain one spun. RHEL9 and Ubuntu 22.04 ship 3.2a,
+  where anyone using tmux's own customize filter meets it.
+
+- **3.2a sizes a detached session by the client that made it**:
+  `new-session -d -x 100 -y 30` gives an 80x23 window (the command
+  client's 80x24 less the status line), though `default-size` says
+  100x30; 3.2 and 3.3 give 100x30. 3.2a passes the command's client to the
+  first window's spawn (`cmd-new-session.c`, `sc.tc = c`), and
+  `default_window_size` takes that client's size before `-x`/`-y`. Ubuntu
+  22.04 patches it (`lp1976110-respect-sizing.diff`, "only use client for
+  sizing when not detached", Launchpad 1976110), which is TV7's 80x24
+  where the release makes 80x23; RHEL9's 3.2a does not. puritty starts
+  `tmux -CC new` attached, so is not touched; the comparison harness's
+  outer tmux, a detached session, is now resized to its size after it is
+  made.
+
+All six are fixed in later releases; nothing to report.
 
 ## TV7 · The distributions' packages against the releases
 
@@ -149,7 +177,7 @@ All three are fixed in later releases; nothing to report.
 |---|---|---|---|
 | almalinux-8 | 2.7 | 5 | the distribution's `sh` (bash) redrawing |
 | almalinux-9 | 3.2a | 17 | bash's bracketed paste; `pane_current_command` `coreutils` |
-| ubuntu-22.04 | 3.2a | 32 | **the window 80×24 where the release makes 80×23**: not yet explained |
+| ubuntu-22.04 | 3.2a | 32 | the window 80×24 where the release makes 80×23: Ubuntu's patch for 3.2a's detached sizing (TV6) |
 | debian-12 | 3.3a | 0 | |
 | almalinux-10 | 3.3a | 577 | a git snapshot past 3.3a: commands, keys, options |
 | ubuntu-24.04 | 3.4 | 0 | |
@@ -187,4 +215,66 @@ protocol. Built as `docs/tmux.md` TM72: what a tmux takes is read from its
 meets has its other form. TV5's table again, after it: on 2.7, 2.9a, 3.0,
 3.1c, 3.2a, 3.3a, 3.4 and 3.8, typing, the prefix's split and new window,
 and (2.7 to 2.9a) the status line, each working.
+
+## TV10 · What each tmux answers differently, measured (2026-11-15)
+
+TV8's second leaning: the tests' fake tmux (`app/tests/src/FakeTmux.geng`)
+answered as 3.8, and as 3.6a where those two differ. `record-tmux.py` now
+records 3.8, 3.6a, 3.4, 3.2a, 3.0 and 2.7 (the older from
+`tmux-versions/releases.sh`'s builds), one of each step that changes what
+puritty asks, and with each: what that tmux lacks of 3.8's variables and
+options (from its dump, TK8), its options' values with no configuration as a
+format gives them, and the window and pane menus it draws (`prefix <`,
+`prefix >`, captured from a client of its own inside an outer tmux). The
+fake answers as each, and every recorded answer to a question that
+version's scenarios ask is held to the fake's (TM68); the app's tests that
+drive puritty run on all six.
+
+What the recordings and probes of every release from 2.7 to 3.8 showed,
+each now in the fake (`FakeTmux.rulesOf`, `modifierSince`):
+
+| what | how |
+|---|---|
+| `#{?name,a,b}` with a name tmux does not have, or an unset `@option` | **true on 2.7**; from 2.8 empty, so false. `#{?#{name},a,b}` is false on all |
+| `capture-pane -J` | before 3.3 a line keeps the cells tmux gave it, cleared ones as spaces: a quarter of the width, then half, then all (`line 1` and 14 spaces at 80 columns) |
+| `capture-pane -a` with no alternate screen | nothing before 3.2; one empty line from it |
+| copy mode's cursor moving up | held to the line's last character from 3.7; before, it keeps its column |
+| `#{copy_cursor_x}`, `#{selection_start_x}` … | from 3.1 (TK8) |
+| the layout | JSON from 3.8; tmux's layout string before |
+| modifiers | `T:`, `E:`, `q:` from 2.9; `m/r:`, `<:`, `>:`, `=/N/end:`, `P:` from 3.0; `t/p:` and `e\|op:` from 3.2; `!:` from 3.6 (on 3.3 to 3.5 `#{!:#{x}}` gives the text `!:`); before, `#{op:…}` is empty |
+| `display-message` | fills strftime's fields in the message as written, before its variables: an option's `%H` comes through raw |
+| `#{status}` | `1` on 2.7, `on` from 2.8 |
+
+The menus each draws are puritty's on every version that has them:
+3.0's own keys (`Swap Left  (l)`, `Swap Up          (u)`, `Zoom
+(z)`); from 3.2 the swaps and Zoom without keys; 3.8's Float. 2.7 has no
+menus, and `prefix <` there types nothing. TV5's "not yet measured" is so
+answered for the menus; copy mode by version is held by the fake's
+answers above and by the puppet's copy-mode steps on every release
+(`tmux-checks.md` TK12.1). Customize mode on 3.4, side by side
+(`bench/tmux/compare/survey.py --scenes scenes2`, 2026-11-15): opening it,
+a session's and an option's rows, a value cycled and reset, an array item
+added, the key tables, each row for row as tmux 3.4 draws them, the only
+differences the harness's (its palette, and `capture-pane` leaving out a
+row's cleared end); on 3.2a too, once the harness's outer tmux was sized
+(TV6), with 3.2a's own option list (`status-justify` its `(M-y)` where 3.4
+has `(M-z)`).
+Popups before 3.8 are not shown under `-CC`, by design: puritty shows a
+popup as a 3.8 floating pane, and says so on the status line ("display-popup
+under tmux -CC needs tmux 3.8's floating panes"). *Gilbert, 2026-11-15:*
+no popup of puritty's own (a hidden window drawn as a box) for tmux before
+3.8; the message stays.
+
+**Found and fixed** (`docs/tmux.md` TM76): puritty's tree rows tested
+`#{?pane_marked,…}`, `#{?window_marked_flag,…}` and
+`#{?pane_floating_flag,…}`, which 2.7 has none of, so on RHEL8's tmux every
+pane would show `M`; and the status line's timer could ask 2.7 for
+`#{T:…}` before it knew 2.7 has none (`tmux-checks.md` TK10.9).
+
+**The tree by version** (`docs/tmux.md` TM77): before 3.2 its rows are
+written `name flags (N panes)` and `command "title"`, keys `(0)  `; from
+3.2 a marked row is reversed; a window's only pane is a row of its own
+from 3.6; 3.7 writes a pane's flags as `pane_flags` and a floating pane in
+italics. puritty asks each tmux for its own, and in tmux's look draws the
+rows each real tmux draws (recorded with the menus).
 

@@ -5,6 +5,7 @@ delivered, keys typed, replies held back or let through, and the screen
 puritty draws read as rows of text. -}
 
 import Bytes exposing (Bytes)
+import Dict
 import Expect exposing (Expectation)
 import FakeTmux exposing (World)
 import RealTmux
@@ -118,6 +119,13 @@ named sym run =
                  else if sym == escapeKey then
                     "\u{001B}"
 
+                 else if sym == tabKey then
+                    "\t"
+
+                 else if sym == upKey then
+                    -- an arrow's bytes, as the window gives them
+                    "\u{001B}[A"
+
                  else
                     ""
                 )
@@ -138,6 +146,32 @@ escapeKey =
 downKey : Int
 downKey =
     0xFF54
+
+
+upKey : Int
+upKey =
+    0xFF52
+
+
+tabKey : Int
+tabKey =
+    0xFF09
+
+
+{-| A button pressed on a cell, at a time, and what it makes puritty send
+held: 1 the left, 2 the right, 4 and 5 the wheel. -}
+clickAt : Int -> { col : Int, row : Int } -> Int -> (taken run : Run) -> Run
+clickAt button c ms run =
+    let
+        held =
+            run.held
+
+        r =
+            TmuxMode.pointer { ms = ms, held = 1, select = False, boundaries = [], pasteButton = 3 }
+                { action = 0, button = button, mods = 0, x = c.col * 10 + 5, y = c.row * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+                run.tmux
+    in
+    { run | tmux = r.state, held = held ++ r.commands }
 
 
 {-| Text typed a character at a time. -}
@@ -238,6 +272,9 @@ tmuxMode =
                  , { name = "every question puritty asks in the scenarios is recorded from a real tmux (TM69)"
                    , test = \_ -> Expect.equal "" unrecorded
                    }
+                 , { name = "no question puritty asks tmux 2.7 tests a bare name it does not have, which 2.7 takes as true (TV10)"
+                   , test = \_ -> Expect.equal [] (bareConditions "2.7" (askedOn "2.7" |> Array.map .command))
+                   }
                  , { name = "a mistyped command ends control mode with tmux's message on the terminal, and nothing asked (TM70)"
                    , test =
                         \_ ->
@@ -288,7 +325,7 @@ onVersion version =
                     -- copy mode's position at the top right, as tmux's
                     -- `[scroll/history]`
                     Expect.equal
-                        { scroll = 7, top = { text = "line 170", edge = "[7/176]" } }
+                        { scroll = 7, top = { text = "line 170", edge = timed version "[7/176]" } }
                         { scroll = (FakeTmux.copyState 0 seen.run.world).scroll, top = split 0 seen }
           }
         , { name = "the tree of sessions shows the session, its windows and attachment, and q closes it (TM32)"
@@ -324,8 +361,27 @@ onVersion version =
                         inner r =
                             String.trim (String.slice 1 (String.count r - 1) r)
                     in
+                    -- each tmux's own row (TM77): before 3.6 a window's
+                    -- only pane is no row, so there is nothing to open;
+                    -- before 3.2 its panes and title are written out
                     Expect.equal
-                        [ "0  ▾ main: 1 windows (attached)", "1    ▸ 0: sh*" ]
+                        [ "0  ▾ main: 1 windows (attached)"
+                        , when version is
+                            "2.7" ->
+                                "1      0: sh* (1 panes) \"host\""
+
+                            "3.0" ->
+                                "1      0: sh* (1 panes) \"host\""
+
+                            "3.2a" ->
+                                "1      0: sh*"
+
+                            "3.4" ->
+                                "1      0: sh*"
+
+                            _ ->
+                                "1    ▸ 0: sh*"
+                        ]
                         [ inner (row 1 opened), inner (row 2 opened) ]
           }
         , { name = "the command prompt runs what is typed as a tmux command (TM25)"
@@ -355,7 +411,7 @@ onVersion version =
                         , sent = Array.member "kill-server -a" ran.world.heard
                         }
           }
-        , { name = "the window menu shows tmux's items, and Rename asks with the window's name in the prompt (TM27)"
+        , { name = "the window menu shows the items this tmux draws, and Rename asks with the window's name in the prompt (TM27)"
           , test =
                 \_ ->
                     let
@@ -369,14 +425,946 @@ onVersion version =
 
                         renaming =
                             settle (typeKey "n" opened.run)
+
+                        drawn =
+                            drawnMenu version "<"
                     in
+                    -- before 3.0 tmux has no menus, and n is typed to the pane
                     Expect.equal
-                        { items = [ "Swap Left", "Swap Right", "Swap Marked", "Kill       (X)", "Respawn    (R)", "Mark       (m)", "Rename     (n)", "New After  (w)", "New At End (W)" ]
-                        , prompt = Just "sh"
+                        { items = drawn
+                        , prompt =
+                            if Array.isEmpty drawn then
+                                Nothing
+
+                            else
+                                Just "sh"
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
           }
-        , { name = "the pane menu shows the items this tmux's binding has (TM27)"
+        , { name = "a menu's -C chooses where the keyboard starts, and -O chooses on a press (TM84)"
+          , test =
+                \_ ->
+                    let
+                        opened line =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> typeText line
+                                |> named enterKey
+                                |> settle
+
+                        heardOf run =
+                            run.world.heard |> Array.map (String.replace "'" "") |> Array.keepIf (\l -> l == "display-message -p A" || l == "display-message -p B")
+
+                        -- Enter on the item -C starts at
+                        started =
+                            heardOf (settle (named enterKey (opened "display-menu -C 1 -T t a a { display-message -p A } b b { display-message -p B }")))
+
+                        -- a press on the row of item b, with and without -O
+                        pressed flag =
+                            let
+                                seen =
+                                    look (opened ("display-menu " ++ flag ++ " -T t a a { display-message -p A } b b { display-message -p B }"))
+
+                                at =
+                                    seen.rows
+                                        |> Array.indexedMap (\i r -> { row = i, parts = String.split " b " r })
+                                        |> Array.findFirst (\r -> Array.length r.parts > 1)
+                                        |> Maybe.map (\found -> { row = found.value.row, col = String.count (Maybe.withDefault "" (Array.first found.value.parts)) + 1 })
+                            in
+                            when at is
+                                Just c ->
+                                    (TmuxMode.pointer { ms = 1000, held = 1, select = False, boundaries = [], pasteButton = 2 }
+                                        { action = 0, button = 1, mods = 0, x = c.col * 10 + 5, y = c.row * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+                                        seen.run.tmux
+                                    ).commands
+                                        |> Array.map (String.replace "'" "")
+                                        |> Array.keepIf (\l -> l == "display-message -p A" || l == "display-message -p B")
+
+                                Nothing ->
+                                    [ "no row b" ]
+                    in
+                    if Array.member version [ "2.7", "3.0", "3.2a" ] then
+                        -- -C is 3.4's, and these tmuxes refuse it
+                        Expect.pass
+
+                    else
+                        Expect.equal
+                            { started = [ "display-message -p B" ], stayOpen = [ "display-message -p B" ], plain = [] }
+                            { started = started, stayOpen = pressed "-O", plain = pressed "" }
+          }
+        , { name = "the mouse in choose-buffer: a press chooses a row, a double click pastes it, the wheel moves; the right button from 3.0 (TM86)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- buffer2 the newest, chosen first; each case opens its own
+                        opening _ =
+                            look (attached { made | buffers = [ "zero", "one", "two" ] } |> prefixThen "=" |> settle)
+
+                        seen =
+                            (opening {}).rows
+
+                        rowOf name =
+                            seen
+                                |> Array.indexedMap (\i r -> { row = i, text = r })
+                                |> Array.findFirst (\r -> String.contains (name ++ ":") r.text)
+                                |> Maybe.map (\found -> { col = 10, row = found.value.row })
+                                |> Maybe.withDefault { col = 0, row = 0 }
+
+                        pasted run =
+                            run.world.heard
+                                |> Array.keepIf (String.contains "paste-buffer")
+                                |> Array.map
+                                    (\l ->
+                                        if String.contains "buffer0" l then
+                                            "buffer0"
+
+                                        else if String.contains "buffer1" l then
+                                            "buffer1"
+
+                                        else if String.contains "buffer2" l then
+                                            "buffer2"
+
+                                        else
+                                            l
+                                    )
+
+                        clicked =
+                            pasted ((opening {}).run |> clickAt 1 (rowOf "buffer0") 2000 |> named enterKey |> settle)
+
+                        doubled =
+                            pasted ((opening {}).run |> clickAt 1 (rowOf "buffer1") 2000 |> clickAt 1 (rowOf "buffer1") 2200 |> settle)
+
+                        wheeled =
+                            pasted ((opening {}).run |> clickAt 5 (rowOf "buffer0") 2000 |> named enterKey |> settle)
+
+                        -- the right button chooses the row and, from 3.0,
+                        -- opens its menu (TM87), closed here before Enter
+                        righted =
+                            pasted ((opening {}).run |> clickAt 2 (rowOf "buffer0") 2000 |> ctrl "c" |> named enterKey |> settle)
+                    in
+                    Expect.equal
+                        { clicked = [ "buffer0" ]
+                        , doubled = [ "buffer1" ]
+                        , wheeled = [ "buffer1" ]
+                        , righted =
+                            if version == "2.7" then
+                                [ "buffer2" ]
+
+                            else
+                                [ "buffer0" ]
+                        }
+                        { clicked = clicked, doubled = doubled, wheeled = wheeled, righted = righted }
+          }
+        , { name = "the right button opens a mode's menu from 3.0; its item gives the mode its key (TM87)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        opening _ =
+                            look (attached { made | buffers = [ "zero", "one", "two" ] } |> prefixThen "=" |> settle)
+
+                        seen =
+                            (opening {}).rows
+
+                        rowOf name =
+                            seen
+                                |> Array.indexedMap (\i r -> { row = i, text = r })
+                                |> Array.findFirst (\r -> String.contains (name ++ ":") r.text)
+                                |> Maybe.map (\found -> { col = 10, row = found.value.row })
+                                |> Maybe.withDefault { col = 0, row = 0 }
+
+                        -- the right button on buffer0, then p: Paste, from the
+                        -- menu; before 3.0 p reaches the list, buffer2 chosen
+                        pasted =
+                            (opening {}).run
+                                |> clickAt 2 (rowOf "buffer0") 2000
+                                |> typeKey "p"
+                                |> settle
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.contains "paste-buffer")
+                                |> Array.map
+                                    (\l ->
+                                        if String.contains "buffer0" l then
+                                            "buffer0"
+
+                                        else if String.contains "buffer2" l then
+                                            "buffer2"
+
+                                        else
+                                            l
+                                    )
+
+                        menuShown =
+                            look ((opening {}).run |> clickAt 2 (rowOf "buffer0") 2000)
+                                |> .rows
+                                |> Array.any (String.contains "Delete Tagged")
+
+                        -- the right button under the list, in the preview
+                        outside =
+                            look ((opening {}).run |> clickAt 2 { col = 30, row = 20 } 2000)
+                                |> .rows
+                                |> Array.any (String.contains "Scroll Right")
+                    in
+                    Expect.equal
+                        (if version == "2.7" then
+                            { pasted = [ "buffer2" ], menuShown = False, outside = False }
+
+                         else
+                            { pasted = [ "buffer0" ], menuShown = True, outside = True }
+                        )
+                        { pasted = pasted, menuShown = menuShown, outside = outside }
+          }
+        , { name = "a double click on the tree's row does what its keys do (TM86)"
+          , test =
+                \_ ->
+                    let
+                        opening _ =
+                            look (settle (prefixThen "w" (attached (start version))))
+
+                        sessionRow =
+                            (opening {}).rows
+                                |> Array.indexedMap (\i r -> { row = i, text = r })
+                                |> Array.findFirst (\r -> String.contains "main:" r.text)
+                                |> Maybe.map (\found -> { col = 12, row = found.value.row })
+                                |> Maybe.withDefault { col = 0, row = 0 }
+
+                        chose run =
+                            run.world.heard |> Array.keepIf (String.contains "switch-client")
+
+                        byMouse =
+                            chose ((opening {}).run |> clickAt 1 sessionRow 2000 |> clickAt 1 sessionRow 2300 |> settle)
+
+                        byKeys =
+                            chose ((opening {}).run |> typeKey "g" |> named enterKey |> settle)
+                    in
+                    Expect.equal { same = True, session = True } { same = byMouse == byKeys, session = Array.any (String.contains "'$0'") byMouse }
+          }
+        , { name = "a press on a window in the tree's preview chooses it, as window_tree_mouse (TM86)"
+          , test =
+                \_ ->
+                    let
+                        opening _ =
+                            look (settle (prefixThen "s" (attached (start version))))
+
+                        -- inside the preview's box, two rows under its top
+                        inPreview =
+                            (opening {}).rows
+                                |> Array.indexedMap (\i r -> { row = i, text = r })
+                                |> Array.findFirst (\r -> String.contains "┌" r.text)
+                                |> Maybe.map (\found -> { col = 20, row = found.value.row + 2 })
+
+                        chose =
+                            Maybe.map (\c -> (opening {}).run |> clickAt 1 c 2000 |> settle |> .world |> .heard |> Array.keepIf (String.contains "switch-client -t")) inPreview
+                    in
+                    Expect.equal (Just [ "switch-client -t '@0'" ]) chose
+          }
+        , { name = "in tmux's look the tree's preview boxes each label in the middle, as each tmux words it (TM88)"
+          , test =
+                \_ ->
+                    let
+                        begun =
+                            attached (start version)
+
+                        tmuxLooking =
+                            { begun | tmux = TmuxMode.setLook True begun.tmux }
+
+                        session =
+                            look (settle (prefixThen "s" tmuxLooking))
+
+                        sessionRows =
+                            session.rows
+
+                        -- the w tree, its window's row: a window's panes
+                        windowRun =
+                            let
+                                again =
+                                    attached (start version)
+                            in
+                            { again | tmux = TmuxMode.setLook True again.tmux }
+
+                        window =
+                            look (settle (named downKey (settle (prefixThen "w" windowRun))))
+
+                        has text rows =
+                            Array.any (String.contains text) rows
+                    in
+                    Expect.equal
+                        { session = True
+                        , window = True
+                        , lineLabel = False
+                        }
+                        { session = has "│ 0:sh │" sessionRows
+                        , window =
+                            has
+                                (if version == "3.8" then
+                                    "│ 0:host │"
+
+                                 else
+                                    "│ 0 │"
+                                )
+                                window.rows
+                        , lineLabel = has "─ 0:sh ─" sessionRows
+                        }
+          }
+        , { name = "Up at the prompt goes back through tmux's own history from 3.3, after what was typed here, each type its own (TM89)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- tmux's history: one command and one search
+                        held =
+                            { made | promptHistory = Dict.empty |> Dict.set "command" [ "set-option -g @older 1" ] |> Dict.set "search" [ "needle" ] }
+
+                        -- a command typed here, then the prompt opened again
+                        reopened =
+                            attached held
+                                |> prefixThen ":"
+                                |> typeText "set-option -g @mine 1"
+                                |> named enterKey
+                                |> settle
+                                |> prefixThen ":"
+                                |> settle
+
+                        typedOf run =
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed |> Maybe.withDefault "(none)"
+
+                        once =
+                            named upKey reopened
+
+                        first =
+                            typedOf once
+
+                        second =
+                            typedOf (named upKey once)
+
+                        -- a search prompt (-T search) goes back through
+                        -- tmux's searches, not its commands
+                        searching =
+                            attached held
+                                |> prefixThen ":"
+                                |> typeText "command-prompt -T search -p find 'display-message %%'"
+                                |> named enterKey
+                                |> settle
+                                |> named upKey
+                                |> typedOf
+                    in
+                    Expect.equal
+                        (if Array.member version [ "2.7", "3.0", "3.2a" ] then
+                            -- one list of puritty's own: nothing of tmux's
+                            -- can be read; the command typed is in it
+                            { first = "set-option -g @mine 1", second = "set-option -g @mine 1", search = "command-prompt -T search -p find 'display-message %%'" }
+
+                         else
+                            { first = "set-option -g @mine 1", second = "set-option -g @older 1", search = "needle" }
+                        )
+                        { first = first, second = second, search = searching }
+          }
+        , { name = "a selection goes when its pane leaves its screen or writes over its rows, as without tmux (TM91)"
+          , test =
+                \_ ->
+                    let
+                        -- rows 2 to 4 dragged over in pane %0, and let go
+                        dragged _ =
+                            let
+                                begun =
+                                    attached (start version)
+
+                                at action buttons c r =
+                                    TmuxMode.pointer { ms = 2000, held = buttons, select = False, boundaries = [], pasteButton = 3 }
+                                        { action = action, button = 1, mods = 0, x = c * 10 + 5, y = r * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+
+                                pressed =
+                                    at 0 1 0 2 begun.tmux
+
+                                moved =
+                                    at 2 2 10 4 pressed.state
+
+                                let_go =
+                                    at 1 0 10 4 moved.state
+                            in
+                            { begun | tmux = let_go.state }
+
+                        -- the pane's output, as tmux sends it (`%output`, its
+                        -- control characters in octal)
+                        output text run =
+                            deliver (Bytes.fromString ("%output %0 " ++ text ++ "\u{000D}\n")) run
+
+                        selecting run =
+                            TmuxMode.selectedText run.tmux /= Nothing
+                    in
+                    Expect.equal
+                        { made = True, alternate = False, elsewhere = True, overwritten = False }
+                        { made = selecting (dragged {})
+                        , alternate = selecting (output "\\033[?1049h" (dragged {}))
+                        , elsewhere = selecting (output "x" (dragged {}))
+                        , overwritten = selecting (output "\\033[4;1Hchanged" (dragged {}))
+                        }
+          }
+        , { name = "a Kitty graphics image in a pane's output is shown on the canvas, cut to its pane (images IM18)"
+          , test =
+                \_ ->
+                    let
+                        run =
+                            attached (start version)
+
+                        sized =
+                            { run | tmux = TmuxMode.setCell { width = 10, height = 20, limit = 10000000 } run.tmux }
+
+                        -- a 2 by 1 RGB image shown 3 columns by 2 rows, as
+                        -- tmux sends it (`%output`, ESC in octal)
+                        shown =
+                            deliver (Bytes.fromString "%output %0 \\033_Ga=T,f=24,s=2,v=1,c=3,r=2;/wAAAP8A\\033\\\\\u{000D}\n") sized
+
+                        canvas =
+                            (TmuxMode.paint shown.tmux).canvas
+
+                        placed =
+                            Vt.composedPlaces canvas
+                    in
+                    Expect.equal [ { cols = 3, rows = 2, inside = True } ]
+                        (Array.map (\p -> { cols = p.cols, rows = p.rows, inside = p.clip.cols == 3 && p.clip.rows == 2 && p.clip.x >= 0 && p.clip.y >= 0 }) placed)
+          }
+        , { name = "once what detaches this client has gone, nothing more is sent, which tmux would no longer read (TM92)"
+          , test =
+                \_ ->
+                    let
+                        -- whether nothing more may go, after the batch the
+                        -- key or line made went
+                        endedBy steps =
+                            TmuxMode.isEnding (TmuxMode.afterSent (steps (attached (start version))).tmux)
+
+                        line text run =
+                            run |> prefixThen ":" |> typeText text |> named enterKey
+                    in
+                    Expect.equal
+                        { prefixD = True, prefixC = False, typed = True, others = False }
+                        { prefixD = endedBy (\r -> r |> ctrl "b" |> settle |> typeKey "d")
+                        , prefixC = endedBy (\r -> r |> ctrl "b" |> settle |> typeKey "c")
+                        , typed = endedBy (line "detach")
+                        , others = endedBy (line "detach-client -a")
+                        }
+          }
+        , { name = "Tab at the prompt completes what each tmux completes, 3.8 listing what it cannot choose between (TM96)"
+          , test =
+                \_ ->
+                    let
+                        -- typed at `:`, then Tab: the line and the hint
+                        tabbed text =
+                            let
+                                run =
+                                    attached (start version)
+                                        |> prefixThen ":"
+                                        |> typeText text
+                                        |> named tabKey
+                            in
+                            TmuxMode.promptBox run.tmux
+                                |> Maybe.map (\b -> { typed = b.typed, hint = b.hint })
+                                |> Maybe.withDefault { typed = "(none)", hint = "" }
+
+                        newest =
+                            version == "3.8"
+                    in
+                    Expect.equal
+                        { spl =
+                            if version == "2.7" then
+                                "split-window "
+
+                            else
+                                "split"
+                        , select =
+                            if newest then
+                                "select-layout  select-pane  select-window"
+
+                            else
+                                "Enter: run    Esc: cancel    Up, Down: earlier answers"
+                        , option =
+                            if newest then
+                                "set -g status-k"
+
+                            else
+                                "set -g status-keys "
+                        , layout =
+                            if newest then
+                                "select-layout even-h"
+
+                            else
+                                "select-layout even-horizontal "
+                        }
+                        { spl = (tabbed "spl").typed
+                        , select = (tabbed "select-").hint
+                        , option = (tabbed "set -g status-k").typed
+                        , layout = (tabbed "select-layout even-h").typed
+                        }
+          }
+        , { name = "before 3.2 Tab completes a -t word to a session, then a window (TM97)"
+          , test =
+                \_ ->
+                    let
+                        tabbed text =
+                            let
+                                run =
+                                    attached (start version)
+                                        |> prefixThen ":"
+                                        |> typeText text
+                                        |> named tabKey
+                                        |> settle
+                            in
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed |> Maybe.withDefault "(none)"
+
+                        older =
+                            Array.member version [ "2.7", "3.0" ]
+                    in
+                    -- 3.2 to 3.7 complete the session too, and a window
+                    -- by its index only (TM98); 3.8 neither
+                    Expect.equal
+                        (if older then
+                            { session = "select-window -tmain:", window = "select-window -t:sh " }
+
+                         else if version == "3.8" then
+                            { session = "select-window -tma", window = "select-window -t:s" }
+
+                         else
+                            { session = "select-window -tmain:", window = "select-window -t:s" }
+                        )
+                        { session = tabbed "select-window -tma", window = tabbed "select-window -t:s" }
+          }
+        , { name = "on 3.2 to 3.7 Tab opens a menu of what it cannot choose between, a digit choosing (TM98)"
+          , test =
+                \_ ->
+                    let
+                        opened =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> typeText "select-"
+                                |> named tabKey
+
+                        menuShown =
+                            look opened
+
+                        chosen =
+                            typeKey "1" menuShown.run
+
+                        typedOf run =
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed |> Maybe.withDefault "(none)"
+
+                        menu =
+                            Array.member version [ "3.2a", "3.4", "3.6a" ]
+                    in
+                    Expect.equal
+                        (if menu then
+                            { shown = True, typed = "select-pane" }
+
+                         else
+                            { shown = False, typed = "select-1" }
+                        )
+                        { shown = Array.any (String.contains "select-window") menuShown.rows, typed = typedOf chosen }
+          }
+        , { name = "a pane's bell sounds, shows or is ignored as bell-action, visual-bell and monitor-bell say (TM99)"
+          , test =
+                \_ ->
+                    let
+                        -- pane %0 rings, with these options set
+                        rung settings =
+                            let
+                                made =
+                                    start version
+
+                                run =
+                                    attached { made | options = Array.foldl (\o d -> Dict.set o.name o.value d) made.options settings }
+                                        |> deliver (Bytes.fromString "%output %0 \\007\u{000D}\n")
+
+                                seen =
+                                    look run
+                            in
+                            { sounds = TmuxMode.bells seen.run.tmux, says = Array.any (String.contains "Bell in current window") seen.rows }
+                    in
+                    Expect.equal
+                        { plain = { sounds = 1, says = False }
+                        , visual = { sounds = 0, says = True }
+                        , both = { sounds = 1, says = True }
+                        , none = { sounds = 0, says = False }
+                        , other = { sounds = 0, says = False }
+                        , unmonitored = { sounds = 0, says = False }
+                        }
+                        { plain = rung []
+                        , visual = rung [ { name = "visual-bell", value = "on" } ]
+                        , both = rung [ { name = "visual-bell", value = "both" } ]
+                        , none = rung [ { name = "bell-action", value = "none" } ]
+                        , other = rung [ { name = "bell-action", value = "other" } ]
+                        , unmonitored = rung [ { name = "monitor-bell", value = "off" } ]
+                        }
+          }
+        , { name = "the prompt's word keys stop at word-separators as each tmux's do (RV2)"
+          , test =
+                \_ ->
+                    let
+                        prompt steps =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> steps
+                                |> (\r -> TmuxMode.promptBox r.tmux)
+                                |> Maybe.map .typed
+                                |> Maybe.withDefault "(closed)"
+
+                        -- each as the window gives it: Alt with the letter,
+                        -- the others with their bytes
+                        alt letter r =
+                            press { mods = 4, sym = Char.toCode letter, unshifted = Char.toCode letter, text = Bytes.fromString (String.fromChar letter) } r
+
+                        ctrlLeft r =
+                            press { mods = 2, sym = 0xFF51, unshifted = 0xFF51, text = Bytes.fromString "\u{001B}[1;5D" } r
+
+                        home r =
+                            press { mods = 0, sym = 0xFF50, unshifted = 0xFF50, text = Bytes.fromString "\u{001B}[H" } r
+
+                        -- each tmux's default word-separators: ` -_@` before
+                        -- 3.0, a space to 3.2, and from 3.3 the punctuation
+                        -- but `_`, a run of which is a word of its own
+                        newer =
+                            Array.member version [ "3.4", "3.6a", "3.8" ]
+                    in
+                    Expect.equal
+                        { forward =
+                            if newer then
+                                "aX--b c"
+
+                            else
+                                "a--bX c"
+                        , back =
+                            if newer then
+                                "a bX--"
+
+                            else
+                                "a Xb--"
+                        , cut =
+                            if version == "2.7" then
+                                "new-window -n my_"
+
+                            else
+                                "new-window -n "
+                        , ctrlArrow =
+                            -- Ctrl+Left moves by words from 3.0
+                            if version == "2.7" then
+                                "ab cX"
+
+                            else
+                                "ab Xc"
+                        }
+                        { forward = prompt (\r -> r |> typeText "a--b c" |> home |> alt 'f' |> typeText "X")
+                        , back = prompt (\r -> r |> typeText "a b--" |> alt 'b' |> typeText "X")
+                        , cut = prompt (\r -> r |> typeText "new-window -n my_logs" |> ctrl "w")
+                        , ctrlArrow = prompt (\r -> r |> typeText "ab c" |> ctrlLeft |> typeText "X")
+                        }
+          }
+        , { name = "with status-keys vi the prompt has vi's insert and command modes, as each tmux (TM100)"
+          , test =
+                \_ ->
+                    let
+                        prompt steps =
+                            let
+                                made =
+                                    start version
+
+                                run =
+                                    attached { made | options = Dict.set "status-keys" "vi" made.options }
+                                        |> prefixThen ":"
+                                        |> steps
+                            in
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed |> Maybe.withDefault "(closed)"
+
+                        newer n =
+                            Array.member version [ "3.2a", "3.4", "3.6a", "3.8" ] && (n <= 32 || Array.member version [ "3.4", "3.6a", "3.8" ])
+                    in
+                    Expect.equal
+                        { edit = "ello world!"
+                        , word =
+                            -- before 3.3 w is M-f: to the separator, back one
+                            if newer 33 then
+                                "abc ef"
+
+                            else
+                                "ab def"
+                        , quit =
+                            if newer 32 then
+                                "(closed)"
+
+                            else
+                                "keep"
+                        , ctrlA =
+                            if newer 33 then
+                                "zxy"
+
+                            else
+                                "xyz"
+                        }
+                        { edit = prompt (\r -> r |> typeText "hello world" |> named escapeKey |> typeKey "0" |> typeKey "x" |> typeKey "A" |> typeKey "!")
+                        , word = prompt (\r -> r |> typeText "abc def" |> named escapeKey |> typeKey "0" |> typeKey "w" |> typeKey "x")
+                        , quit = prompt (\r -> r |> typeText "keep" |> named escapeKey |> typeKey "q")
+                        , ctrlA = prompt (\r -> r |> typeText "xy" |> ctrl "a" |> typeKey "z")
+                        }
+          }
+        , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        seen =
+                            look (attached { made | options = made.options |> Dict.set "mouse" "on" |> Dict.set "pane-border-status" "top" })
+
+                        -- the [z] on the screen, by its row and the z's column
+                        at =
+                            seen.rows
+                                |> Array.indexedMap (\i r -> { row = i, parts = String.split "[z]" r })
+                                |> Array.findFirst (\r -> Array.length r.parts > 1)
+                                |> Maybe.map (\found -> { row = found.value.row, col = String.count (Maybe.withDefault "" (Array.first found.value.parts)) + 1 })
+
+                        clicked =
+                            Maybe.map
+                                (\c ->
+                                    (TmuxMode.pointer { ms = 1000, held = 1, select = False, boundaries = [], pasteButton = 2 }
+                                        { action = 0, button = 1, mods = 0, x = c.col * 10 + 5, y = c.row * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+                                        seen.run.tmux
+                                    ).commands
+                                        |> Array.any (String.contains "resize-pane -Z")
+                                )
+                                at
+                    in
+                    Expect.equal
+                        (if version == "3.8" then
+                            Just True
+
+                         else
+                            Nothing
+                        )
+                        clicked
+          }
+        , { name = "a popup's -T title is given to its floating pane's box on 3.8 (TM82)"
+          , test =
+                \_ ->
+                    let
+                        heard =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> typeText "display-popup -T hello -E true"
+                                |> named enterKey
+                                |> settle
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.contains "new-pane")
+                                |> Array.map (String.replace "'" "")
+                    in
+                    Expect.equal
+                        (if version == "3.8" then
+                            { panes = 1, title = True, status = True }
+
+                         else
+                            { panes = 0, title = False, status = False }
+                        )
+                        { panes = Array.length heard
+                        , title = Array.any (String.contains "pane-border-format hello") heard
+                        , status = Array.any (String.contains "pane-border-status top") heard
+                        }
+          }
+        , { name = "choose-buffer's search finds a buffer's whole text, and ignores case from 3.6 only (TM81)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- buffer2 newest, the one chosen first
+                        chose search =
+                            attached { made | buffers = [ "plain text", "one apple\nzebra here", "Two Bananas" ] }
+                                |> prefixThen "="
+                                |> typeKey "/"
+                                |> typeText search
+                                |> named enterKey
+                                |> settle
+                                |> named enterKey
+                                |> settle
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.contains "paste-buffer")
+                                |> Array.map
+                                    (\l ->
+                                        if String.contains "buffer2" l then
+                                            "buffer2"
+
+                                        else if String.contains "buffer1" l then
+                                            "buffer1"
+
+                                        else if String.contains "buffer0" l then
+                                            "buffer0"
+
+                                        else
+                                            l
+                                    )
+                    in
+                    Expect.equal
+                        { zebra = [ "buffer1" ]
+                        , two =
+                            if Array.member version [ "3.6a", "3.8" ] then
+                                [ "buffer0" ]
+
+                            else
+                                [ "buffer2" ]
+                        }
+                        { zebra = chose "zebra", two = chose "two" }
+          }
+        , { name = "C-y at the prompt puts back what C-w cut from 3.0, else the newest buffer up to a control character (TM80)"
+          , test =
+                \_ ->
+                    let
+                        typedThen buffers =
+                            let
+                                made =
+                                    start version
+
+                                run =
+                                    attached { made | buffers = buffers }
+                                        |> prefixThen ":"
+                                        |> typeText "abc def"
+                                        |> ctrl "w"
+                                        |> ctrl "y"
+                                        |> settle
+                            in
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed
+
+                        older =
+                            Array.member version [ "2.7" ]
+                    in
+                    Expect.equal
+                        { noBuffer =
+                            if older then
+                                Just "abc "
+
+                            else
+                                Just "abc def"
+                        , buffer =
+                            if older then
+                                Just "abc hello w"
+
+                            else
+                                Just "abc def"
+                        }
+                        { noBuffer = typedThen [], buffer = typedThen [ "hello w\u{00F6}rld\nsecond" ] }
+          }
+        , { name = "C-y with nothing cut puts in the newest buffer, as this tmux reads it (TM80)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        run =
+                            attached { made | buffers = [ "hello w\u{00F6}rld\nsecond", "older" ] }
+                                |> prefixThen ":"
+                                |> typeText "x "
+                                |> ctrl "y"
+                                |> settle
+                    in
+                    Expect.equal
+                        (if Array.member version [ "2.7" ] then
+                            Just "x hello w"
+
+                         else
+                            Just "x hello w\u{00F6}rld"
+                        )
+                        (TmuxMode.promptBox run.tmux |> Maybe.map .typed)
+          }
+        , { name = "the panes' numbers take a digit, and from 3.2 a letter for panes 10 to 35, each run with the pane's id (TM79)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        first =
+                            Array.first made.panes |> Maybe.withDefault { id = 0, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
+
+                        twelve =
+                            { made | panes = Array.map (\i -> { first | id = i }) (Array.range 0 11), number = 12 }
+
+                        chose letter =
+                            settle (typeKey letter (prefixThen "q" (attached twelve)))
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.startsWith "select-pane")
+
+                        letters =
+                            not (Array.member version [ "2.7", "3.0" ])
+                    in
+                    Expect.equal
+                        { digit = [ "select-pane -t '%3'" ]
+                        , letter =
+                            if letters then
+                                [ "select-pane -t '%11'" ]
+
+                            else
+                                []
+                        }
+                        { digit = chose "3", letter = chose "b" }
+          }
+        , { name = "status off leaves tmux's panes the whole window, as this tmux writes off (TM79)"
+          , test =
+                \_ ->
+                    let
+                        -- 2.7 and 2.8 write the flag as 0 (measured)
+                        made =
+                            start version
+
+                        off =
+                            { made
+                                | options =
+                                    Dict.set "status"
+                                        (if version == "2.7" then
+                                            "0"
+
+                                         else
+                                            "off"
+                                        )
+                                        made.options
+                            }
+
+                        -- in tmux's look, which draws tmux's status lines
+                        run =
+                            settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.idle {}), world = off, held = [], ms = 1000 })
+
+                        wanted =
+                            TmuxMode.wantedSize run.tmux
+                    in
+                    -- tmux's window the whole of puritty's, no row kept back
+                    Expect.equal { tmux = run.world.rows, canvas = run.tmux.canvas.rows } { tmux = wanted.rows, canvas = wanted.rows }
+          }
+        , { name = "the tree of windows shows the rows this tmux draws (TM77)"
+          , test =
+                \_ ->
+                    let
+                        drawn =
+                            drawnMenu version "w"
+
+                        begun =
+                            attached (start version)
+
+                        -- in tmux's own look (TM32), whose rows are tmux's
+                        rows =
+                            (look (prefixThen "w" { begun | tmux = TmuxMode.setLook True begun.tmux })).rows
+                                |> Array.takeFirst (Array.length drawn)
+                                |> Array.map String.trimRight
+                    in
+                    Expect.equal drawn rows
+          }
+        , { name = "the pane menu shows the items this tmux draws (TM27)"
           , test =
                 \_ ->
                     let
@@ -388,14 +1376,7 @@ onVersion version =
                                 |> Array.keepIf (\r -> String.startsWith "│" r)
                                 |> Array.map (\r -> String.trim (String.slice 1 (String.count r - 1) r))
                     in
-                    Expect.equal
-                        (if version == "3.6a" then
-                            [ "Horizontal Split (h)", "Vertical Split   (v)", "Swap Up", "Swap Down", "Swap Marked", "Kill             (X)", "Respawn          (R)", "Mark             (m)", "Zoom" ]
-
-                         else
-                            [ "Float            (f)", "Horizontal Split (h)", "Vertical Split   (v)", "Swap Marked", "Kill             (X)", "Respawn          (R)", "Mark             (m)", "Zoom" ]
-                        )
-                        items
+                    Expect.equal (drawnMenu version ">") items
           }
         , { name = "the pane's cursor is shown once attached, from tmux's flags before 3.8 (TM71)"
           , test = \_ -> Expect.equal True (TmuxMode.paint (attached (start version)).tmux).canvas.showCursor
@@ -408,11 +1389,49 @@ onVersion version =
                             (TmuxMode.paint (inCopyMode 0 (attached w)).tmux).canvas.showCursor
 
                         -- before 3.1, tmux has no copy_cursor_x or
-                        -- selection_start_x
+                        -- selection_start_x: 3.0 and 2.7 as recorded, and
+                        -- a later one made to lack them
                         older =
                             { (start version) | lacking = [ "copy_cursor_x", "copy_cursor_y", "selection_start_x", "selection_start_y", "selection_end_x", "selection_end_y" ] }
+
+                        says =
+                            not (Array.member version [ "3.0", "2.7" ])
                     in
-                    Expect.equal { saying = True, silent = False } { saying = shown (start version), silent = shown older }
+                    Expect.equal { saying = says, silent = False } { saying = shown (start version), silent = shown older }
+          }
+        , { name = "a tree open when control mode ends is gone when tmux -CC is run again (TM102)"
+          , test =
+                \_ ->
+                    let
+                        fresh =
+                            look (attached (start version))
+
+                        top =
+                            row 0 fresh
+
+                        again =
+                            prefixThen "s" fresh.run
+                                |> deliver (Bytes.fromString "%exit\u{000D}\n\u{001B}\\")
+                                |> deliver FakeTmux.startBytes
+                                |> settle
+                                |> look
+                    in
+                    Expect.equal top (row 0 again)
+          }
+        , { name = "a key that leaves copy mode shows the live screen again, without output first (TM101)"
+          , test =
+                \_ ->
+                    let
+                        live =
+                            look (attached (start version))
+
+                        top =
+                            row 0 live
+
+                        left =
+                            look (settle (typeKey "q" (keys 30 (inCopyMode 0 live.run))))
+                    in
+                    Expect.equal top (row 0 left)
           }
         , { name = "a key in copy mode keeps the view until tmux answers, no live screen behind it (TM67)"
           , test =
@@ -433,10 +1452,21 @@ onVersion version =
                             look (settle waiting.run)
                     in
                     Expect.equal
-                        { waiting = { text = "line 170", edge = "[7/176]" }, answered = { text = "line 169", edge = "[8/176]" } }
+                        { waiting = { text = "line 170", edge = timed version "[7/176]" }, answered = { text = "line 169", edge = timed version "[8/176]" } }
                         { waiting = before, answered = split 0 answered }
           }
         ]
+
+
+{-| Copy mode's position as `version` shows it: from 3.6 after the top
+line's time, the recordings' `12:00` (TM103). -}
+timed : String -> String -> String
+timed version position =
+    if Array.member version [ "3.6a", "3.8" ] then
+        "12:00 " ++ position
+
+    else
+        position
 
 
 {-| The tests' server: one 80x24 pane that printed `line 1` to `line 200`. -}
@@ -507,11 +1537,66 @@ replyLines text =
         |> .lines
 
 
+{-| The conditions of these lines that test a bare name `version` does
+not have, `#{?name,a,b}`, or a user option: 2.7 takes such a name as true
+(`#{?@unset,T,F}` and `#{?pane_marked,T,F}` give `T`), where 2.8 and later
+take it as empty; `#{?#{name},a,b}` is false on all (measured,
+docs/tmux-versions.md TV10). A name it has, as tmux's own formats test,
+is answered as tmux answers it. -}
+bareConditions : String -> Array String -> Array String
+bareConditions version lines =
+    let
+        lacks =
+            RealTmux.lacking
+                |> Array.findFirst (\l -> l.version == version)
+                |> Maybe.map (\found -> found.value.names)
+                |> Maybe.withDefault []
+    in
+    lines
+        |> Array.mapAndFlatten (\line -> String.split "#{?" line |> Array.dropFirst 1)
+        |> Array.keepIf (\after -> not (String.startsWith "#" after))
+        |> Array.map (\after -> String.split "," after |> Array.first |> Maybe.withDefault after)
+        |> Array.keepIf (\name -> String.startsWith "@" name || Array.member name lacks)
+        |> Array.map (\name -> "#{?" ++ name)
+        |> Array.foldl
+            (\c acc ->
+                if Array.member c acc then
+                    acc
+
+                else
+                    Array.pushLast c acc
+            )
+            []
+
+
+{-| The menu's items as the real tmux of this version draws them for the
+prefix and `key` (`RealTmux.menus`, record-tmux.py). -}
+drawnMenu : String -> String -> Array String
+drawnMenu version key =
+    RealTmux.menus
+        |> Array.findFirst (\m -> m.version == version && m.key == key)
+        |> Maybe.map (\found -> found.value.items)
+        |> Maybe.withDefault [ "(not recorded)" ]
+
+
 {-| Each recorded answer, and the fake's to the same question in the same
-state, where they differ: none when the fake is honest (TM68). -}
+state, where they differ: none when the fake is honest (TM68). A question
+of `tmux-questions.txt` is held only on the versions whose scenarios ask
+it: another's menus (3.8's `#{!:…}`, which 3.5 and before expand their
+own ways) are never put to an older tmux. -}
 fakeDiffers : Array { version : String, state : String, command : String, real : Array String, fake : Array String }
 fakeDiffers =
+    let
+        heard =
+            RealTmux.versions
+                |> Array.map (\version -> { version = version, asked = askedOn version })
+    in
     RealTmux.answers
+        |> Array.keepIf
+            (\a ->
+                not (Array.member a.command RealTmux.asked)
+                    || Array.any (\h -> h.version == a.version && Array.member { state = a.state, command = a.command } h.asked) heard
+            )
         |> Array.map
             (\a ->
                 { version = a.version
@@ -594,31 +1679,38 @@ onlyAsks line =
         && Array.all (\n -> Array.member n [ "display-message", "display", "list-windows", "list-panes", "list-sessions", "list-commands", "capture-pane" ]) names
 
 
-{-| The questions the scenarios ask that are not recorded for their
-version, as lines for `tmux-questions.txt`: empty when every one is. A
-question asked in copy mode is recorded in "31 up"'s state; any other in
+{-| The questions the scenarios ask on one version, each with the state
+it is recorded in: one asked in copy mode in "31 up"'s; any other in
 "attached"'s. -}
+askedOn : String -> Array { state : String, command : String }
+askedOn version =
+    scenarios
+        |> Array.mapAndFlatten
+            (\name ->
+                let
+                    state =
+                        if name == "copy mode" then
+                            "31 up"
+
+                        else
+                            "attached"
+                in
+                (scenario version name).world.heard
+                    |> Array.keepIf onlyAsks
+                    |> Array.map (\line -> { state = state, command = line })
+            )
+
+
+{-| The questions the scenarios ask that are not recorded for their
+version, as lines for `tmux-questions.txt`: empty when every one is. -}
 unrecorded : String
 unrecorded =
     RealTmux.versions
         |> Array.mapAndFlatten
             (\version ->
-                scenarios
-                    |> Array.mapAndFlatten
-                        (\name ->
-                            let
-                                state =
-                                    if name == "copy mode" then
-                                        "31 up"
-
-                                    else
-                                        "attached"
-                            in
-                            (scenario version name).world.heard
-                                |> Array.keepIf onlyAsks
-                                |> Array.keepIf (\line -> not (Array.any (\a -> a.version == version && a.state == state && a.command == line) RealTmux.answers))
-                                |> Array.map (\line -> state ++ "\t" ++ line)
-                        )
+                askedOn version
+                    |> Array.keepIf (\q -> not (Array.any (\a -> a.version == version && a.state == q.state && a.command == q.command) RealTmux.answers))
+                    |> Array.map (\q -> q.state ++ "\t" ++ q.command)
             )
         |> Array.foldl
             (\l acc ->

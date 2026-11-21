@@ -15,6 +15,7 @@ module Tmux.Command exposing
     , displayAt
     , displayLiteral
     , flagsOf
+    , globalValue
     , ifShellMouse
     , killPane
     , killSession
@@ -42,6 +43,8 @@ module Tmux.Command exposing
     , pasteTemplate
     , popup
     , previousWindow
+    , promptHistory
+    , promptHistoryKept
     , quote
     , resizePane
     , rootTable
@@ -62,6 +65,7 @@ module Tmux.Command exposing
     , showEnvironment
     , showHooks
     , showOptions
+    , showTopBuffer
     , size
     , sizeComma
     , subscribe
@@ -339,6 +343,25 @@ showBufferShape =
     { name = "show-buffer", parts = [ Value "b" ], allowed = anyTmux }
 
 
+showTopBufferShape : Shape
+showTopBufferShape =
+    { name = "show-buffer", parts = [], allowed = anyTmux }
+
+
+{-| `show-prompt-history -T TYPE` (3.3): what tmux's prompts of a type
+have had typed, oldest first (TM89). -}
+promptHistoryShape : Shape
+promptHistoryShape =
+    { name = "show-prompt-history", parts = [ Value "T" ], allowed = Caps.has "show-prompt-history" "T" }
+
+
+{-| `show-options -gv NAME`: a global option's value, an array's items a
+line each (`command-alias`, TM96). -}
+globalValueShape : Shape
+globalValueShape =
+    { name = "show-options", parts = [ Flag "g", Flag "v", Rest ], allowed = anyTmux }
+
+
 captureShape : Shape
 captureShape =
     { name = "capture-pane", parts = [ Flag "p", Value "t" ], allowed = anyTmux }
@@ -472,6 +495,25 @@ listSessions format =
     render listSessionsShape [ quote format ]
 
 
+{-| `show-options -gv NAME`. -}
+globalValue : String -> String
+globalValue name =
+    render globalValueShape [ name ]
+
+
+{-| `show-prompt-history -T TYPE`. -}
+promptHistory : String -> String
+promptHistory kind =
+    render promptHistoryShape [ quote kind ]
+
+
+{-| Whether this tmux keeps a history per prompt type that a client can
+read (`show-prompt-history`, 3.3). -}
+promptHistoryKept : Caps -> Bool
+promptHistoryKept caps =
+    caps.known && promptHistoryShape.allowed caps
+
+
 listBuffers : String -> String
 listBuffers format =
     render listBuffersShape [ quote format ]
@@ -485,6 +527,13 @@ listClients format =
 showBuffer : String -> String
 showBuffer name =
     render showBufferShape [ quote name ]
+
+
+{-| `show-buffer`: the newest buffer's text, as the prompt's C-y puts it in
+(puritty `docs/tmux.md` TM80); tmux refuses it when there is none. -}
+showTopBuffer : String
+showTopBuffer =
+    render showTopBufferShape []
 
 
 {-| `capture-pane -p -t TARGET`: the pane's screen as text. -}
@@ -986,6 +1035,9 @@ catalog =
     , listBuffersShape
     , listClientsShape
     , showBufferShape
+    , showTopBufferShape
+    , promptHistoryShape
+    , globalValueShape
     , captureShape
     , captureHistoryShape
     , captureSavedShape
@@ -1052,27 +1104,92 @@ pasteBytes pane piece bytes =
 
 
 {-| Bytes as one double-quoted word of tmux's syntax, which keeps them on
-the command's one line: printable ASCII as it is, `"`, `\` and `$` behind a
-backslash, every other byte as an octal escape (`\012`), read back by
-tmux's parser byte for byte. -}
+the command's one line, read back by tmux's parser byte for byte (TM94):
+printable ASCII as it is; `"`, `\` and `$` behind a backslash; Escape,
+CR, LF and Tab as `\e`, `\r`, `\n` and `\t`, the escapes every tmux's
+parser takes (2.x's `cmd-string.c` has only those; 3.0's `cmd-parse.y`
+octal besides); valid UTF-8 as its characters, which both take as they
+are; any other byte as an octal escape (`\200`), which only 3.0 on reads. -}
 quoteBytes : Bytes -> String
 quoteBytes bytes =
-    let
-        one u =
-            let
-                b =
-                    UInt8.toInt u
-            in
-            if b == 0x22 || b == 0x5C || b == 0x24 then
-                "\\" ++ String.fromChar (Char.fromCode b |> Maybe.withDefault '?')
+    "\"" ++ quoteFrom bytes 0 (Bytes.length bytes) "" ++ "\""
 
-            else if b >= 0x20 && b < 0x7F then
-                String.fromChar (Char.fromCode b |> Maybe.withDefault '?')
 
-            else
-                "\\" ++ String.fromInt (b // 64) ++ String.fromInt (modBy 8 (b // 8)) ++ String.fromInt (modBy 8 b)
-    in
-    "\"" ++ String.join "" (Array.range 0 (Bytes.length bytes - 1) |> Array.mapAndKeepJust (\i -> Bytes.get i bytes) |> Array.map one) ++ "\""
+quoteFrom : Bytes -> Int -> Int -> String -> String
+quoteFrom bytes i n acc =
+    if i >= n then
+        acc
+
+    else
+        let
+            -- a byte past the end reads as 0, which no test takes
+            at k =
+                Maybe.withDefault (meant Reason.OutOfRange 0) (Maybe.map UInt8.toInt (Bytes.get k bytes))
+
+            b =
+                at i
+
+            ascii c =
+                String.fromChar (Char.fromCode c |> Maybe.withDefault '?')
+
+            octal c =
+                "\\" ++ String.fromInt (c // 64) ++ String.fromInt (modBy 8 (c // 8)) ++ String.fromInt (modBy 8 c)
+
+            -- a UTF-8 sequence's length from its lead byte, 0 for none
+            length =
+                if b >= 0xC2 && b <= 0xDF then
+                    2
+
+                else if b >= 0xE0 && b <= 0xEF then
+                    3
+
+                else if b >= 0xF0 && b <= 0xF4 then
+                    4
+
+                else
+                    0
+
+            sequence =
+                Bytes.slice i (i + length) bytes
+
+            -- whole, every byte after the lead a continuation, and the same
+            -- bytes again when decoded and encoded (no overlong form)
+            valid =
+                length > 0
+                    && i <= n - length
+                    && Array.all (\k -> at k >= 0x80 && at k <= 0xBF) (Array.range (i + 1) (i + length - 1))
+                    && Bytes.fromString (Bytes.toStringLossy sequence) == sequence
+        in
+        if valid then
+            quoteFrom bytes (i + length) n (acc ++ Bytes.toStringLossy sequence)
+
+        else
+            quoteFrom bytes
+                (i + 1)
+                n
+                (acc
+                    ++ (if b == 0x22 || b == 0x5C || b == 0x24 then
+                            "\\" ++ ascii b
+
+                        else if b == 0x1B then
+                            "\\e"
+
+                        else if b == 0x0D then
+                            "\\r"
+
+                        else if b == 0x0A then
+                            "\\n"
+
+                        else if b == 0x09 then
+                            "\\t"
+
+                        else if b >= 0x20 && b < 0x7F then
+                            ascii b
+
+                        else
+                            octal b
+                       )
+                )
 
 
 {-| `send-keys -H`: the bytes as the pane's program reads them, hex, at

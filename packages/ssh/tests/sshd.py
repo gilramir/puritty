@@ -90,6 +90,10 @@ SESSION_CASES = [
     ("session-exit-3", ["--exec", "exit 3"], []),
     ("session-pty-size", ["--exec", "stty size", "--pty", "100,30"], []),
     ("session-resize", ["--exec", "read x; stty size; exit 5", "--pty", "100,30", "--resize", "120,40", "--stdin2", "\\n"], []),
+    # the size in pixels pty-req and window-change carry (puritty
+    # docs/images.md IM21): rows, columns, width, height as the pty says
+    ("session-pty-pixels", ["--exec", "python3 -c 'import fcntl, termios, struct; print(*struct.unpack(\"4H\", fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8))))'", "--pty", "100,30,800,480"], []),
+    ("session-resize-pixels", ["--exec", "read x; python3 -c 'import fcntl, termios, struct; print(*struct.unpack(\"4H\", fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8))))'; exit 5", "--pty", "100,30,800,480", "--resize", "120,40,960,640", "--stdin2", "\\n"], []),
     ("session-iutf8", ["--exec", "stty -a | tr ' ;' '\\n\\n' | grep iutf8", "--pty", "80,24"], []),
     ("session-not-iutf8", ["--exec", "stty -a | tr ' ;' '\\n\\n' | grep iutf8", "--pty", "80,24", "--not-utf8"], []),
     ("session-env", ["--exec", "echo $LANG", "--env", "LANG=ko_KR.EUC-KR"], ["AcceptEnv LANG"]),
@@ -103,7 +107,8 @@ SESSION_CASES = [
 
 
 # Ssh.Session (step 8): name, how known_hosts starts (empty, holding the
-# server's key, or holding another key for it), client options. The
+# server's key, holding another key for it, or another key on a line that
+# names another host too), client options. The
 # port and the file's path are written as PORT and KNOWN_HOSTS in the pins.
 SESSION_DRIVER_CASES = [
     ("driver-trust-remember", "empty", ["--identity", "{ed}", "--trust"]),
@@ -111,11 +116,42 @@ SESSION_DRIVER_CASES = [
     ("driver-decline", "empty", ["--identity", "{ed}"]),
     ("driver-known", "known", ["--identity", "{ed}"]),
     ("driver-changed", "other", ["--identity", "{ed}", "--trust"]),
+    # a changed key asked about (SC28): trusted once, put in place of the
+    # old, refused with no question under StrictHostKeyChecking yes, and
+    # put in place where the old line names another host too ("shared"),
+    # which keeps that line
+    ("driver-changed-once", "other", ["--identity", "{ed}", "--trust-changed-once"]),
+    ("driver-changed-replace", "other", ["--identity", "{ed}", "--replace-changed"]),
+    ("driver-changed-strict", "other", ["--identity", "{ed}", "--replace-changed", "--strict", "yes"]),
+    ("driver-changed-shared", "shared", ["--identity", "{ed}", "--replace-changed"]),
     ("driver-strict-yes", "empty", ["--identity", "{ed}", "--strict", "yes"]),
     ("driver-accept-new", "empty", ["--identity", "{ed}", "--strict", "accept-new"]),
     ("driver-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "hunter2"]),
     ("driver-wrong-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "wrong"]),
     ("driver-unknown-key-then-agentless", "known", ["--identity", "{other}", "--identity", "{rsa}"]),
+]
+
+
+# side channels beside the session (docs/sftp.md FT12): name, client
+# options after the driver's own, sshd config lines. The session's command
+# waits for a line, which the driver sends once every side channel is over,
+# so a side channel's end never ends the session; each side channel's lines
+# are said at the end by its number.
+SFTP_SERVER = "/usr/lib/openssh/sftp-server"
+SIDE_CASES = [
+    ("side-exec", ["--side-exec", "echo side one; exit 2"], []),
+    ("side-two", ["--side-exec", "echo a", "--side-exec", "echo b; exit 1"], []),
+    # 3 MB pumped through the server's window, then the end
+    ("side-stdin", ["--side-exec", "wc -c", "--side-stdin-bytes", "3000000", "--side-eof"], []),
+    ("side-stderr", ["--side-exec", "echo oops >&2; exit 7"], []),
+    ("side-sftp", ["--side-subsystem", "sftp", "--side-eof"], [f"Subsystem sftp {SFTP_SERVER}"]),
+    # no Subsystem line: the request is refused, the channel closed, and
+    # the session goes on
+    ("side-sftp-off", ["--side-subsystem", "sftp"], []),
+    # one session per connection: the side channel is not opened at all
+    ("side-max-sessions", ["--side-exec", "echo never"], ["MaxSessions 1"]),
+    # a side channel that refuses does not stop the next
+    ("side-refused-then-exec", ["--side-subsystem", "nosuch", "--side-exec", "echo still"], []),
 ]
 
 
@@ -284,11 +320,15 @@ def main():
         kh = WORK / f"known_hosts.{name}"
         server_pub = (WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
         lookup = f"[127.0.0.1]:{server.port}"
-        kh.write_text("" if start == "empty" else f"{lookup} {' '.join(server_pub if start == 'known' else other_key.read_text().split()[:2])}\n")
+        other_pub = " ".join(other_key.read_text().split()[:2])
+        names = f"{lookup},elsewhere" if start == "shared" else lookup
+        kh.write_text("" if start == "empty" else f"{names} {' '.join(server_pub) if start == 'known' else other_pub}\n")
         try:
             got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
                               "--exec", "echo hi; exit 4", *(o.format(**keys) for o in options)])
             got += "known_hosts holds the key: " + ("yes" if " ".join(server_pub) in kh.read_text() else "no") + "\n"
+            if start in ("other", "shared"):
+                got += "known_hosts holds the old key: " + ("yes" if other_pub in kh.read_text() else "no") + "\n"
         finally:
             server.stop()
         got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS").replace(str(server.port), "PORT"))
@@ -303,6 +343,26 @@ def main():
         else:
             print(f"ok   {name}")
     server_pub = (WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
+    for name, options, extra in SIDE_CASES:
+        server = Server(extra)
+        kh = WORK / f"known_hosts.{name}"
+        kh.write_text(f"[127.0.0.1]:{server.port} {' '.join(server_pub)}\n")
+        try:
+            got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
+                              "--identity", keys["ed"], "--exec", "read x; echo main done", *options])
+        finally:
+            server.stop()
+        got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS").replace(str(server.port), "PORT"))
+        got = got.replace(f"as {getpass.getuser()}", "as USER")
+        pin = PINS / f"{name}.txt"
+        if a.update:
+            pin.write_text(got)
+            print(f"wrote {name}:\n  " + got.strip().replace("\n", "\n  "))
+        elif not pin.exists() or pin.read_text() != got:
+            fails += 1
+            print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
+        else:
+            print(f"ok   {name}")
     for name, hops, known, options, extra in JUMP_CASES:
         host = Server([])
         jumps = [Server(extra) for _ in range(hops)]
@@ -368,7 +428,7 @@ def main():
         else:
             fails += 1
             print(f"FAIL replay {replay.stem}\n  {got}")
-    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(JUMP_CASES) + len(AGENT_CASES) + len(replays)
+    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(SIDE_CASES) + len(JUMP_CASES) + len(AGENT_CASES) + len(replays)
     if not a.update:
         print(f"{total - fails} of {total} cases pass")
         sys.exit(1 if fails else 0)

@@ -1,0 +1,183 @@
+module Tmux.Passthrough exposing (Part, Scan, idle, split)
+
+{-| tmux's passthrough envelope found in a pane's output (puritty
+`docs/images.md` IM33): `ESC P tmux;`, the sequence inside with each ESC
+doubled, then `ESC \`. A program writes one to reach the terminal outside
+tmux, past tmux: a picture, or a question tmux will not answer for it
+(yazi's, snacks.nvim's and ratatui-image's probes). A control client gets
+a pane's bytes before tmux reads them, envelopes and all, and tmux sends
+the envelope's sequence to no terminal of a control client's; so puritty
+reads it out itself, and answers what is asked inside.
+
+`split` cuts a pane's output into the parts outside an envelope, as they
+were, and the parts inside one, their doubled ESCs made single, in order.
+An envelope may be cut anywhere by the output's reads: what could still be
+the start of one, or an ESC inside one whose next byte has not come, is
+held in the `Scan` for the next read.
+-}
+
+import Bytes exposing (Bytes)
+import Tmux.Reason as Reason
+import UInt8
+
+
+{-| Between two reads: inside an envelope or not, and the bytes held back
+from the last read. -}
+type alias Scan =
+    { inside : Bool, held : Bytes }
+
+
+{-| A part of a read: inside an envelope (its sequence, ESCs made single)
+or outside one. -}
+type alias Part =
+    { inside : Bool, bytes : Bytes }
+
+
+{-| Outside any envelope, nothing held. -}
+idle : Scan
+idle =
+    { inside = False, held = Bytes.empty }
+
+
+{-| A read cut into its parts, and the scan for the next read. -}
+split : Bytes -> Scan -> { parts : Array Part, scan : Scan }
+split bytes scan =
+    let
+        data =
+            if Bytes.isEmpty scan.held then
+                bytes
+
+            else
+                Bytes.flatten [ scan.held, bytes ]
+    in
+    if scan.inside then
+        inside data 0 [] []
+
+    else
+        outside data 0 0 []
+
+
+marker : Bytes
+marker =
+    Bytes.fromString "\u{001B}Ptmux;"
+
+
+{-| Outside an envelope: the bytes from `start` are outside; the next ESC
+at or after `from` may begin one. -}
+outside : Bytes -> Int -> Int -> Array Part -> { parts : Array Part, scan : Scan }
+outside data start from parts =
+    let
+        n =
+            Bytes.length data
+
+        e =
+            indexOf 0x1B from data
+    in
+    if e < 0 then
+        { parts = with False (Bytes.slice start n data) parts, scan = idle }
+
+    else if n - e >= 7 then
+        if Bytes.slice e (e + 7) data == marker then
+            inside data (e + 7) [] (with False (Bytes.slice start e data) parts)
+
+        else
+            outside data start (e + 1) parts
+
+    else if Bytes.slice e n data == Bytes.slice 0 (n - e) marker then
+        -- the start of an envelope, perhaps: held until the next read
+        { parts = with False (Bytes.slice start e data) parts, scan = { inside = False, held = Bytes.slice e n data } }
+
+    else
+        outside data start (e + 1) parts
+
+
+{-| Inside an envelope from `from`: `got` the sequence so far, its ESCs
+made single, until the envelope's `ESC \`. -}
+inside : Bytes -> Int -> Array Bytes -> Array Part -> { parts : Array Part, scan : Scan }
+inside data from got parts =
+    let
+        n =
+            Bytes.length data
+
+        e =
+            indexOf 0x1B from data
+    in
+    if e < 0 then
+        { parts = with True (Bytes.flatten (Array.pushLast (Bytes.slice from n data) got)) parts, scan = { inside = True, held = Bytes.empty } }
+
+    else if e >= n - 1 then
+        -- an ESC whose next byte has not come: doubled, or the end
+        { parts = with True (Bytes.flatten (Array.pushLast (Bytes.slice from e data) got)) parts, scan = { inside = True, held = Bytes.slice e n data } }
+
+    else
+        let
+            next =
+                byteAt (e + 1) data
+
+            kept =
+                Array.pushLast (Bytes.slice from e data) got
+        in
+        if next == 0x1B then
+            inside data (e + 2) (Array.pushLast (Bytes.slice e (e + 1) data) kept) parts
+
+        else if next == 0x5C then
+            -- `ESC \`: the envelope ends
+            outside data (e + 2) (e + 2) (with True (Bytes.flatten kept) parts)
+
+        else
+            -- an ESC not doubled: kept as it is, as tmux passes it
+            inside data (e + 1) (Array.pushLast (Bytes.slice e (e + 1) data) kept) parts
+
+
+with : Bool -> Bytes -> Array Part -> Array Part
+with isInside bytes parts =
+    if Bytes.isEmpty bytes then
+        parts
+
+    else
+        Array.pushLast { inside = isInside, bytes = bytes } parts
+
+
+{-| The first index of byte `b` at or after `from`, or -1. -}
+indexOf : Int -> Int -> Bytes -> Int
+indexOf b from bytes =
+    let
+        n =
+            Bytes.length bytes
+
+        below =
+            if b > 0 then
+                Bytes.spanWithin 0 (b - 1) from n bytes
+
+            else
+                from
+
+        past =
+            if b < 255 then
+                Bytes.spanWithin (b + 1) 255 below n bytes
+
+            else
+                below
+    in
+    if past >= n then
+        -1
+
+    else if past == from then
+        if byteAt from bytes == b then
+            from
+
+        else
+            indexOf b (from + 1) bytes
+
+    else
+        indexOf b past bytes
+
+
+byteAt : Int -> Bytes -> Int
+byteAt i bytes =
+    when Bytes.get i bytes is
+        Just v ->
+            UInt8.toInt v
+
+        Nothing ->
+            meant Reason.OutOfRange -1

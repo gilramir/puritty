@@ -453,7 +453,382 @@ reply ending its line, from 2.7's, on the attach; with the drag's line
 waiting for one reply, on the drag, its action sending three commands
 (`select-pane` first) and waiting for two.
 
-**Not covered yet**: keys typed while replies are pending, the poll's
+**Not covered yet** (TK10.6 has the list now): keys typed while replies are pending, the poll's
 timer, resizes, windows and sessions changing, copy mode and the tree's
 round trips. Each is a scenario to add; the fake answers most of their
 questions already (TM68, TM69).
+
+### TK10.5 · Each answer held to its question (2026-11-15)
+
+TK10.3's invariants count: no answer without a question, nothing owed at
+the end. Two mistakes that cancel would pass them. Now each expectation in
+puritty's queue carries the command that asked it and the number of the
+line it went on (`TmuxMode.Asked`, `linesSent`); the line number replaces
+TK10.4's `Then` marker, a failing reply ending every expectation of its
+line. The fake tells, for each block it writes, the command that made it,
+its flags and whether it failed (`FakeTmux.Told`; a line refused whole is
+told as its first command's failing). For every read the explorer holds
+the blocks to the queue as it was (`heldTo`): each block of puritty's own
+answers the head's command, a failure ends its line, the blocks of what a
+command ran come before its fence; and the queue after the read must begin
+with what those blocks left. The commands are not written to the
+diagnostic log, where typed text would be.
+
+Made to fail on purpose: `askLine` sending its commands in reverse while
+its expectations stay in order, which the counts cannot see, is named at
+once: "tmux's reply to `capture-pane …` was read as the answer to
+`display-message …`".
+
+### TK10.6 · Windows, and fewer eras (2026-11-15)
+
+The fake has the session's windows (`World.window`, `others`, each with
+its panes): `list-windows` lists them all, `list-panes -s` every window's
+panes, and three events: another client opens a window (`%window-add`),
+shows one (`%session-window-changed`), or a window closes; the shown one's
+closing shows the next. Two scenarios: attaching while the shown window
+closes (562 states), and, attached, another client opening, closing and
+showing windows in any order (94). Neither found a fault; with TK10.4's
+failing-line fix taken out, the first fails on every era, the queue left
+naming the captures of the closed window's panes.
+
+The scenarios now run on the rules of 2.7, 3.2 and 3.8 only: 3.0 differs
+from 2.7, and 3.4 from 3.2, only in a blank line and a `%message` in a
+block, which no scenario sends, and the fake's rules for all five are
+still held to every dumped tmux. The explorer costs about 75 s of the
+app's tests on node.
+
+**Not covered yet**: see TK10.7.
+
+### TK10.7 · Keys while replies are pending, `%pause`, and orders that cannot differ (2026-11-15)
+
+Four scenarios more, each on 2.7, 3.2 and 3.8: the tree (`prefix w`)
+opened while attaching, and the window menu (`prefix <`); attached, the
+tree opened as a pane exits, its previews' captures among the questions;
+copy mode's keys (`k`, twice) while tmux puts `%0` in copy mode and its
+program exits, in any order; and, on 3.2 and 3.8 (`%pause` is 3.2's), a
+pane paused as it exits, which sends `continue` and the pane's three
+questions on one line. None found a fault.
+
+A first try put two keys and a pane's exit into one attach: more than
+20,000 states, reported as not explored to the end (TK10.6's limit), and
+1,075 s on node. Split, and with orders that cannot differ left out, the
+whole explorer takes about 40 s on node, where TK10.6's two scenarios
+alone took 75 s: with no world event left, tmux's running its next line
+commutes with puritty's reading and the user's acting (it takes the head
+of the lines sent, which they only add to), so it is taken at once; with
+no user action left, puritty's reading the next block commutes with
+tmux's running and the world's events, so it is taken at once (`open`).
+Every order left out reaches a state one taken reaches.
+
+**Made to fail on purpose, after the reduction**, every fault so far,
+each caught where it was before: the failing-line fix taken out (the
+attaches, a window closing, the pause), the fence (the file sourced and
+`if-shell`, from 3.2), `askLine`'s commands reversed (every scenario
+that attaches, by TK10.5's check), copy mode's question sent without
+being waited for (the copy-mode scenario, every era), and the drag's
+line waiting for one reply.
+
+**Not covered yet**: see TK10.8.
+
+### TK10.8 · Menus and popups as their pane exits (2026-11-15)
+
+Three scenarios more, each on 2.7, 3.2 and 3.8, the pane being `%0`, the
+active one: the pane menu (`prefix >`) opened as the pane exits, its
+title, names and commands expanded at the pane by `display-message`
+(which fails at a pane gone before 3.2); the same with an item's key
+(`m`, Mark) typed, which may come before the menu is shown; and a popup
+opened at the prompt (`display-popup -E true`), five commands on one
+line on 3.8 and, before it, a message and nothing sent. None found a
+fault.
+
+The poll's timer before 3.2 and each version's own answers are TK10.9's;
+resizes TK10.10's.
+
+### TK10.9 · Each era on its own tmux's answers, and the status line's timer (2026-11-15)
+
+The scenarios ran on 2.7's, 3.2's and 3.8's rules for a line, but the fake
+answered every question as 3.8. Now each era's fake answers as its own
+release (3.2a for 3.2), as recorded (`docs/tmux-versions.md` TV10), and
+every earlier scenario passes so.
+
+**The timer.** Before 3.2 puritty has no subscriptions: once a second it
+asks what they would tell (`TmuxMode.tick`, TM72), about thirteen
+questions, those before 2.9 in two steps (each option's text, then the
+format with it in place of `#{T:…}`). Five scenarios, each on 2.7's
+answers (two steps) and on 3.0's (`#{T:…}` at once), both on 2.7's rules:
+the timer firing while attaching; as a pane exits; firing again before the
+first poll's answers are read; and as another client closes a window and
+opens one. A first try with the timer firing twice as a pane exits went
+past 5,000 states on 2.7's two steps, so it is two scenarios instead.
+
+**A check more:** puritty never asks a tmux before 2.9 for `#{T:…}`, but
+for the probe, `#{T:version}`, by which it learns whether it may
+(`Explorer.lacked`). **It found** that the timer started when the probe
+was sent, not when it was answered: a timer that fired first asked 2.7 for
+`#{T:status-left}` and the rest, which it answers empty, so over a link
+slower than a second the status line would come back blank for a second.
+Fixed (TM76): the timer starts with the probe's answer.
+
+**Made to fail on purpose:** the poll's questions sent without being
+waited for, named at once: "the timer fires while attaching, on 2.7's
+answers: the user's action sent 19 commands, and puritty waits for 0
+replies to them".
+
+The app's tests take about three minutes on node, a minute more than
+before: the four versions' tests (forty) and the five scenarios.
+
+### TK10.10 · Resizes (2026-11-15)
+
+**Measured** (a control client setting its own size, `refresh-client -C`,
+on 2.7, 3.0, 3.2a, 3.4, 3.7c and 3.8, a session of two windows): an empty
+block, then a `%layout-change` for every window of the session in the
+order of their indexes, each in the new size, the shown one's flags `*`
+and the others' none; in tmux's layout string, and on 3.8 in JSON when the
+client asked for `new-layouts`. The fake does so (`FakeTmux.resizedTo`),
+and keeps whether `new-layouts` was asked.
+
+**Five scenarios**, each on 2.7, 3.2 and 3.8: puritty's window resized
+while attaching, to the session's first window and to its second (whose
+`%layout-change` comes after the first's, while puritty may not yet know
+its window); as a pane exits; twice before tmux answers; and as another
+client shows another window. **A check more** when all is said and read:
+tmux's window is the size puritty's window asks for (`TmuxMode.wantedSize`),
+and puritty's layout is that size.
+
+**It found** (all three eras, both attaching scenarios): a resize while
+attaching was lost. puritty sends its size once it knows the form this tmux
+takes (`ForCaps`, TM72), and sent the size the window had when attaching
+began; a resize before that sent one at once, in 3.x's form, which 2.x
+refuses. tmux's window stayed 80x24 where puritty's was 90x20, until the
+next resize. Fixed (`docs/tmux.md` TM78). The adoption the second window's
+scenario was written for (puritty takes a `%layout-change`'s window as its
+own while it knows none) did not go wrong in any order: puritty asks its
+window before it sends a size, so tmux answers that first.
+
+**Made to fail on purpose:** with the fix taken out, both attaching
+scenarios fail on every era, "puritty's window asks for 90x20, where
+tmux's window is 80x24". The first try of the fake wrote 3.8's
+`%layout-change` in tmux's layout string, which carries no floating pane,
+and the floating pane's drag failed for it: the fake's mistake, fixed by
+the measurement with `new-layouts`.
+
+## TK11 · What tmux tells, and what puritty shows: window 6 (2026-11-15)
+
+Gilbert, on gmktec7 with tmux 3.4 under `tmux -CC`: he ended every pane of
+window 6 with Ctrl-D, and its tab stayed; `prefix p` and `prefix n` skipped
+it. His diagnostic log had it: `%session-window-changed $0 @28`, then
+`%unlinked-window-close @25`. puritty asked the window again for the first
+and did nothing for the second: it took `%unlinked-window-close` for
+another session's window. Before 3.8, tmux says so of its own session's
+window too, when the window's last pane's program ends or the window is
+killed.
+
+**Why the checks missed it.** TK10.1's recording had it (killing a window:
+`%unlinked-window-close` on every tmux before 3.8), but nothing held
+puritty's handling of notifications to the recordings: checks 1 and 2
+cover what puritty sends, not what it hears; the fake was written to send
+3.8's `%window-close` on every version; and the explorer held only
+questions and answers in step, which a stale tab breaks none of.
+
+**Each gap closed:**
+
+- **Recorded.** `app/tests/dump-notices.py` (in `releases.sh` and
+  `distros.sh`, all 33 tmuxes, `corpus/tmux/*/notices.txt`): a control
+  client listens while a second client changes the server a step at a
+  time, 31 steps: windows made, renamed, shown, killed and ended by their
+  last pane's program, the shown window's included; panes split, killed
+  and exiting; sessions made, renamed and killed, a window made in
+  another; copy mode, a resize, buffers, a layout, `move-window`, the
+  server killed. Found, beyond window 6: 2.x tells a new window's pane
+  active before the window, and adds a window before showing it where
+  3.x shows it first; `%paste-buffer-*` are 3.4's, `%exit` at a killed
+  server 3.2's; `move-window` says `%window-add`, `%session-window-changed`
+  and `%window-close` of the same window.
+- **Every notification decided.** `corpus/checks/tmux-notices.tsv`, a row
+  each of the 19 the tmuxes sent and 6 no recording has: its constructor,
+  which releases send it (computed from the recordings: `all`, `from X`,
+  `until X`, `some`, `unrecorded`), whether puritty acts on it or ignores
+  it, and why. `scripts/tmux-notices.py`, in the unit gate, fails on a
+  notification sent with no row, a span the recordings do not bear out, a
+  name `Tmux.Control` does not read, and a handling `TmuxMode`'s `notice`
+  does not have (a constructor with a branch of its own acts). Before the
+  fix it named both: `%unlinked-window-close` and `%unlinked-window-renamed`
+  written as acted on, and ignored. It also corrected three spans of mine.
+- **The fake held to the recordings.** It says `%unlinked-window-close`
+  before 3.8 for its own windows, the shown one's closing as tmux 3.4 does
+  (the session's window changed, then the close), a new window's pane
+  first on 2.x, and renames (`FakeTmux.renameWindow`); `gen-lines.py`
+  writes each tmux's notices into `LinesRecorded`, and a test replays the
+  eight window steps the fake models on the fake following each tmux and
+  requires the same window notifications, by name and window, as that
+  tmux sent. Its first run found my order for a window made and shown
+  wrong on 2.x.
+- **What puritty shows held to what tmux has.** `TmuxMode.viewLine`: the
+  tabs by index (each window's id and name), the window shown, its panes
+  as its layout has them, the active one marked. The explorer requires it
+  to be the fake's when all is said and read; puritty also writes it to
+  the diagnostic log, `tmux= …`, whenever it changes, so that a stale tab
+  shows in the log the moment it happens.
+
+**The fix** (`TmuxMode.notice`): `%unlinked-window-close` of a window that
+is one of the tabs asks the tabs again; `%unlinked-window-renamed` of one
+renames its tab. Made to fail on purpose: with the first taken out, the
+explorer names window 6's very case on the rules of 2.7 and 3.2 and not
+3.8: "puritty shows tabs @0:sh @1:two @2:sh … where tmux has tabs @0:sh
+@2:sh".
+
+## TK12 · The puppet: puritty against each real tmux (2026-11-15)
+
+`harness/puppet.py`: each release's tmux runs in the survey's container,
+its socket in a folder shared with this machine; puritty runs here on a
+virtual display, its program that version's own client run in the
+container (`podman exec -it … tmux -S … -CC attach`), so client and server
+are the same tmux. A second `podman exec` is the puppet, 19 steps: a window
+made, renamed, shown and shown back; the shown window split, its other pane
+made active and killed; a window whose program ends; a window killed;
+window 6 (a window of two panes whose shells end with `exit`, as Ctrl-D);
+a window made and shown whose program ends; a session made beside it with
+a window, and killed; a window made and the first moved to another index;
+the shown window renamed. `automatic-rename` is off, so that names are as
+given. After each step (and after attaching) the harness waits up to 8 s
+for puritty's diagnostic log to say, in its last `tmux=` line, what tmux
+lists (`list-windows`, `display-message`, `list-panes`), and fails the step
+with both when it does not.
+
+**Every release passes all 20** (2.7 to 3.8, 24 of them; 2.9 is left out,
+as it ends the client at a split, TV6). Made to fail on purpose: built
+with TK11's fix taken out, 3.4 fails six of the 20, the first where a
+window's own program ends, and window 6 among them: "its last pane's shell
+ended: puritty shows tabs @0:sh @3:six … where tmux has tabs @0:sh".
+
+`harness/puppet.py [VERSION …]` runs 2.7, 3.0, 3.2, 3.4, 3.6a and 3.8 by
+default, `--all` every release; about a minute a version. It needs
+`app/puritty-noble` (`app/distro/build.sh noble`). It is not in the unit
+gate, which runs on Windows too; it is run before a release
+(docs/releasing.md).
+
+### TK12.1 · puritty's own side, and two of tmux's silences (2026-11-15)
+
+The puppet grew a second half, puritty's own side, 29 steps more:
+puritty's window resized smaller and larger; copy mode entered by the
+puppet, moved and left by keys typed into puritty (`xdotool`), and by
+`prefix [`; a window made (`prefix c`), split (`prefix "`, `%`), the other
+pane made active (`prefix o`), the window renamed at puritty's prompt
+(`prefix ,`), a pane killed by `prefix x` confirmed with `y` and from the
+pane menu (`prefix >`, `X`), the window killed by `prefix &`; the next and
+previous window; zoom and back (`prefix z`); panes swapped (`prefix {`),
+rotated (`prefix C-o`), laid out anew (`prefix Space`), one resized
+(`prefix C-Right`) and one broken out to a window (`prefix !`); another
+window chosen in the tree (`prefix w`, Down, Enter); a window made and the
+shown one killed by commands typed at puritty's prompt (`prefix :`). The
+`tmux=` line gained the window's size, each pane's size and the panes in a
+mode, held to `window_width`/`height`, `pane_width`/`height` and
+`pane_mode` (a zoomed window as its active pane alone, as it shows).
+
+**Found**, on every tmux: `rotate-window` moves the panes and tells a
+control client only `%window-pane-changed`, so puritty kept their old
+places. Recorded (`dump-notices.py` gained the steps that move panes: two
+more splits, rotate both ways, swap, zoom and back, a resize, tiled,
+respawn, break, join, swap-window): `rotate-window` tells no layout on
+any tmux, and `swap-pane` tells nothing at all before 3.0. A report is
+written, not filed (`docs/upstream/tmux-rotate-window-tells-no-layout.md`).
+
+**Fixed** (TM75): puritty asks the window again after each of tmux's
+bindings runs and after the user's own commands. Asked right after the key
+it failed on 3.4: with `send-keys -K` tmux runs the binding's command after
+puritty's next line, so the window was told before it changed; it is now
+asked when the binding's block comes (flags 0), and right after the key
+only before 3.4, where puritty sends the binding's command itself. Not in
+copy mode or the tree, whose every key is a binding.
+
+The 48 checks pass on every release from 2.7 to 3.8; with the fix taken
+out the rotate step fails on 2.7, 3.4 and 3.8. On 3.7 `prefix !` ended
+tmux's server: 3.7's own bug, `break-pane` with no name, fixed in 3.7a
+(TV6); the harness leaves that step out on 3.7 (`SKIP`), saying so, and 3.7
+passes the other 47.
+
+## TK13 · The puppet's odd cases: errors and disconnects (2026-11-18)
+
+Gilbert, 2026-11-18: more puppet tests, with weird scenarios, errors and
+disconnects among them, since this is where problems keep turning up.
+
+**`harness/puppet-trials.py`** runs each trial on its own tmux and
+puritty (TK12's container, `podman exec … -CC attach`), since many end the
+session. puritty's program is a shell that attaches and, when control
+mode ends, says the status and goes on as a shell with `OUTER=outer` in
+its environment. So after control mode ends a trial types
+`echo $OUTER > /sock/typed` into puritty: the file says `outer` only when
+the line reached that shell. A tmux pane in the same container would
+write it empty, and a key still sent as a tmux command writes nothing.
+While a session goes on, the `tmux=` line is held to tmux, as TK12 holds
+it, for the session the control client is in. 23 trials:
+
+| trial | what |
+|---|---|
+| kill-server, detached-elsewhere, only-session-killed, session-killed-detaches, last-pane-killed | control mode ended by tmux: typing reaches the shell after it |
+| session-killed-other-left | `detach-on-destroy off`: the client moves to the other session, and puritty with it |
+| switched-elsewhere | `switch-client` by another client, there and back, and a window made in the other |
+| client-killed | the control client SIGKILLed (no `%exit`), then `tmux -CC attach` typed into the shell, and a window made by `prefix c` |
+| client-stopped | the client SIGSTOPped while the server gains a window and a pane, renames and kills, then let go |
+| server-crashed | the server SIGKILLed: the client says `%exit` itself |
+| respawned, burst, odd-names, no-room-to-split | `respawn-pane -k` and `respawn-window -k`; thirty windows, then `kill-window -a`; names in Hangul, with `%`, quotes, an emoji, 120 characters, a format, and empty; splits until tmux refuses |
+| bad-command, fake-control-lines, garbage-output | a command tmux refuses at puritty's prompt; a pane printing `%exit`, `%begin` and `ESC P1000p…ESC \`; 300 KB from `/dev/urandom` |
+| tiny-window, output-while-resized | the window made 120×80 pixels and back; `seq` writing while it is resized three times |
+| killed-at-prompt, killed-in-tree, killed-in-copy-mode | the server killed while puritty's prompt, its tree or copy mode is up |
+| puritty-ended | puritty ended (SIGTERM): its program ends with it and the session stays |
+
+`harness/sshwindow.py` gained the same over the built-in client, against
+its local sshd: the client killed with no `%exit` (the shell after it
+silent, and an interactive one), the server killed, the client detached
+from elsewhere; and the connection dropped while puritty's prompt, its
+tree, or a flood of output is up, then R and a line typed into the new
+shell. Each case now writes puritty's diagnostic log.
+
+**Found: a client killed with no `%exit` left puritty in control mode for
+good.** Every line the shell wrote after it (its prompt, `sh: send-keys:
+not found`) was taken as an unknown notification, the title kept
+`tmux: zsh`, and every key went to the shell as a tmux command
+(`send-keys -K -H 68`); over ssh the session never ended. tmux's
+`control.c`, 2.7 to 3.8: outside a reply tmux writes only `%` lines and
+the `ESC \` that ends control mode. 2.7's `parse error:` is inside
+`%begin`/`%error`, and config errors go to a pane (2.7) or
+`%config-error`. The one bare line is the attach command's own error,
+before anything else (TM70: `ESC P1000p unknown command: attacth-t`,
+then `%exit`).
+
+**Fixed** (`Tmux.Control`): once tmux has written a `%` line, a line
+outside a reply that does not begin with `%` (an escape too: a colored
+prompt) ends control mode as `ESC \` does, and its bytes go to the
+terminal. Five tests in the tmux suite (133): a shell's `Killed` and
+prompt after a notification, a prompt with no line end and a colored
+one, a reply's lines of any kind, and TM70's bare line before the first
+`%` line still a notice. Against real tmux 3.8 the local trial and the
+ssh case with an interactive shell now pass: the prompt ends control
+mode, the title goes back to the host's, and what is typed runs in the
+shell. Made to fail on purpose: both failed with the build before.
+
+**Not fixed: a client killed where the shell says nothing.**
+`tmux-client-killed` waits in `read` after tmux: nothing comes, so
+nothing tells puritty control mode is over, and the first key goes as
+`send-keys`. The only sign would be a command tmux never answers; a
+timeout on that would also fire on a tmux that is only slow. *Decided*
+(Gilbert, 2026-11-18): left as it is, and written down here. The case is
+pinned as it is, with a comment saying so.
+A login shell, or `exec tmux`, does not hit it: the prompt, or the end of
+the session, comes.
+
+**Not puritty's**, recorded so that the trials stay honest:
+
+- tmux 2.7 with the window made tiny says the window is 10×2 while its
+  two panes, 10×2 and 10×3 with the line between, take 6 rows; puritty
+  draws the panes. The step is left out on 2.7 (`KNOWN`), saying so.
+- `podman exec`'s process in the container outlives the `podman exec`
+  client, so puritty's end does not end the tmux client there, as a real
+  terminal's hangup would. `puritty-ended` holds puritty's own child
+  ended, and the session kept.
+- Three harness mistakes the first runs made, each a false pass or a
+  false failure: the image has no `kill` program (the shell's is used);
+  `pkill -f` and a `/proc` scan match their own command line and the
+  shell's that holds the tmux command (a bracket in the pattern, and the
+  attach through a variable); and `-t main` is looked up as a window
+  first, so a window named `main …` answered for the session (`main:`).

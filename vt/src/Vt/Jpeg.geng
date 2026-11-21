@@ -1,0 +1,1489 @@
+module Vt.Jpeg exposing (Decoded, decode)
+
+{-| JPEG decoded to 8-bit RGBA for iTerm2's images (`docs/images-iterm.md`
+IT4), in Geng, as `Vt.Png` is: the baseline and extended sequential
+processes with Huffman coding (SOF0, SOF1), 8-bit samples, one component
+(grey) or three (YCbCr, or RGB where an Adobe marker says so), any
+sampling factors, restart intervals, and scans interleaved or one
+component each. Each block dequantized and inverse transformed in floating
+point; chroma half as wide, or half as wide and tall, smoothed as
+libjpeg does it ("fancy upsampling"), any other from the nearest sample. Progressive and
+arithmetic-coded files, and 12-bit or CMYK ones, are not decoded, and say
+so. Held to `most` bytes of pixels.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Math
+import UInt8
+import Vt.Cell exposing (byteAt)
+import Vt.Reason as Reason
+
+
+type alias Decoded =
+    { width : Int, height : Int, pixels : Bytes }
+
+
+type alias Component =
+    { id : Int, h : Int, v : Int, q : Int }
+
+
+type alias Frame =
+    { width : Int
+    , height : Int
+    , comps : Array Component
+    , hmax : Int
+    , vmax : Int
+    , mcusX : Int
+    , mcusY : Int
+    }
+
+
+{-| A Huffman table: the codes of each length, 1 to 16, and the symbols in
+code order. -}
+type alias Table =
+    { counts : Array Int, symbols : Array Int }
+
+
+{-| A scan's component: its place in the frame, its tables, and the
+quantization table it had when the scan began. -}
+type alias ScanComp =
+    { index : Int, dc : Table, ac : Table, quant : Array Int }
+
+
+type alias Scan =
+    { comps : Array ScanComp, segments : Array Bytes, restart : Int, ss : Int, se : Int, ah : Int, al : Int }
+
+
+type alias Parsed =
+    { frame : Maybe Frame
+    , quant : Dict Int (Array Int)
+    , dc : Dict Int Table
+    , ac : Dict Int Table
+    , restart : Int
+    , adobe : Int
+    , orientation : Int
+    , progressive : Bool
+    , scans : Array Scan
+    }
+
+
+u16 : Bytes -> Int -> Int
+u16 data at =
+    Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt data at)) (byteAt data (at + 1))
+
+
+{-| The image, or why not. -}
+decode : Int -> Bytes -> Result String Decoded
+decode most data =
+    if byteAt data 0 /= 0xFF || byteAt data 1 /= 0xD8 then
+        Err "not a JPEG"
+
+    else
+        markers data 2 { frame = Nothing, quant = Dict.empty, dc = Dict.empty, ac = Dict.empty, restart = 0, adobe = -1, orientation = 1, progressive = False, scans = [] }
+            |> Result.andThen (pixelsOf most)
+
+
+-- THE MARKERS
+
+
+{-| Each marker segment from `at` to EOI (or the data's end). -}
+markers : Bytes -> Int -> Parsed -> Result String Parsed
+markers data at p =
+    if at < 0 || at > 1000000000 then
+        Err "too long"
+
+    else if at >= Bytes.length data - 1 then
+        Ok p
+
+    else if byteAt data at /= 0xFF then
+        Err "a marker expected"
+
+    else
+        let
+            m =
+                byteAt data (at + 1)
+        in
+        if m == 0xFF then
+            -- fill before a marker
+            markers data (at + 1) p
+
+        else if m == 0xD9 then
+            Ok p
+
+        else if m == 0xD8 || (m >= 0xD0 && m <= 0xD7) || m == 0x01 then
+            markers data (at + 2) p
+
+        else
+            let
+                len =
+                    clamp 0 65535 (u16 data (at + 2))
+
+                body =
+                    Bytes.slice (at + 4) (at + 2 + len) data
+
+                after =
+                    at + 2 + len
+            in
+            if len < 2 || after > Bytes.length data then
+                Err "a segment past the end"
+
+            else if m == 0xC0 || m == 0xC1 then
+                frameOf body |> Result.andThen (\f -> markers data after { p | frame = Just f })
+
+            else if m == 0xC2 then
+                -- progressive, Huffman coded (IT6)
+                frameOf body |> Result.andThen (\f -> markers data after { p | frame = Just f, progressive = True })
+
+            else if m == 0xC6 || m == 0xCA || m == 0xCE then
+                Err "a progressive JPEG process not decoded (differential or arithmetic)"
+
+            else if m >= 0xC3 && m <= 0xCF && m /= 0xC4 && m /= 0xC8 && m /= 0xCC then
+                Err "a JPEG process not decoded (lossless, hierarchical or arithmetic)"
+
+            else if m == 0xC4 then
+                markers data after (tables body 0 p)
+
+            else if m == 0xDB then
+                markers data after (quantTables body 0 p)
+
+            else if m == 0xDD then
+                markers data after { p | restart = u16 body 0 }
+
+            else if m == 0xEE && Bytes.length body >= 12 && byteAt body 0 == 0x41 && byteAt body 1 == 0x64 && byteAt body 2 == 0x6F then
+                -- Adobe: its colour transform, 0 for RGB
+                markers data after { p | adobe = byteAt body 11 }
+
+            else if m == 0xE1 && Bytes.length body >= 14 && byteAt body 0 == 0x45 && byteAt body 1 == 0x78 && byteAt body 2 == 0x69 && byteAt body 3 == 0x66 then
+                -- Exif: the orientation a camera wrote, which the picture
+                -- is turned by as a browser turns it (IT5)
+                markers data after { p | orientation = orientationOf (Bytes.slice 6 (Bytes.length body) body) }
+
+            else if m == 0xDA then
+                when scanOf body p is
+                    Err why ->
+                        meant Reason.FromOutside (Err why)
+
+                    Ok comps ->
+                        let
+                            coded =
+                                entropy data after after [] []
+                        in
+                        let
+                            -- the spectral selection and successive
+                            -- approximation after the components: for a
+                            -- progressive scan its band and its bits
+                            n =
+                                byteAt body 0
+
+                            ahal =
+                                byteAt body (3 + 2 * n)
+                        in
+                        markers data
+                            coded.next
+                            { p
+                                | scans =
+                                    Array.pushLast
+                                        { comps = comps
+                                        , segments = coded.segments
+                                        , restart = p.restart
+                                        , ss = clamp 0 63 (byteAt body (1 + 2 * n))
+                                        , se = clamp 0 63 (byteAt body (2 + 2 * n))
+                                        , ah = clamp 0 13 (Bitwise.shiftRightBy 4 ahal)
+                                        , al = clamp 0 13 (Bitwise.and 15 ahal)
+                                        }
+                                        p.scans
+                            }
+
+            else
+                -- APPn, COM and the rest: skipped
+                markers data after p
+
+
+frameOf : Bytes -> Result String Frame
+frameOf body =
+    let
+        precision =
+            byteAt body 0
+
+        height =
+            u16 body 1
+
+        width =
+            u16 body 3
+
+        n =
+            byteAt body 5
+
+        comps =
+            Array.range 0 (n - 1)
+                |> Array.map
+                    (\i ->
+                        let
+                            at =
+                                6 + 3 * i
+
+                            hv =
+                                byteAt body (at + 1)
+                        in
+                        { id = byteAt body at, h = Bitwise.shiftRightBy 4 hv, v = Bitwise.and 15 hv, q = byteAt body (at + 2) }
+                    )
+
+        hmax =
+            Array.foldl (\c acc -> max c.h acc) 1 comps
+
+        vmax =
+            Array.foldl (\c acc -> max c.v acc) 1 comps
+    in
+    if precision /= 8 then
+        Err "not 8 bits a sample"
+
+    else if width < 1 || height < 1 || width > 10000 || height > 10000 then
+        Err "dimensions"
+
+    else if n /= 1 && n /= 3 then
+        Err "not grey or three components"
+
+    else if Array.any (\c -> c.h < 1 || c.h > 4 || c.v < 1 || c.v > 4) comps then
+        Err "sampling"
+
+    else
+        Ok { width = width, height = height, comps = comps, hmax = hmax, vmax = vmax, mcusX = (width + 8 * hmax - 1) // (8 * hmax), mcusY = (height + 8 * vmax - 1) // (8 * vmax) }
+
+
+{-| DHT: one table after another to the segment's end. -}
+tables : Bytes -> Int -> Parsed -> Parsed
+tables body at p =
+    if at + 17 > Bytes.length body then
+        p
+
+    else
+        let
+            tc =
+                byteAt body at
+
+            counts =
+                Array.map (\i -> byteAt body (at + i)) (Array.range 1 16)
+
+            total =
+                Array.foldl (+) 0 counts
+
+            table =
+                { counts = counts, symbols = Array.map (\i -> byteAt body (at + 17 + i)) (Array.range 0 (total - 1)) }
+
+            id =
+                Bitwise.and 15 tc
+        in
+        tables body
+            (at + 17 + total)
+            (if Bitwise.shiftRightBy 4 tc == 0 then
+                { p | dc = Dict.set id table p.dc }
+
+             else
+                { p | ac = Dict.set id table p.ac }
+            )
+
+
+{-| DQT: each table in zigzag order, 8 or 16 bits a value. -}
+quantTables : Bytes -> Int -> Parsed -> Parsed
+quantTables body at p =
+    if at + 65 > Bytes.length body then
+        p
+
+    else
+        let
+            pq =
+                Bitwise.shiftRightBy 4 (byteAt body at)
+
+            id =
+                Bitwise.and 15 (byteAt body at)
+
+            values =
+                if pq == 0 then
+                    Array.map (\i -> byteAt body (at + 1 + i)) (Array.range 0 63)
+
+                else
+                    Array.map (\i -> u16 body (at + 1 + 2 * i)) (Array.range 0 63)
+        in
+        quantTables body
+            (at
+                + 1
+                + (if pq == 0 then
+                    64
+
+                   else
+                    128
+                  )
+            )
+            { p | quant = Dict.set id values p.quant }
+
+
+{-| SOS's header: each component of the scan with its tables. -}
+scanOf : Bytes -> Parsed -> Result String (Array ScanComp)
+scanOf body p =
+    when p.frame is
+        Nothing ->
+            meant Reason.FromOutside (Err "a scan before the frame")
+
+        Just f ->
+            let
+                n =
+                    byteAt body 0
+
+                one i =
+                    let
+                        id =
+                            byteAt body (1 + 2 * i)
+
+                        td =
+                            byteAt body (2 + 2 * i)
+
+                        index =
+                            Maybe.withDefault (meant Reason.FromOutside -1) (Maybe.map .index (Array.findFirst (\c -> c.id == id) f.comps))
+
+                        q =
+                            (component f index).q
+                    in
+                    -- a progressive scan uses one of its two tables, and
+                    -- the other need not be defined yet (IT6)
+                    when { dc = tableOr p.progressive (Dict.get (Bitwise.shiftRightBy 4 td) p.dc), ac = tableOr p.progressive (Dict.get (Bitwise.and 15 td) p.ac), quant = Dict.get q p.quant } is
+                        { dc = Just dc, ac = Just ac, quant = Just quant } ->
+                            if index < 0 then
+                                Err "a scan's component not in the frame"
+
+                            else
+                                Ok { index = index, dc = dc, ac = ac, quant = quant }
+
+                        _ ->
+                            Err "a table not defined"
+            in
+            Array.foldl (\i acc -> Result.andThen (\a -> Result.map (\c -> Array.pushLast c a) (one i)) acc) (Ok []) (Array.range 0 (n - 1))
+
+
+{-| A table not defined, for a progressive scan, which does not use it: an
+empty one. -}
+tableOr : Bool -> Maybe Table -> Maybe Table
+tableOr progressive t =
+    when t is
+        Just found ->
+            Just found
+
+        Nothing ->
+            meant Reason.NotSet
+                (if progressive then
+                    Just { counts = Array.repeat 16 0, symbols = [] }
+
+                 else
+                    Nothing
+                )
+
+
+{-| The entropy-coded data from `at`: its stuffed 0xFF 0x00 made 0xFF, cut
+into the segments the restart markers end, up to the next other marker. -}
+entropy : Bytes -> Int -> Int -> Array Bytes -> Array Bytes -> { segments : Array Bytes, next : Int }
+entropy data start at pieces segments =
+    let
+        n =
+            Bytes.length data
+
+        -- the run of bytes that are not 0xFF, in one step
+        run =
+            Bytes.spanWithin 0x00 0xFE at n data
+    in
+    if run >= n - 1 then
+        { segments = Array.pushLast (Bytes.flatten (Array.pushLast (Bytes.slice start n data) pieces)) segments, next = n }
+
+    else
+        let
+            m =
+                byteAt data (run + 1)
+
+            upTo =
+                Array.pushLast (Bytes.slice start run data) pieces
+        in
+        if m == 0x00 then
+            -- a stuffed 0xFF: kept, its zero dropped
+            entropy data (run + 2) (run + 2) (Array.pushLast (Bytes.slice run (run + 1) data) upTo) segments
+
+        else if m == 0xFF then
+            -- fill: the first 0xFF dropped
+            entropy data (run + 1) (run + 1) upTo segments
+
+        else if m >= 0xD0 && m <= 0xD7 then
+            entropy data (run + 2) (run + 2) [] (Array.pushLast (Bytes.flatten upTo) segments)
+
+        else
+            { segments = Array.pushLast (Bytes.flatten upTo) segments, next = run }
+
+
+-- THE SCANS
+
+
+{-| Each component's plane of samples: whole blocks, `mcusX · h` wide. -}
+planeWidth : Frame -> Component -> Int
+planeWidth f c =
+    f.mcusX * c.h * 8
+
+
+planeHeight : Frame -> Component -> Int
+planeHeight f c =
+    f.mcusY * c.v * 8
+
+
+pixelsOf : Int -> Parsed -> Result String Decoded
+pixelsOf most p =
+    when p.frame is
+        Nothing ->
+            meant Reason.FromOutside (Err "no frame")
+
+        Just f ->
+            let
+                sizes =
+                    Array.map (\c -> planeWidth f c * planeHeight f c) f.comps
+
+                offsets =
+                    Array.foldl (\s acc -> { at = acc.at + s, list = Array.pushLast acc.at acc.list }) { at = 0, list = [] } sizes
+
+                total =
+                    offsets.at
+            in
+            if f.width * f.height * 4 > most || total > 400000000 then
+                Err "too large"
+
+            else if Array.isEmpty p.scans then
+                Err "no scan"
+
+            else
+                let
+                    planes =
+                        if p.progressive then
+                            -- every block's coefficients over all the
+                            -- scans, then each transformed (IT6)
+                            Array.foldl (\scan out -> progressiveScan f offsets.list scan out) (Builder.repeat total 0) p.scans
+                                |> Builder.toArray
+                                |> transformed f offsets.list p.quant
+
+                        else
+                            Array.foldl (\scan out -> scanned f offsets.list scan out) (Builder.repeat total 0) p.scans
+                in
+                Ok (oriented p.orientation { width = f.width, height = f.height, pixels = colored f offsets.list (p.adobe == 0) (Builder.toArray planes) })
+
+
+-- PROGRESSIVE (IT6)
+
+
+{-| A progressive scan's bits added to the coefficients, which are kept in
+the planes' places, block `(bx, by)`'s 64 from `64 · (by · blocks a row +
+bx)`, in the natural order, not yet dequantized. Each restart interval is a
+segment of its own, its predictions and end-of-band run set to 0. As
+stb_image decodes them (`stbi__jpeg_decode_block_prog_dc`, `_ac`). -}
+progressiveScan : Frame -> Array Int -> Scan -> (taken out : Builder Int) -> Builder Int
+progressiveScan f offsets scan out =
+    let
+        blocksOf =
+            blocksOfScan f scan
+
+        perSegment =
+            if scan.restart > 0 then
+                scan.restart
+
+            else
+                blocksOf.units
+
+        segmentOf s data acc =
+            let
+                first =
+                    s * perSegment
+
+                last =
+                    min blocksOf.units (first + perSegment) - 1
+            in
+            Array.foldl
+                (\u st ->
+                    Array.foldl (\b st2 -> progressiveBlock f offsets scan data b st2) st (blocksOf.unit u)
+                )
+                { pos = 0, preds = Array.repeat (Array.length scan.comps) 0, eob = 0, out = acc }
+                (Array.range first last)
+                |> .out
+    in
+    Array.foldl
+        (\s acc ->
+            segmentOf s (Maybe.withDefault (meant Reason.FromOutside Bytes.empty) (Array.get s scan.segments)) acc
+        )
+        out
+        (Array.range 0 ((blocksOf.units + perSegment - 1) // perSegment - 1))
+
+
+progressiveBlock : Frame -> Array Int -> Scan -> Bytes -> { k : Int, bx : Int, by : Int } -> (taken st : { pos : Int, preds : Array Int, eob : Int, out : Builder Int }) -> { pos : Int, preds : Array Int, eob : Int, out : Builder Int }
+progressiveBlock f offsets scan data b st =
+    when Array.get b.k scan.comps is
+        Nothing ->
+            meant Reason.OutOfRange st
+
+        Just sc ->
+            let
+                c =
+                    component f sc.index
+
+                base =
+                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get sc.index offsets) + 64 * (b.by * f.mcusX * c.h + b.bx)
+            in
+            if scan.ss == 0 then
+                if scan.ah == 0 then
+                    -- the DC's first bits: its difference, as baseline's
+                    let
+                        size =
+                            huffman data sc.dc st.pos
+
+                        diff =
+                            received data size.sym size.pos
+
+                        dc =
+                            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get b.k st.preds) + diff.value
+                    in
+                    { pos = diff.pos, preds = Array.set b.k dc st.preds, eob = st.eob, out = Builder.set base (dc * Bitwise.shiftLeftBy scan.al 1) st.out }
+
+                else
+                    -- one more bit of the DC
+                    { pos = st.pos + 1
+                    , preds = st.preds
+                    , eob = st.eob
+                    , out =
+                        if bitAt data st.pos == 1 then
+                            Builder.set base (getOr base st.out + Bitwise.shiftLeftBy scan.al 1) st.out
+
+                        else
+                            st.out
+                    }
+
+            else if scan.ah == 0 then
+                if st.eob > 0 then
+                    -- in an end-of-band run: nothing of this block
+                    { st | eob = st.eob - 1 }
+
+                else
+                    let
+                        r =
+                            acFirst data sc.ac scan st.pos scan.ss base st.out
+                    in
+                    { pos = r.pos, preds = st.preds, eob = r.eob, out = r.out }
+
+            else if st.eob > 0 then
+                let
+                    r =
+                        refineRest data scan st.pos scan.ss base st.out
+                in
+                { pos = r.pos, preds = st.preds, eob = st.eob - 1, out = r.out }
+
+            else
+                let
+                    r =
+                        acRefine data sc.ac scan st.pos scan.ss base st.out
+                in
+                { pos = r.pos, preds = st.preds, eob = r.eob, out = r.out }
+
+
+getOr : Int -> Builder Int -> Int
+getOr i b =
+    Maybe.withDefault (meant Reason.OutOfRange 0) (Builder.get i b)
+
+
+{-| An AC band's first bits, from `k`: each value shifted by the scan's
+`al`; an end-of-band ends the block and begins a run of blocks with
+nothing in the band. -}
+acFirst : Bytes -> Table -> Scan -> Int -> Int -> Int -> (taken out : Builder Int) -> { pos : Int, eob : Int, out : Builder Int }
+acFirst data table scan pos k base out =
+    if k > scan.se || k > 63 then
+        { pos = pos, eob = 0, out = out }
+
+    else
+        let
+            rs =
+                huffman data table pos
+
+            r =
+                Bitwise.shiftRightBy 4 rs.sym
+
+            s =
+                Bitwise.and 15 rs.sym
+        in
+        if s == 0 then
+            if r < 15 then
+                -- the band's end here, and in so many blocks after
+                { pos = rs.pos + r, eob = Bitwise.shiftLeftBy r 1 - 1 + bits data rs.pos r 0, out = out }
+
+            else
+                acFirst data table scan rs.pos (k + 16) base out
+
+        else
+            let
+                at =
+                    k + r
+
+                v =
+                    received data s rs.pos
+            in
+            acFirst data table scan v.pos (at + 1) base (Builder.set (base + zigzagAt at) (v.value * Bitwise.shiftLeftBy scan.al 1) out)
+
+
+{-| An AC band's next bit, from `k`: each value coded is a new one of ±1
+shifted by `al`, placed past a run of zeros; each coefficient already not
+zero that the run passes takes a correction bit. -}
+acRefine : Bytes -> Table -> Scan -> Int -> Int -> Int -> (taken out : Builder Int) -> { pos : Int, eob : Int, out : Builder Int }
+acRefine data table scan pos k base out =
+    if k > scan.se || k > 63 then
+        { pos = pos, eob = 0, out = out }
+
+    else
+        let
+            one =
+                Bitwise.shiftLeftBy scan.al 1
+
+            rs =
+                huffman data table pos
+
+            r0 =
+                Bitwise.shiftRightBy 4 rs.sym
+
+            s =
+                Bitwise.and 15 rs.sym
+
+            -- an end-of-band: the run of blocks after, and this block's
+            -- coefficients not zero refined to its end (`r` 64)
+            eob =
+                if s == 0 && r0 < 15 then
+                    Bitwise.shiftLeftBy r0 1 - 1 + bits data rs.pos r0 0
+
+                else
+                    0
+
+            afterRun =
+                if s == 0 && r0 < 15 then
+                    rs.pos + r0
+
+                else
+                    rs.pos
+
+            value =
+                if s == 0 then
+                    0
+
+                else if bitAt data afterRun == 1 then
+                    one
+
+                else
+                    0 - one
+
+            valuePos =
+                if s == 0 then
+                    afterRun
+
+                else
+                    afterRun + 1
+
+            stepped =
+                advance data
+                    scan
+                    valuePos
+                    k
+                    base
+                    value
+                    (if s == 0 && r0 < 15 then
+                        64
+
+                     else
+                        r0
+                    )
+                    out
+        in
+        if s == 0 && r0 < 15 then
+            { pos = stepped.pos, eob = eob, out = stepped.out }
+
+        else
+            acRefine data table scan stepped.pos stepped.k base stepped.out
+
+
+{-| Through the band from `k`: a coefficient not zero takes a correction
+bit; a zero counts down the run `r`, and at its end takes `value`. -}
+advance : Bytes -> Scan -> Int -> Int -> Int -> Int -> Int -> (taken out : Builder Int) -> { pos : Int, k : Int, out : Builder Int }
+advance data scan pos k base value r out =
+    if k > scan.se || k > 63 then
+        { pos = pos, k = k, out = out }
+
+    else
+        let
+            z =
+                base + zigzagAt k
+
+            v =
+                getOr z out
+        in
+        if v /= 0 then
+            advance data scan (pos + 1) (k + 1) base value r (corrected data pos scan.al z v out)
+
+        else if r == 0 then
+            { pos = pos, k = k + 1, out = Builder.set z value out }
+
+        else
+            advance data scan pos (k + 1) base value (r - 1) out
+
+
+{-| In an end-of-band run: the band's coefficients not zero refined. -}
+refineRest : Bytes -> Scan -> Int -> Int -> Int -> (taken out : Builder Int) -> { pos : Int, out : Builder Int }
+refineRest data scan pos k base out =
+    if k > scan.se || k > 63 then
+        { pos = pos, out = out }
+
+    else
+        let
+            z =
+                base + zigzagAt k
+
+            v =
+                getOr z out
+        in
+        if v /= 0 then
+            refineRest data scan (pos + 1) (k + 1) base (corrected data pos scan.al z v out)
+
+        else
+            refineRest data scan pos (k + 1) base out
+
+
+{-| A coefficient `v` not zero at `z` given its correction bit: when set and
+the coefficient does not have that bit yet, one more away from zero. -}
+corrected : Bytes -> Int -> Int -> Int -> Int -> (taken out : Builder Int) -> Builder Int
+corrected data pos al z v out =
+    let
+        one =
+            Bitwise.shiftLeftBy al 1
+    in
+    if bitAt data pos == 1 && Bitwise.and v one == 0 then
+        Builder.set z
+            (if v > 0 then
+                v + one
+
+             else
+                v - one
+            )
+            out
+
+    else
+        out
+
+
+{-| The coefficients made samples: each block dequantized by its
+component's table (its values in zigzag order) and transformed, in place
+in its plane. -}
+transformed : Frame -> Array Int -> Dict Int (Array Int) -> Array Int -> Builder Int
+transformed f offsets quants coefs =
+    Array.foldl
+        (\k out ->
+            let
+                c =
+                    component f k
+
+                quant =
+                    Maybe.withDefault (meant Reason.FromOutside (Array.repeat 64 1)) (Dict.get c.q quants)
+
+                bpl =
+                    f.mcusX * c.h
+
+                w =
+                    planeWidth f c
+
+                off =
+                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get k offsets)
+            in
+            Array.foldl
+                (\blockIndex0 o ->
+                    let
+                        -- a plane holds at most 400,000,000 samples (`pixelsOf`)
+                        blockIndex =
+                            clamp 0 6250000 blockIndex0
+
+                        at =
+                            clamp 0 400000000 off + 64 * blockIndex
+
+                        natural =
+                            Array.initialize 64 0 (\i -> Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (at + clamp 0 63 i) coefs) * quantAt quant (unzigAt i))
+
+                        samples =
+                            idct natural
+
+                        bx =
+                            modBy (max 1 bpl) blockIndex
+
+                        by =
+                            blockIndex // max 1 bpl
+                    in
+                    written samples (off + by * 8 * w + bx * 8) w 0 o
+                )
+                out
+                (Array.range 0 (bpl * f.mcusY * c.v - 1))
+        )
+        (Builder.repeat (Array.length coefs) 0)
+        (Array.range 0 (Array.length f.comps - 1))
+
+
+{-| The zigzag position of natural index `i`. -}
+unzigAt : Int -> Int
+unzigAt i =
+    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i unzig)
+
+
+{-| `zigzag` turned about: each natural index's zigzag position. -}
+unzig : Array Int
+unzig =
+    [ 0, 1, 5, 6, 14, 15, 27, 28, 2, 4, 7, 13, 16, 26, 29, 42, 3, 8, 12, 17, 25, 30, 41, 43, 9, 11, 18, 24, 31, 40, 44, 53, 10, 19, 23, 32, 39, 45, 52, 54, 20, 22, 33, 38, 46, 51, 55, 60, 21, 34, 37, 47, 50, 56, 59, 61, 35, 36, 48, 49, 57, 58, 62, 63 ]
+
+
+{-| The blocks of a scan, in order: an interleaved scan's MCUs, each its
+components' blocks; one component's blocks row by row. Each restart
+interval is a segment of its own, its predictions set to 0. -}
+scanned : Frame -> Array Int -> Scan -> (taken out : Builder Int) -> Builder Int
+scanned f offsets scan out =
+    let
+        blocksOf =
+            blocksOfScan f scan
+
+        perSegment =
+            if scan.restart > 0 then
+                scan.restart
+
+            else
+                blocksOf.units
+
+        segmentOf s data acc =
+            let
+                first =
+                    s * perSegment
+
+                last =
+                    min blocksOf.units (first + perSegment) - 1
+            in
+            Array.foldl
+                (\u st ->
+                    Array.foldl (\b st2 -> block f offsets scan data b st2) st (blocksOf.unit u)
+                )
+                { pos = 0, preds = Array.repeat (Array.length scan.comps) 0, out = acc }
+                (Array.range first last)
+                |> .out
+    in
+    Array.foldl
+        (\s acc ->
+            segmentOf s (Maybe.withDefault (meant Reason.FromOutside Bytes.empty) (Array.get s scan.segments)) acc
+        )
+        out
+        (Array.range 0 ((blocksOf.units + perSegment - 1) // perSegment - 1))
+
+
+{-| Each block of a scan, by its unit: an interleaved scan's units are its
+MCUs, each its components' blocks; one component's units are its blocks,
+row by row, as many as its own size holds. A block is its component in
+the scan and its column and row of blocks in the component's plane. -}
+blocksOfScan : Frame -> Scan -> { units : Int, unit : Int -> Array { k : Int, bx : Int, by : Int } }
+blocksOfScan f scan =
+    when scan.comps is
+        [ sc ] ->
+            let
+                c =
+                    component f sc.index
+
+                bw =
+                    ((f.width * c.h + f.hmax - 1) // f.hmax + 7) // 8
+
+                bh =
+                    ((f.height * c.v + f.vmax - 1) // f.vmax + 7) // 8
+            in
+            { units = bw * bh, unit = \u -> [ { k = 0, bx = modBy (max 1 bw) u, by = u // max 1 bw } ] }
+
+        _ ->
+            { units = f.mcusX * f.mcusY
+            , unit =
+                \u ->
+                    let
+                        mx =
+                            modBy (max 1 f.mcusX) u
+
+                        my =
+                            u // max 1 f.mcusX
+                    in
+                    Array.indexedMap
+                        (\k sc ->
+                            let
+                                c =
+                                    component f sc.index
+                            in
+                            Array.range 0 (c.v * c.h - 1)
+                                |> Array.map (\i -> { k = k, bx = mx * c.h + modBy c.h i, by = my * c.v + i // c.h })
+                        )
+                        scan.comps
+                        |> Array.flatten
+            }
+
+
+component : Frame -> Int -> Component
+component f index =
+    Maybe.withDefault (meant Reason.OutOfRange { id = 0, h = 1, v = 1, q = 0 }) (Array.get index f.comps)
+
+
+{-| One block: its coefficients read, dequantized and transformed, and its
+samples written to its plane. -}
+block : Frame -> Array Int -> Scan -> Bytes -> { k : Int, bx : Int, by : Int } -> (taken st : { pos : Int, preds : Array Int, out : Builder Int }) -> { pos : Int, preds : Array Int, out : Builder Int }
+block f offsets scan data b st =
+    when Array.get b.k scan.comps is
+        Nothing ->
+            meant Reason.OutOfRange st
+
+        Just sc ->
+            let
+                c =
+                    component f sc.index
+
+                pred =
+                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get b.k st.preds)
+
+                dcSize =
+                    huffman data sc.dc st.pos
+
+                dcBits =
+                    received data dcSize.sym dcSize.pos
+
+                dc =
+                    pred + dcBits.value
+
+                coefs =
+                    acs data sc.ac dcBits.pos 1 (Builder.set 0 (dc * quantAt sc.quant 0) (Builder.repeat 64 0)) sc.quant
+
+                samples =
+                    idct (Builder.toArray coefs.out)
+
+                w =
+                    planeWidth f c
+
+                base =
+                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get sc.index offsets) + b.by * 8 * w + b.bx * 8
+            in
+            { pos = coefs.pos
+            , preds = Array.set b.k dc st.preds
+            , out = written samples base w 0 st.out
+            }
+
+
+{-| A block's 64 samples written into its plane at `base`, `w` wide. -}
+written : Array Int -> Int -> Int -> Int -> (taken out : Builder Int) -> Builder Int
+written samples base w i out =
+    if i > 63 then
+        out
+
+    else
+        written samples base w (i + 1) (Builder.set (base + (i // 8) * w + modBy 8 i) (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i samples)) out)
+
+
+quantAt : Array Int -> Int -> Int
+quantAt quant k =
+    Maybe.withDefault (meant Reason.OutOfRange 1) (Array.get k quant)
+
+
+{-| The AC coefficients from `k` to 63, each dequantized and put in its
+place in the natural order. -}
+acs : Bytes -> Table -> Int -> Int -> (taken out : Builder Int) -> Array Int -> { pos : Int, out : Builder Int }
+acs data table pos k out quant =
+    if k > 63 then
+        { pos = pos, out = out }
+
+    else
+        let
+            rs =
+                huffman data table pos
+
+            r =
+                Bitwise.shiftRightBy 4 rs.sym
+
+            s =
+                Bitwise.and 15 rs.sym
+        in
+        if s == 0 then
+            if r == 15 then
+                acs data table rs.pos (k + 16) out quant
+
+            else
+                -- the end of the block
+                { pos = rs.pos, out = out }
+
+        else
+            let
+                at =
+                    k + r
+
+                v =
+                    received data s rs.pos
+            in
+            acs data table v.pos (at + 1) (Builder.set (zigzagAt at) (v.value * quantAt quant at) out) quant
+
+
+zigzagAt : Int -> Int
+zigzagAt k =
+    Maybe.withDefault (meant Reason.FromOutside 63) (Array.get k zigzag)
+
+
+zigzag : Array Int
+zigzag =
+    [ 0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63 ]
+
+
+-- BITS
+
+
+{-| The bit at bit position `pos`, the most significant first; 0 past the
+end, as the data ran out. -}
+bitAt : Bytes -> Int -> Int
+bitAt data pos =
+    let
+        b =
+            byteAt data (pos // 8)
+    in
+    if b < 0 then
+        -- past the end, as the data ran out
+        0
+
+    else
+        Bitwise.and 1 (Bitwise.shiftRightBy (7 - modBy 8 pos) b)
+
+
+bits : Bytes -> Int -> Int -> Int -> Int
+bits data pos count acc =
+    if count <= 0 then
+        acc
+
+    else
+        bits data (pos + 1) (count - 1) (Bitwise.or (Bitwise.shiftLeftBy 1 acc) (bitAt data pos))
+
+
+{-| `size` bits, made the signed value JPEG's EXTEND gives. -}
+received : Bytes -> Int -> Int -> { value : Int, pos : Int }
+received data size pos =
+    if size <= 0 || size > 16 then
+        { value = 0, pos = pos }
+
+    else
+        let
+            v =
+                bits data pos size 0
+        in
+        { value =
+            if v < Bitwise.shiftLeftBy (size - 1) 1 then
+                v - Bitwise.shiftLeftBy size 1 + 1
+
+            else
+                v
+        , pos = pos + size
+        }
+
+
+{-| A symbol of `table` at `pos`: the code read a bit at a time, longest
+16, as puff decodes; 0 for a code the table does not have. -}
+huffman : Bytes -> Table -> Int -> { sym : Int, pos : Int }
+huffman data table pos =
+    huffmanLen data table pos 1 0 0 0
+
+
+huffmanLen : Bytes -> Table -> Int -> Int -> (code : Int where 0 <= code && code <= 65536) -> (first : Int where 0 <= first && first <= 65536) -> (index : Int where 0 <= index && index <= 65536) -> { sym : Int, pos : Int }
+huffmanLen data table pos len code first index =
+    if len > 16 then
+        -- a code the table does not have
+        { sym = 0, pos = pos }
+
+    else
+        let
+            c =
+                clamp 0 65537 (Bitwise.or code (bitAt data pos))
+
+            count =
+                clamp 0 256 (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (len - 1) table.counts))
+        in
+        if c - first < count then
+            { sym = Maybe.withDefault (meant Reason.FromOutside 0) (Array.get (index + c - first) table.symbols), pos = pos + 1 }
+
+        else
+            -- each held to 16 bits' codes, as a table of 16 lengths has
+            huffmanLen data table (pos + 1) (len + 1) (clamp 0 65536 (Bitwise.shiftLeftBy 1 c)) (clamp 0 65536 (Bitwise.shiftLeftBy 1 (first + count))) (clamp 0 65536 (index + count))
+
+
+-- THE TRANSFORM
+
+
+{-| The inverse DCT of a block's coefficients (natural order), as samples
+0 to 255, each sum of eight written out. A block with only its DC is one
+value. -}
+idct : Array Int -> Array Int
+idct coefs =
+    let
+        dc =
+            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get 0 coefs)
+    in
+    if Array.all (\v -> v == 0) (Array.dropFirst 1 coefs) then
+        Array.repeat 64 (clamp 0 255 (Math.round (toFloat dc / 8) + 128))
+
+    else
+        let
+            fs =
+                Array.map toFloat coefs
+
+            -- each row of coefficients across: g(v, x) = Σu C(x, u) F(v, u)
+            rows =
+                Array.initialize 64
+                    0
+                    (\i0 ->
+                        let
+                            i =
+                                clamp 0 63 i0
+                        in
+                        dot8 cosines (8 * clamp 0 7 (modBy 8 i)) 1 fs (8 * clamp 0 7 (i // 8)) 1
+                    )
+        in
+        -- then down: f(y, x) = Σv C(y, v) g(v, x)
+        Array.initialize 64
+            0
+            (\i0 ->
+                let
+                    i =
+                        clamp 0 63 i0
+                in
+                clamp 0 255 (Math.round (dot8 cosines (8 * clamp 0 7 (i // 8)) 1 rows (clamp 0 7 (modBy 8 i)) 8) + 128)
+            )
+
+
+{-| Σk a[ia + k·sa] · b[ib + k·sb], k from 0 to 7. -}
+dot8 : Array Float -> (ia : Int where 0 <= ia && ia <= 63) -> (sa : Int where 0 <= sa && sa <= 8) -> Array Float -> (ib : Int where 0 <= ib && ib <= 63) -> (sb : Int where 0 <= sb && sb <= 8) -> Float
+dot8 a ia sa b ib sb =
+    let
+        x k =
+            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (ia + k * sa) a) * Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (ib + k * sb) b)
+    in
+    x 0 + x 1 + x 2 + x 3 + x 4 + x 5 + x 6 + x 7
+
+
+{-| C(x, u) = c(u) / 2 · cos((2x + 1)uπ / 16), c(0) = 1/√2, by x then u. -}
+cosines : Array Float
+cosines =
+    [ 0.353553390593, 0.490392640202, 0.461939766256, 0.415734806151, 0.353553390593, 0.27778511651, 0.191341716183, 0.097545161008, 0.353553390593, 0.415734806151, 0.191341716183, -0.097545161008, -0.353553390593, -0.490392640202, -0.461939766256, -0.27778511651, 0.353553390593, 0.27778511651, -0.191341716183, -0.490392640202, -0.353553390593, 0.097545161008, 0.461939766256, 0.415734806151, 0.353553390593, 0.097545161008, -0.461939766256, -0.27778511651, 0.353553390593, 0.415734806151, -0.191341716183, -0.490392640202, 0.353553390593, -0.097545161008, -0.461939766256, 0.27778511651, 0.353553390593, -0.415734806151, -0.191341716183, 0.490392640202, 0.353553390593, -0.27778511651, -0.191341716183, 0.490392640202, -0.353553390593, -0.097545161008, 0.461939766256, -0.415734806151, 0.353553390593, -0.415734806151, 0.191341716183, 0.097545161008, -0.353553390593, 0.490392640202, -0.461939766256, 0.27778511651, 0.353553390593, -0.490392640202, 0.461939766256, -0.415734806151, 0.353553390593, -0.27778511651, 0.191341716183, -0.097545161008 ]
+
+
+-- COLOUR
+
+
+{-| RGBA: each pixel's samples from the planes, each component's nearest,
+then YCbCr made RGB (or RGB as it is, or grey spread). -}
+colored : Frame -> Array Int -> Bool -> Array Int -> Bytes
+colored f offsets rgb planes =
+    let
+        -- each component's place and sizes, found once: its plane's offset
+        -- and width, its real width and height, and how it is scaled up
+        -- (0 not, 1 libjpeg's h2v1, 2 its h2v2, 3 the nearest sample)
+        info k =
+            let
+                c =
+                    component f k
+            in
+            { off = clamp 0 400000000 (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get k offsets))
+            , pw = clamp 0 40960 (planeWidth f c)
+            , cw = clamp 1 10000 ((f.width * c.h + f.hmax - 1) // f.hmax)
+            , chh = clamp 1 10000 ((f.height * c.v + f.vmax - 1) // f.vmax)
+            , h = c.h
+            , v = c.v
+            , mode =
+                if c.h == f.hmax && c.v == f.vmax then
+                    0
+
+                else if c.h * 2 == f.hmax && c.v == f.vmax then
+                    1
+
+                else if c.h * 2 == f.hmax && c.v * 2 == f.vmax then
+                    2
+
+                else
+                    3
+            }
+
+        i0 =
+            info 0
+
+        i1 =
+            info 1
+
+        i2 =
+            info 2
+
+        grey =
+            Array.length f.comps == 1
+
+        pixel x y out =
+            if grey then
+                let
+                    g =
+                        UInt8.fromInt (sampleOf f planes i0 x y)
+                in
+                out |> Builder.pushLast g |> Builder.pushLast g |> Builder.pushLast g |> Builder.pushLast (UInt8.fromInt 255)
+
+            else
+                let
+                    c0 =
+                        sampleOf f planes i0 x y
+
+                    c1 =
+                        sampleOf f planes i1 x y
+
+                    c2 =
+                        sampleOf f planes i2 x y
+
+                    rgbOf =
+                        if rgb then
+                            { r = c0, g = c1, b = c2 }
+
+                        else
+                            let
+                                cb =
+                                    c1 - 128
+
+                                cr =
+                                    c2 - 128
+                            in
+                            -- libjpeg's constants, in 16.16
+                            { r = c0 + Bitwise.shiftRightBy 16 (91881 * cr + 32768)
+                            , g = c0 - Bitwise.shiftRightBy 16 (22554 * cb + 46802 * cr - 32768)
+                            , b = c0 + Bitwise.shiftRightBy 16 (116130 * cb + 32768)
+                            }
+                in
+                out
+                    |> Builder.pushLast (UInt8.fromInt (clamp 0 255 rgbOf.r))
+                    |> Builder.pushLast (UInt8.fromInt (clamp 0 255 rgbOf.g))
+                    |> Builder.pushLast (UInt8.fromInt (clamp 0 255 rgbOf.b))
+                    |> Builder.pushLast (UInt8.fromInt 255)
+    in
+    Bytes.fromUInt8s (Builder.toArray (pixels f.width f.height pixel 0 0 (Builder.empty (f.width * f.height * 4))))
+
+
+type alias Info =
+    { off : Int, pw : Int, cw : Int, chh : Int, h : Int, v : Int, mode : Int where 0 <= off && off <= 400000000 && 0 <= pw && pw <= 40960 && 1 <= cw && cw <= 10000 && 1 <= chh && chh <= 10000 }
+
+
+{-| A component's sample at its own column and row, each held to its real
+size, as libjpeg repeats the edges. -}
+sampleAt : Array Int -> Info -> Int -> Int -> Int
+sampleAt planes c i r =
+    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (c.off + clamp 0 409600000 (clamp 0 (c.chh - 1) r * c.pw) + clamp 0 (c.cw - 1) i) planes)
+
+
+{-| A pixel's sample of a component: its own where it is full size;
+libjpeg's "fancy" smoothing, with its weights and rounding, where it is
+half as wide (h2v1) or half as wide and tall (h2v2); else the nearest. -}
+sampleOf : Frame -> Array Int -> Info -> Int -> Int -> Int
+sampleOf f planes c x0 y0 =
+    let
+        x =
+            clamp 0 10000 x0
+
+        y =
+            clamp 0 10000 y0
+    in
+    if c.mode == 0 then
+        Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (c.off + clamp 0 409600000 (y * c.pw) + x) planes)
+
+    else
+        let
+            i =
+                x * c.h // f.hmax
+
+            r =
+                y * c.v // f.vmax
+
+            last =
+                c.cw - 1
+
+            even =
+                modBy 2 x == 0
+        in
+        if c.mode == 2 then
+            let
+                near =
+                    if modBy 2 y == 0 then
+                        r - 1
+
+                    else
+                        r + 1
+
+                colsum j =
+                    3 * sampleAt planes c j r + sampleAt planes c j near
+            in
+            if even then
+                if i == 0 then
+                    Bitwise.shiftRightBy 4 (4 * colsum 0 + 8)
+
+                else
+                    Bitwise.shiftRightBy 4 (3 * colsum i + colsum (i - 1) + 8)
+
+            else if i >= last then
+                Bitwise.shiftRightBy 4 (4 * colsum i + 7)
+
+            else
+                Bitwise.shiftRightBy 4 (3 * colsum i + colsum (i + 1) + 7)
+
+        else if c.mode == 1 then
+            if even then
+                if i == 0 then
+                    sampleAt planes c 0 r
+
+                else
+                    Bitwise.shiftRightBy 2 (3 * sampleAt planes c i r + sampleAt planes c (i - 1) r + 1)
+
+            else if i >= last then
+                sampleAt planes c i r
+
+            else
+                Bitwise.shiftRightBy 2 (3 * sampleAt planes c i r + sampleAt planes c (i + 1) r + 2)
+
+        else
+            sampleAt planes c i r
+
+
+{-| Each pixel, row by row, a counted loop. -}
+pixels : Int -> Int -> (Int -> Int -> Builder UInt8 -> Builder UInt8) -> Int -> Int -> (taken out : Builder UInt8) -> Builder UInt8
+pixels w h pixel x y out =
+    if y >= h then
+        out
+
+    else if x >= w then
+        pixels w h pixel 0 (y + 1) out
+
+    else
+        pixels w h pixel (x + 1) y (pixel x y out)
+
+
+-- ORIENTATION (IT5)
+
+
+{-| Exif's orientation, 1 to 8, from its TIFF data: the first directory's
+tag 0x0112, either byte order; 1, as it is, for anything else. -}
+orientationOf : Bytes -> Int
+orientationOf tiff =
+    let
+        little =
+            byteAt tiff 0 == 0x49
+
+        u16le at =
+            if little then
+                Bitwise.or (byteAt tiff at) (Bitwise.shiftLeftBy 8 (byteAt tiff (at + 1)))
+
+            else
+                Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt tiff at)) (byteAt tiff (at + 1))
+
+        -- the first directory's offset, a 32-bit value in the file's order
+        ifd =
+            clamp 0
+                65535
+                (if little then
+                    Bitwise.or (u16le 4) (Bitwise.shiftLeftBy 16 (Bitwise.and 0x7FFF (u16le 6)))
+
+                 else
+                    Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0x7FFF (u16le 4))) (u16le 6)
+                )
+
+        count =
+            clamp 0 512 (u16le ifd)
+
+        found =
+            Array.range 0 (count - 1)
+                |> Array.findFirst (\k -> u16le (ifd + 2 + 12 * k) == 0x0112)
+    in
+    when found is
+        Just k ->
+            let
+                v =
+                    u16le (ifd + 2 + 12 * k.value + 8)
+            in
+            if v >= 1 && v <= 8 then
+                v
+
+            else
+                -- a value Exif does not have: as it is
+                1
+
+        Nothing ->
+            meant Reason.NotSet 1
+
+
+{-| The pixels turned as orientation `o` says: 2 mirrored, 3 turned half,
+4 flipped, 5 transposed, 6 turned a quarter clockwise, 7 transverse, 8 a
+quarter counterclockwise. Each output pixel's source is found from its
+place. -}
+oriented : Int -> Decoded -> Decoded
+oriented o img =
+    if o <= 1 || o > 8 then
+        img
+
+    else
+        let
+            w =
+                clamp 1 10000 img.width
+
+            h =
+                clamp 1 10000 img.height
+
+            swap =
+                o >= 5
+
+            ow =
+                if swap then
+                    h
+
+                else
+                    w
+
+            oh =
+                if swap then
+                    w
+
+                else
+                    h
+
+            -- the source pixel of output pixel (x, y)
+            from x y =
+                if o == 2 then
+                    { x = w - 1 - x, y = y }
+
+                else if o == 3 then
+                    { x = w - 1 - x, y = h - 1 - y }
+
+                else if o == 4 then
+                    { x = x, y = h - 1 - y }
+
+                else if o == 5 then
+                    { x = y, y = x }
+
+                else if o == 6 then
+                    { x = y, y = h - 1 - x }
+
+                else if o == 7 then
+                    { x = w - 1 - y, y = h - 1 - x }
+
+                else
+                    { x = w - 1 - y, y = x }
+
+            pixel x y out =
+                let
+                    s =
+                        from x y
+
+                    at =
+                        (clamp 0 9999 s.y * w + clamp 0 9999 s.x) * 4
+                in
+                out
+                    |> Builder.pushLast (UInt8.fromInt (byteAt img.pixels at))
+                    |> Builder.pushLast (UInt8.fromInt (byteAt img.pixels (at + 1)))
+                    |> Builder.pushLast (UInt8.fromInt (byteAt img.pixels (at + 2)))
+                    |> Builder.pushLast (UInt8.fromInt (byteAt img.pixels (at + 3)))
+        in
+        { width = ow, height = oh, pixels = Bytes.fromUInt8s (Builder.toArray (pixels ow oh pixel 0 0 (Builder.empty (ow * oh * 4)))) }

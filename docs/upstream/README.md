@@ -13,13 +13,18 @@ trouble than it is worth.
 Ghostty is built with `harness/oracle/patches/` applied, one patch a report,
 so the core is held to Ghostty without its bugs and the replay cases that
 show one pass on both sides. DEL is the one not patched; the differential
-fuzzer leaves out an input with one.
+fuzzer leaves out an input with one. One patch is not a bug's:
+`0013-the-dec-status-reports-the-core-answers.patch` gives the oracle the
+DEC status reports the core answers and Ghostty does not make
+(`vt-core.md` §VC71), fixed strings, so the fuzzer compares the rest.
 
 | report | repository | found | filed |
 |---|---|---|---|
 | [`send-keys -K` drops escape-sequence keys, and Enter under extended keys](tmux-send-keys-K-drops-keys.md) | `tmux/tmux` | 2026-11-12, `tmux.md` TM50 | not filed (Gilbert decides) |
+| [`rotate-window` moves the panes and tells control clients no layout change](tmux-rotate-window-tells-no-layout.md) | `tmux/tmux` | 2026-11-15, `tmux-checks.md` TK12 | not filed (Gilbert decides) |
 | [A short Ed25519 key or an even RSA modulus in a public key blob fails an assertion](putty-asserts-on-malformed-host-keys.md) | PuTTY | 2026-11-10, `ssh-client.md` SC14 | not to be filed |
 | [Signature verification accepts an unreduced RSA signature and an Ed25519 point with x = 0 and the sign bit set](putty-verify-accepts-malleable-signatures.md) | PuTTY | 2026-11-10, `ssh-client.md` SC13 | not to be filed |
+| [A `#` color's digits are scaled, where XParseColor takes them as the high bits](ghostty-hash-colors-scaled.md) | `ghostty-org/ghostty` | 2026-11-16, `vt-core.md` §VC71 | not to be filed |
 | [Reflow joins a line to the next when the line's last row is blank](ghostty-reflow-joins-a-blank-continuation.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC14 | not to be filed |
 | [DEL in the ground state is printed as a character](ghostty-del-is-printed.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC16 | not to be filed |
 | [Widening without a reflow keeps a row's wrapped flag or not by its page's capacity](ghostty-widen-keeps-wrap-by-capacity.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC17 | not to be filed |
@@ -32,5 +37,5 @@ fuzzer leaves out an input with one.
 | [DCH after DL leaves a spacer head that DCH without it clears](ghostty-split-boundary-reads-continuation.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC20 | not to be filed |
 | [A reflow keeps a styled blank on the first row, under the viewport pin](ghostty-reflow-pin-copies-a-blank.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC21 | not to be filed |
 | [A full reset undoes libghostty-vt's choice not to clear prompts on resize](ghostty-full-reset-forgets-prompt-redraw.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC22 | not to be filed |
-| [Keys get stuck when two XIM_SET_IC_VALUES are sent back to back](xcb-imdkit-queue-stalls-after-reply.md) | `fcitx/xcb-imdkit` | 2026-11-14, `diagnostics.md` DG8 | [filed as #21](https://github.com/fcitx/xcb-imdkit/issues/21) (2026-11-14); puritty carries the patch (`xcb-imdkit-0004`) |
+| [Keys get stuck when two XIM_SET_IC_VALUES are sent back to back](xcb-imdkit-queue-stalls-after-reply.md) | `fcitx/xcb-imdkit` | 2026-11-14, `diagnostics.md` DG8 | [filed as #21](https://github.com/fcitx/xcb-imdkit/issues/21) (2026-11-14); **fixed upstream** 2026-11-18 by `846ba09` ("Fix client memory leak and unify the reply handling", PR #22); puritty still carries its patch (`xcb-imdkit-0004`) until the pin moves past it |
 | [Each key forwarded by the XIM client waits for several X round trips](xcb-imdkit-client-round-trips.md) (program: `xcb-imdkit-client-round-trips/xim_roundtrips.c`) | `fcitx/xcb-imdkit` | 2026-11-02, `phase3-input.md` §3.3; measured again 2026-11-14 | not filed: rewritten for Gilbert to post after #21; puritty carries the patch (V44) |

@@ -1,0 +1,445 @@
+module Vt.Sixel exposing (Decoded, decode)
+
+{-| Sixel decoded to 8-bit RGBA (`docs/images-sixel.md` SX2), as xterm's
+semantics are emulated by Windows Terminal's VT340 parser: the aspect
+(P1's macro, or the raster attributes' `Pan/Pad`) as each sixel bit that
+many pixels tall; P2 1 leaving unset pixels transparent, else the image's
+extent filled with register 0; 1024 colour registers fresh for each image
+(VT340's sixteen, xterm's 256, black above), `#` defining in HLS (DEC's
+hue, blue 0, red 120, green 240) or RGB percent and selecting, colour 15
+before any `#`; `!` repeating (0 or none is 1), `$` back to the first
+column, `-` down a band; a byte it does not know ignored. Two passes: the
+first finds the size (the furthest column reached, the bands holding
+data, the raster's size at least), the second paints. At most 10,000 by
+10,000 pixels, what is past it cut off.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Math
+import UInt8
+import Vt.Cell exposing (byteAt)
+import Vt.Reason as Reason
+
+
+type alias Decoded =
+    { width : Int
+    , height : Int
+    , pixels : Bytes
+    , aspect : Int
+    , bands : Int
+    }
+
+
+limit : Int
+limit =
+    10000
+
+
+{-| P1's aspect macro: how many pixels tall a sixel bit is. -}
+aspectOf : Int -> Int
+aspectOf p1 =
+    if p1 == 2 then
+        5
+
+    else if p1 == 3 || p1 == 4 then
+        3
+
+    else if p1 >= 7 && p1 <= 9 then
+        1
+
+    else if p1 >= 0 && p1 <= 6 then
+        2
+
+    else
+        1
+
+
+{-| The state of a pass: the column and the band, the colour, the
+registers, the repeat waiting, the command whose parameters are being
+read (0 none) and them, the aspect, and what the first pass measures. -}
+type alias Pass =
+    { x : Int
+    , band : Int
+    , color : Int
+    , palette : Array Int
+    , repeat : Int
+    , command : Int
+    , params : Array Int
+    , aspect : Int
+    , maxX : Int
+    , maxBand : Int
+    , rasterW : Int
+    , rasterH : Int
+    }
+
+
+start : Int -> Pass
+start aspect =
+    { x = 0, band = 0, color = 15, palette = vt340, repeat = 1, command = 0, params = [], aspect = aspect, maxX = 0, maxBand = -1, rasterW = 0, rasterH = 0 }
+
+
+{-| The image of a Sixel string's parameters and its data (what follows
+`q`), or none when it draws nothing. -}
+decode : Array Int -> Bytes -> Maybe Decoded
+decode params data =
+    let
+        p1 =
+            Maybe.withDefault (meant Reason.NotSet 0) (Array.get 0 params)
+
+        transparent =
+            Array.get 1 params == Just 1
+
+        measured =
+            run data (Bytes.length data) 0 (start (aspectOf p1)) Nothing
+
+        aspect =
+            clamp 1 10 measured.aspect
+
+        width =
+            clamp 0 limit (max measured.maxX measured.rasterW)
+
+        height =
+            clamp 0 limit (max ((measured.maxBand + 1) * 6 * aspect) measured.rasterH)
+    in
+    if width == 0 || height == 0 then
+        Nothing
+
+    else
+        let
+            fill =
+                if transparent then
+                    [ 0, 0, 0, 0 ]
+
+                else
+                    rgbaOf (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get 0 vt340))
+
+            canvas =
+                Builder.fromArray (Array.repeat (width * height) fill |> Array.flatten |> Array.map UInt8.fromInt)
+
+            painted =
+                run data (Bytes.length data) 0 (start (aspectOf p1)) (Just { width = width, height = height, out = canvas })
+        in
+        when painted.out is
+            Just o ->
+                Just { width = width, height = height, pixels = Bytes.fromUInt8s (Builder.toArray o.out), aspect = aspect, bands = measured.maxBand + 1 }
+
+            Nothing ->
+                meant Reason.NotKnown Nothing
+
+
+rgbaOf : Int -> Array Int
+rgbaOf rgb =
+    [ Bitwise.and 0xFF (Bitwise.shiftRightZfBy 16 rgb), Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 rgb), Bitwise.and 0xFF rgb, 255 ]
+
+
+type alias Canvas =
+    { width : Int, height : Int, out : Builder UInt8 }
+
+
+{-| A pass over the data from `i`: measuring when there is no canvas,
+painting into it when there is. -}
+run : Bytes -> Int -> Int -> Pass -> (taken canvas : Maybe Canvas) -> { aspect : Int, maxX : Int, maxBand : Int, rasterW : Int, rasterH : Int, out : Maybe Canvas }
+run data n i p canvas =
+    if i >= n then
+        let
+            done =
+                finish p
+        in
+        { aspect = done.aspect, maxX = done.maxX, maxBand = done.maxBand, rasterW = done.rasterW, rasterH = done.rasterH, out = canvas }
+
+    else
+        let
+            b =
+                byteAt data i
+        in
+        if b >= 0x30 && b <= 0x39 && p.command /= 0 then
+            -- a digit of the command's parameter
+            let
+                last =
+                    Maybe.withDefault (meant Reason.NoMore 0) (Array.last p.params)
+
+                params =
+                    if Array.isEmpty p.params then
+                        [ b - 0x30 ]
+
+                    else
+                        Array.set (Array.length p.params - 1) (min 65535 (last * 10 + (b - 0x30))) p.params
+            in
+            run data n (i + 1) { p | params = params } canvas
+
+        else if b == 0x3B && p.command /= 0 then
+            run data
+                n
+                (i + 1)
+                { p
+                    | params =
+                        Array.pushLast 0
+                            (if Array.isEmpty p.params then
+                                [ 0 ]
+
+                             else
+                                p.params
+                            )
+                }
+                canvas
+
+        else
+            -- a command's parameters end at any other byte
+            let
+                q =
+                    finish p
+            in
+            if b >= 0x3F && b <= 0x7E then
+                let
+                    v =
+                        b - 0x3F
+
+                    count =
+                        q.repeat
+
+                    painted =
+                        when canvas is
+                            Just c ->
+                                Just (paint c q v count)
+
+                            Nothing ->
+                                -- the first pass, measuring
+                                meant Reason.NotSet Nothing
+
+                    reached =
+                        q.x + count
+                in
+                run data
+                    n
+                    (i + 1)
+                    { q
+                        | x = min 65535 reached
+                        , repeat = 1
+                        , maxX = max q.maxX (min 65535 reached)
+                        , maxBand =
+                            if v /= 0 then
+                                max q.maxBand q.band
+
+                            else
+                                q.maxBand
+                    }
+                    painted
+
+            else if b == 0x23 || b == 0x21 || b == 0x22 then
+                run data n (i + 1) { q | command = b, params = [] } canvas
+
+            else if b == 0x24 then
+                run data n (i + 1) { q | x = 0 } canvas
+
+            else if b == 0x2D then
+                run data n (i + 1) { q | x = 0, band = min 10000 (q.band + 1) } canvas
+
+            else
+                -- a control, or a byte no command has: ignored
+                run data n (i + 1) q canvas
+
+
+{-| The command whose parameters were being read, done. -}
+finish : Pass -> Pass
+finish p =
+    let
+        param k =
+            Maybe.withDefault (meant Reason.NotSet 0) (Array.get k p.params)
+    in
+    if p.command == 0x21 then
+        -- repeat: 0 or none is 1
+        { p | command = 0, params = [], repeat = max 1 (min 65535 (param 0)) }
+
+    else if p.command == 0x22 then
+        -- raster attributes: the aspect, the size at least, and a CR
+        let
+            pan =
+                param 0
+
+            pad =
+                param 1
+
+            aspect =
+                if pad > 0 then
+                    clamp 1 10 ((pan + pad - 1) // pad)
+
+                else
+                    p.aspect
+        in
+        { p | command = 0, params = [], aspect = aspect, rasterW = max p.rasterW (param 2), rasterH = max p.rasterH (param 3), x = 0 }
+
+    else if p.command == 0x23 then
+        let
+            register =
+                modBy 1024 (param 0)
+        in
+        if Array.length p.params >= 5 then
+            let
+                kind =
+                    param 1
+
+                defined =
+                    if kind == 1 then
+                        Just (hls (param 2) (min 100 (param 3)) (min 100 (param 4)))
+
+                    else if kind == 2 then
+                        Just (rgbPercent (param 2) (param 3) (param 4))
+
+                    else
+                        Nothing
+            in
+            { p
+                | command = 0
+                , params = []
+                , color = register
+                , palette =
+                    when defined is
+                        Just rgb ->
+                            Array.set register rgb p.palette
+
+                        Nothing ->
+                            -- a colour system Sixel does not have: selected only
+                            meant Reason.FromOutside p.palette
+            }
+
+        else
+            { p | command = 0, params = [], color = register }
+
+    else
+        p
+
+
+rgbPercent : Int -> Int -> Int -> Int
+rgbPercent r g b =
+    let
+        c v =
+            (min 100 v * 255 + 50) // 100
+    in
+    Bitwise.or (Bitwise.shiftLeftBy 16 (c r)) (Bitwise.or (Bitwise.shiftLeftBy 8 (c g)) (c b))
+
+
+{-| DEC's HLS: hue 0 blue, 120 red, 240 green, which is the usual HSL's
+hue less 120; lightness and saturation in percent. -}
+hls : Int -> Int -> Int -> Int
+hls h0 l0 s0 =
+    let
+        h =
+            toFloat (modBy 360 (h0 + 240))
+
+        l =
+            toFloat l0 / 100
+
+        s =
+            toFloat s0 / 100
+
+        c =
+            (1 - fabs (2 * l - 1)) * s
+
+        hp =
+            h / 60
+
+        x =
+            c * (1 - fabs (fmod hp 2 - 1))
+
+        m =
+            l - c / 2
+
+        rgb =
+            if hp < 1 then
+                { r = c, g = x, b = 0 }
+
+            else if hp < 2 then
+                { r = x, g = c, b = 0 }
+
+            else if hp < 3 then
+                { r = 0, g = c, b = x }
+
+            else if hp < 4 then
+                { r = 0, g = x, b = c }
+
+            else if hp < 5 then
+                { r = x, g = 0, b = c }
+
+            else
+                { r = c, g = 0, b = x }
+
+        byte v =
+            clamp 0 255 (Math.round ((v + m) * 255))
+    in
+    Bitwise.or (Bitwise.shiftLeftBy 16 (byte rgb.r)) (Bitwise.or (Bitwise.shiftLeftBy 8 (byte rgb.g)) (byte rgb.b))
+
+
+fabs : Float -> Float
+fabs v =
+    if v < 0 then
+        0 - v
+
+    else
+        v
+
+
+fmod : Float -> Float -> Float
+fmod a b =
+    a - b * toFloat (Math.floor (a / b))
+
+
+{-| A data byte `v` painted `count` times from the column, in the colour:
+each set bit `aspect` pixels tall, what is past the canvas cut off. -}
+paint : (taken c : Canvas) -> Pass -> Int -> Int -> Canvas
+paint c p v count =
+    let
+        rgba =
+            rgbaOf (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get p.color p.palette))
+                |> Array.map UInt8.fromInt
+
+        aspect =
+            clamp 1 10 p.aspect
+
+        top =
+            p.band * 6 * aspect
+
+        rows =
+            Array.range 0 5
+                |> Array.keepIf (\k -> Bitwise.and v (Bitwise.shiftLeftBy k 1) /= 0)
+                |> Array.mapAndFlatten (\k -> Array.range 0 (aspect - 1) |> Array.map (\a -> top + k * aspect + a))
+                |> Array.keepIf (\y -> y < c.height)
+
+        columns =
+            Array.range p.x (min (c.width - 1) (p.x + count - 1))
+    in
+    { c
+        | out =
+            Array.foldl
+                (\y out ->
+                    Array.foldl (\x o -> Builder.setMany ((y * c.width + x) * 4) rgba o) out columns
+                )
+                c.out
+                rows
+    }
+
+
+{-| The registers an image begins with: VT340's sixteen (as Windows
+Terminal has them), xterm's 256-colour palette to 255, black above. -}
+vt340 : Array Int
+vt340 =
+    let
+        first =
+            [ 0x000000, 0x3333CC, 0xCC2424, 0x33CC33, 0xCC33CC, 0x33CCCC, 0xCCCC33, 0x787878, 0x454545, 0x575799, 0x994545, 0x579957, 0x995799, 0x579999, 0x999957, 0xCCCCCC ]
+
+        level i =
+            if i == 0 then
+                0
+
+            else
+                55 + 40 * i
+
+        cube =
+            Array.range 0 215
+                |> Array.map (\i -> Bitwise.or (Bitwise.shiftLeftBy 16 (level (i // 36))) (Bitwise.or (Bitwise.shiftLeftBy 8 (level (modBy 6 (i // 6)))) (level (modBy 6 i))))
+
+        grays =
+            Array.range 0 23 |> Array.map (\i -> 8 + 10 * i) |> Array.map (\g -> g * 0x010101)
+    in
+    first ++ cube ++ grays ++ Array.repeat 768 0

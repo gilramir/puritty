@@ -758,3 +758,54 @@ lines and a BEL, closed with Ctrl+Shift+W and reopened with
 Ctrl+Alt+Shift+T: one bell in the log, the screen empty with a prompt, and
 Shift+PgUp showing the command, both lines, the old prompt and the dim
 line under them.
+
+## TB18 · The window's close question: in the log, and a second click closes (2026-11-15)
+
+Gilbert closed a window attached to tmux by its close button and saw it
+go on showing tmux's panes, as if the click were lost; his log had all five
+clicks (`window close asked`) and the window ending a minute and a half
+later, when he answered the question, but not when the question showed,
+since puritty does not log what it draws. Now:
+
+- the log says `close  question shown: …` (the busy tabs, as the box
+  names them) when the question goes up, and `close  question answered:
+  close` or `stay` when it goes;
+- the close button again while the window's question is up is a yes
+  (`close  asked again while the question was up: closed`), as a window
+  manager's second request to close usually means; the hint says so
+  ("Enter, or close it again: close it").
+
+Not done: dimming the window behind the question, which would draw every
+cell again while it is up, a burst of traffic over remote X (Gilbert).
+
+## TB19 · A reconnected session: the old modes reset, its screen kept (2026-11-17)
+
+Gilbert, on 0.1.1 on Windows, the built-in ssh client: the dock's
+cable came loose, the connection dropped, and after R (TB8) the old
+session's last command was still on the screen with the new zsh prompt
+under it; he asked whether the screen should have been cleared.
+
+**What the references do.** PuTTY's Restart Session calls
+`term_pwron(term, false)` (`windows/window.c`): every mode back to power
+on, the screen not cleared. Windows Terminal's Restart connection calls
+`HardResetWithoutErase`, `HardReset(false)` (`adaptDispatch.cpp`): the
+same, and "the cursor should stay where the previous shell left it". So
+the screen Gilbert saw is what both do; Gilbert, 2026-11-17: "keep the
+mode reset and leave the old screen in place". (A first version pushed
+the screen into the scrollback as TB17's reopened tab does; that was
+undone.)
+
+**What was wrong.** R kept every mode the old session had set, where both
+reset them: had the drop come inside vim or less, the new shell would
+have started with the cursor hidden, the mouse reporting, bracketed
+paste, scroll margins or the alternate screen. Now R makes the terminal
+as RIS would (`Vt.restarted`, in `Vt.Modes`), keeping the screen, the
+scrollback (with the styles their rows name) and the cursor; on the
+alternate screen, the main screen comes back first as 1049 brings it,
+with its cursor, as PuTTY swaps back. The view goes to the bottom.
+
+**Checked:** three unit tests (the screen, scrollback and cursor kept;
+the mouse, keys, cursor's visibility, pen and margins as new; from the
+alternate screen); and `bench/tabs/ssh.py`, whose dropped tab now echoes
+a line and hides the cursor before `kill -9 $PPID`: after R, the old
+lines stay, the new prompt is under them, and the cursor shows.

@@ -36,13 +36,17 @@ import Bytes exposing (Bytes)
 import Console
 import Dict
 import Expect
+import Int64
 import Os.Env
 import Os.Error
 import Os.File as File
 import Os.Net as Net
 import Os.Path as Path
+import Os.Process as OsProcess
 import Os.Random
 import Process
+import SftpDrive
+import ShellDrive
 import Source exposing (Source)
 import Ssh.Agent as Agent
 import Ssh.Auth as Auth
@@ -50,12 +54,16 @@ import Ssh.Config as Config
 import Ssh.Connection as Connection
 import Ssh.KnownHosts as KnownHosts
 import Ssh.Session as Session
+import Ssh.Sftp as Sftp
+import Ssh.ShellTransfer as ShellTransfer
+import Ssh.Transfer as Transfer
 import Ssh.Transport as Transport exposing (Event(..), Transport)
 import Ssh.Wire as Wire
 import SshCrypto
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Test.Runner.UnitNode.Program as Program
+import TransferDrive
 import UInt8
 
 
@@ -73,6 +81,24 @@ main =
 
                     Just "connection" ->
                         suites (Array.dropFirst 1 r.args) r [ connectionSuite ]
+
+                    Just "sftp" ->
+                        suites (Array.dropFirst 1 r.args) r [ sftpSuite ]
+
+                    Just "sftp-local" ->
+                        -- ssh-tests sftp-local SFTP-SERVER DIR [SIZE PIECE MOST]
+                        sftpLocal r
+
+                    Just "transfer-local" ->
+                        -- ssh-tests transfer-local SFTP-SERVER [OPTIONS] JOB...
+                        -- (TransferDrive, docs/sftp.md FT17)
+                        when Array.get 1 r.args is
+                            Just server ->
+                                Os.Env.getEnvironment
+                                    |> Task.andThen (\env -> sftpChild server (\link -> TransferDrive.run r.fs link (TransferDrive.argsOf (Array.dropFirst 2 env.argsAsBytes))))
+
+                            Nothing ->
+                                say "usage: ssh-tests transfer-local SFTP-SERVER [OPTIONS] JOB..."
 
                     _ ->
                         when afterWord "connect" r.args is
@@ -191,7 +217,428 @@ connectionSuite =
         , ends "data that does not read" (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, short ])
         , ends "extended data that does not read" (Bytes.flatten [ Wire.writeByte 95, Wire.writeUint32 0, Wire.writeUint32 1, short ])
         , ends "a window adjustment that does not read" (Bytes.flatten [ Wire.writeByte 93, Wire.writeUint32 0, Wire.writeByte 1 ])
+        , caseTest "a side channel's bad data closes only it"
+            (\_ ->
+                let
+                    -- an exec channel beside it, number 1, the server's 9,
+                    -- confirmed and its command started
+                    side =
+                        Connection.openExec (Bytes.fromString "true") opened.connection
+
+                    confirmed =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                    started =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                    bad =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 1, short ]) started.connection
+
+                    sideEvents =
+                        Array.map .event bad.side
+
+                    stillMain =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, Wire.writeString (Bytes.fromString "abc") ]) bad.connection
+                in
+                if side.channel /= 1 then
+                    Just "the side channel is not number 1"
+
+                else if not (Array.member Connection.Started (Array.map .event started.side)) then
+                    Just "the side channel did not start"
+
+                else if not (refused sideEvents && Array.member Connection.Ended sideEvents) then
+                    Just "the side channel went on"
+
+                else if not (Array.isEmpty bad.events) then
+                    Just "the session was told of the side channel's data"
+
+                else if not (Array.member (Connection.Output (Bytes.fromString "abc")) stillMain.events) then
+                    Just "the session stopped"
+
+                else
+                    Nothing
+            )
+        , caseTest "a side channel's data waits for a pump"
+            (\_ ->
+                let
+                    side =
+                        Connection.openExec (Bytes.fromString "cat") opened.connection
+
+                    confirmed =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                    started =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                    written =
+                        Connection.writeSide 1 (Bytes.fromString (String.repeat 100000 "x")) started.connection
+
+                    pumped =
+                        Connection.pump 32768 written.connection
+                in
+                if not (Array.isEmpty written.send) then
+                    Just "a side channel's write was sent before a pump"
+
+                else if Array.length pumped.send /= 1 then
+                    Just ("a pump of 32 KiB sent " ++ String.fromInt (Array.length pumped.send) ++ " packets")
+
+                else if Connection.sideWaiting pumped.connection <= 0 then
+                    Just "nothing waits after one pump of 100,000 bytes"
+
+                else
+                    Nothing
+            )
+        , caseTest "a side channel's writes go in order, each pump saying what waits"
+            (\_ ->
+                let
+                    side =
+                        Connection.openExec (Bytes.fromString "cat") opened.connection
+
+                    confirmed =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                    started =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                    -- three writes, the first pump's packet across the
+                    -- first two (FT17: what waits is kept in pieces)
+                    pieces =
+                        [ String.repeat 20000 "a", String.repeat 20000 "b", String.repeat 80000 "c" ]
+
+                    written =
+                        Array.foldl (\t conn -> (Connection.writeSide 1 (Bytes.fromString t) conn).connection) started.connection pieces
+
+                    first =
+                        Connection.pump 32768 written
+
+                    rest =
+                        Connection.pump 1000000 first.connection
+
+                    -- a data packet's payload: its type, the server's
+                    -- channel, then the bytes as a string
+                    data packet =
+                        Bytes.slice 9 (Bytes.length packet) packet
+
+                    sentOf step =
+                        Array.mapAndKeepJust
+                            (\e ->
+                                when e.event is
+                                    Connection.Sent n ->
+                                        Just n
+
+                                    _ ->
+                                        Nothing
+                            )
+                            step.side
+                in
+                if Bytes.flatten (Array.map data first.send) /= Bytes.fromString (String.repeat 20000 "a" ++ String.repeat 12768 "b") then
+                    Just "the first pump did not send the first 32 KiB in order"
+
+                else if sentOf first /= [ 87232 ] then
+                    Just ("the first pump said " ++ String.join ", " (Array.map String.fromInt (sentOf first)) ++ " wait, not 87232")
+
+                else if Bytes.flatten (Array.map data (first.send ++ rest.send)) /= Bytes.fromString (String.join "" pieces) then
+                    Just "the bytes sent are not the bytes written, in order"
+
+                else if sentOf rest /= [ 0 ] then
+                    Just ("the last pump said " ++ String.join ", " (Array.map String.fromInt (sentOf rest)) ++ " wait, not 0")
+
+                else
+                    Nothing
+            )
         ]
+
+
+{-| `Ssh.Sftp`'s reading of what a server sends, with no server
+(docs/sftp.md FT14): packets split and joined as a channel may deliver
+them, and the streams it refuses. -}
+sftpSuite : U.Suite
+sftpSuite =
+    let
+        pkt kind body =
+            Bytes.flatten [ Wire.writeUint32 (Bytes.length body + 1), Wire.writeByte kind, body ]
+
+        version n extensions =
+            pkt 2 (Bytes.flatten (Array.pushFirst (Wire.writeUint32 n) extensions))
+
+        posix =
+            [ Wire.writeText "posix-rename@openssh.com", Wire.writeText "1" ]
+
+        ready =
+            (Sftp.received (version 3 posix) Sftp.start.client).client
+
+        -- an ATTRS answer to request 7: size 2^32 + 5, mode 0644, the
+        -- EXTENDED bit with one pair
+        attrs =
+            pkt 105
+                (Bytes.flatten
+                    [ Wire.writeUint32 7
+                    , Wire.writeUint32 -2147483643
+                    , Wire.writeUint64 (Bitwise.shiftLeftBy 32 (Int64.fromInt 1) + Int64.fromInt 5)
+                    , Wire.writeUint32 420
+                    , Wire.writeUint32 1
+                    , Wire.writeText "a@b"
+                    , Wire.writeText "c"
+                    ]
+                )
+
+        status id code =
+            pkt 101 (Bytes.flatten [ Wire.writeUint32 id, Wire.writeUint32 code, Wire.writeText "words", Wire.writeText "" ])
+
+        broken events =
+            Array.any
+                (\e ->
+                    when e is
+                        Sftp.Broken _ ->
+                            True
+
+                        _ ->
+                            False
+                )
+                events
+
+        answers events =
+            Array.mapAndFlatten
+                (\e ->
+                    when e is
+                        Sftp.Answer a ->
+                            [ a.id ]
+
+                        _ ->
+                            []
+                )
+                events
+
+        -- ShellTransfer (docs/sftp.md FT18): one upload of 1 MiB to a
+        -- host where nothing is in the way, its look at the target over
+        shell =
+            let
+                s0 =
+                    ShellTransfer.start { piece = 32768, ahead = 131072, ref = 10 }
+                        [ Transfer.Upload { local = Path.fromString "x", size = Int64.fromInt 1048576, mtime = Nothing, dir = Bytes.fromString "/d", name = Bytes.fromString "n" } ]
+
+                tell ref event t =
+                    ShellTransfer.told { ref = ref, event = event } t
+            in
+            s0.transfer
+                |> tell 10 (Connection.Output (Bytes.fromString "0 -\n"))
+                |> .transfer
+                |> tell 10 (Connection.Exited 0)
+                |> .transfer
+                |> tell 10 Connection.Ended
+
+        reads step =
+            Array.length step.local
+
+        readAll step =
+            Array.foldl
+                (\l acc ->
+                    when l is
+                        Transfer.ReadPiece r ->
+                            let
+                                next =
+                                    ShellTransfer.localRead { job = r.job, offset = r.offset, bytes = Bytes.fromString (String.repeat r.length "x") } acc.transfer
+                            in
+                            { transfer = next.transfer, reads = acc.reads + reads next, writes = acc.writes + Array.length next.channel }
+
+                        _ ->
+                            acc
+                )
+                { transfer = step.transfer, reads = 0, writes = 0 }
+                step.local
+    in
+    suiteOf "Sftp"
+        [ caseTest "the shell's upload reads ahead only so far, and more as its queue empties"
+            (\_ ->
+                let
+                    started =
+                        ShellTransfer.told { ref = 11, event = Connection.Started } shell.transfer
+
+                    written =
+                        readAll started
+
+                    drained =
+                        ShellTransfer.told { ref = 11, event = Connection.Sent 0 } written.transfer
+                in
+                when { opened = shell.channel, counts = [ reads started, written.reads, written.writes, reads drained ] } is
+                    { opened = [ ShellTransfer.Open { ref = 11 } ], counts = [ 4, 0, 4, 4 ] } ->
+                        Nothing
+
+                    r ->
+                        Just ("reads and writes: " ++ String.join ", " (Array.map String.fromInt r.counts))
+            )
+        , caseTest "an EUC-KR name goes into the shell's command as its own bytes"
+            (\_ ->
+                let
+                    -- 한'글.txt in EUC-KR: C7 D1, a quote, B1 DB
+                    name =
+                        Bytes.flatten [ Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0xC7, 0xD1, 0x27, 0xB1, 0xDB ]), Bytes.fromString ".txt" ]
+
+                    started =
+                        ShellTransfer.start { piece = 32768, ahead = 131072, ref = 10 }
+                            [ Transfer.Upload { local = Path.fromString "x", size = Int64.fromInt 1, mtime = Nothing, dir = Bytes.fromString "/d", name = name } ]
+
+                    has needle hay =
+                        Array.any (\at -> Bytes.slice at (at + Bytes.length needle) hay == needle) (Array.range 0 (Bytes.length hay - Bytes.length needle))
+
+                    -- the quote, escaped by the script's quotes and again
+                    -- by sh -c's
+                    escaped =
+                        Bytes.flatten [ Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0xC7, 0xD1 ]), Bytes.fromString "'\\''\\'\\'''\\''", Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0xB1, 0xDB ]) ]
+                in
+                when started.channel is
+                    [ ShellTransfer.Open o ] ->
+                        if Bytes.toString o.command /= Nothing then
+                            Just "the command was made UTF-8"
+
+                        else if has escaped o.command then
+                            Nothing
+
+                        else
+                            Just ("the name's bytes and quote are not in the command as the shell needs: " ++ Bytes.toStringLossy o.command)
+
+                    _ ->
+                        Just "the look at the target was not opened"
+            )
+        , caseTest "the shell's upload cancelled while its command opens is closed once it starts"
+            (\_ ->
+                let
+                    cancelled =
+                        ShellTransfer.cancel shell.transfer
+
+                    started =
+                        ShellTransfer.told { ref = 11, event = Connection.Started } cancelled.transfer
+
+                    ended =
+                        ShellTransfer.told { ref = 11, event = Connection.Ended } started.transfer
+                in
+                when { early = cancelled.channel, closed = started.channel, events = ended.events } is
+                    { early = [], closed = [ ShellTransfer.Close 11 ], events = [ Transfer.Finished { done = 0, skipped = 1, failed = 0, cancelled = True } ] } ->
+                        Nothing
+
+                    _ ->
+                        Just "the command was not closed once, after it started, with the batch then cancelled"
+            )
+        , caseTest "the version, and posix-rename used for a rename"
+            (\_ ->
+                let
+                    r =
+                        Sftp.request (Sftp.Rename { from = Bytes.fromString "a", to = Bytes.fromString "b" }) ready
+                in
+                -- type 200, EXTENDED, after the length
+                if Bytes.get 4 r.send == Just (UInt8.fromInt 200) then
+                    Nothing
+
+                else
+                    Just "a rename was not posix-rename@openssh.com"
+            )
+        , caseTest "a packet split in two reads"
+            (\_ ->
+                let
+                    whole =
+                        status 3 0
+
+                    first =
+                        Sftp.received (Bytes.slice 0 6 whole) ready
+
+                    second =
+                        Sftp.received (Bytes.slice 6 (Bytes.length whole) whole) first.client
+                in
+                if Array.isEmpty first.events && answers second.events == [ 3 ] then
+                    Nothing
+
+                else
+                    Just "the split packet was not read once whole"
+            )
+        , caseTest "two packets in one read"
+            (\_ ->
+                if answers (Sftp.received (Bytes.flatten [ status 1 0, status 2 1 ]) ready).events == [ 1, 2 ] then
+                    Nothing
+
+                else
+                    Just "both answers were not read"
+            )
+        , caseTest "64-bit sizes and the EXTENDED bit"
+            (\_ ->
+                when (Sftp.received attrs ready).events is
+                    [ Sftp.Answer { id = 7, response = Sftp.Attributes a } ] ->
+                        if a.size == Just (Bitwise.shiftLeftBy 32 (Int64.fromInt 1) + Int64.fromInt 5) && a.permissions == Just 420 then
+                            Nothing
+
+                        else
+                            Just "the attributes read wrong"
+
+                    _ ->
+                        Just "no attributes"
+            )
+        , caseTest "an answer before the version"
+            (\_ ->
+                if broken (Sftp.received (status 1 0) Sftp.start.client).events then
+                    Nothing
+
+                else
+                    Just "an answer was taken before the version"
+            )
+        , caseTest "version 4 refused"
+            (\_ ->
+                if broken (Sftp.received (version 4 []) Sftp.start.client).events then
+                    Nothing
+
+                else
+                    Just "version 4 was taken"
+            )
+        , caseTest "a length past 16 MiB"
+            (\_ ->
+                if broken (Sftp.received (Wire.writeUint32 20000000) ready).events then
+                    Nothing
+
+                else
+                    Just "a huge length was waited for"
+            )
+        ]
+
+
+{-| `Ssh.Sftp` against an `sftp-server` run as a child, over pipes, no
+ssh between (docs/sftp.md FT14): every request kind against DIR, or with
+SIZE, PIECE and MOST a timed upload and download of SIZE bytes. -}
+sftpLocal : { args : Array String, fs : File.Permission, net : Net.Permission } -> Task Never {}
+sftpLocal r =
+    when Array.dropFirst 1 r.args is
+        [ server, dir ] ->
+            sftpChild server (\link -> SftpDrive.script link dir)
+
+        [ server, dir, size, piece, most ] ->
+            sftpChild server
+                (\link ->
+                    SftpDrive.transfer link
+                        (Bytes.fromString (dir ++ "/transfer"))
+                        (String.toInt size |> Maybe.withDefault 0)
+                        (String.toInt piece |> Maybe.withDefault 32768)
+                        (String.toInt most |> Maybe.withDefault 64)
+                )
+
+        _ ->
+            say "usage: ssh-tests sftp-local SFTP-SERVER DIR [SIZE PIECE MOST]"
+
+
+sftpChild : String -> (SftpDrive.Link -> Task String {}) -> Task Never {}
+sftpChild server run =
+    OsProcess.initialize
+        |> Task.andThen (\cp -> OsProcess.spawn cp server [] (OsProcess.defaultSpawnOptions OsProcess.External) |> Task.mapError Os.Error.toString)
+        |> Task.andThen
+            (\child ->
+                when OsProcess.pipes child is
+                    Just io ->
+                        run
+                            { send = \bytes -> File.write bytes io.input |> Task.mapError Os.Error.toString, receive = File.read io.output |> Task.mapError Os.Error.toString }
+                            |> Task.andThen (\_ -> File.close io.input |> Task.mapError Os.Error.toString)
+                            |> Task.andThen (\_ -> OsProcess.waitForExit child)
+                            |> Task.andThen (\status -> say ("sftp-server exited, status " ++ String.fromInt status))
+
+                    Nothing ->
+                        Task.fail "no pipes"
+            )
+        |> Task.onError (\why -> say ("failed: " ++ why))
 
 
 {-| A case's test: it passes, or fails saying how. -}
@@ -826,6 +1273,44 @@ knownHostsSuite text =
                 else
                     Just (String.takeFirst 60 l ++ "... " ++ get f "verdict" ++ " -> " ++ got)
 
+            else if String.startsWith "replace " l then
+                let
+                    file =
+                        Array.findFirst (\c -> String.startsWith "file " c) caseLines
+                            |> Maybe.map (\found -> Bytes.toStringLossy (fromHex (String.dropFirst 5 found.value)))
+                            |> Maybe.withDefault ""
+
+                    r =
+                        KnownHosts.replaced name (fromHex (get f "key")) file
+
+                    numbers ns =
+                        if Array.isEmpty ns then
+                            "-"
+
+                        else
+                            String.join "," (Array.map String.fromInt ns)
+
+                    textRight =
+                        r.text == Bytes.toStringLossy (fromHex (get f "text"))
+                in
+                if numbers r.removed == get f "removed" && numbers r.kept == get f "kept" && textRight then
+                    Nothing
+
+                else
+                    Just
+                        (String.takeFirst 40 l
+                            ++ "... removed "
+                            ++ numbers r.removed
+                            ++ " kept "
+                            ++ numbers r.kept
+                            ++ (if textRight then
+                                    ""
+
+                                else
+                                    ", the text differs"
+                               )
+                        )
+
             else if String.startsWith "order " l then
                 let
                     got =
@@ -841,7 +1326,7 @@ knownHostsSuite text =
                 Nothing
 
         ran =
-            Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l) caseLines
+            Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l || String.startsWith "replace " l) caseLines
     in
     suiteOf "KnownHosts"
         (Array.indexedMap (\n l -> caseTest (String.fromInt (n + 1) ++ " " ++ String.takeFirst 48 l) (\_ -> run l)) ran)
@@ -1435,15 +1920,10 @@ sessionOf options =
                 |> Maybe.map (String.split ",")
                 |> Maybe.andThen
                     (\parts ->
-                        when parts is
-                            [ c, r ] ->
-                                Maybe.map2 (\columns rows -> { columns = columns, rows = rows }) (String.toInt c) (String.toInt r)
-
-                            _ ->
-                                Nothing
+                        sizeOf parts
                     )
     in
-    { terminal = Maybe.map (\s -> { term = "xterm-256color", columns = s.columns, rows = s.rows, utf8 = not (Array.member "--not-utf8" options) }) size
+    { terminal = Maybe.map (\s -> { term = "xterm-256color", columns = s.columns, rows = s.rows, widthInPixels = s.widthInPixels, heightInPixels = s.heightInPixels, utf8 = not (Array.member "--not-utf8" options) }) size
     , env =
         option "--env" options
             |> Maybe.map
@@ -1456,7 +1936,7 @@ sessionOf options =
                             []
                 )
             |> Maybe.withDefault []
-    , command = option "--exec" options
+    , command = option "--exec" options |> Maybe.map Bytes.fromString
     }
 
 
@@ -1511,14 +1991,7 @@ onConnectionEvent event session =
                     , option "--resize" options
                         |> Maybe.map (String.split ",")
                         |> Maybe.andThen
-                            (\parts ->
-                                when parts is
-                                    [ c, r ] ->
-                                        Maybe.map2 (\columns rows -> Connection.resize { columns = columns, rows = rows }) (String.toInt c) (String.toInt r)
-
-                                    _ ->
-                                        Nothing
-                            )
+                            (\parts -> sizeOf parts |> Maybe.map Connection.resize)
                     , Maybe.map Connection.write (text "--stdin2")
                     , if Array.member "--eof" options then
                         Just Connection.sendEof
@@ -1553,6 +2026,9 @@ onConnectionEvent event session =
 
         Connection.KeepaliveUnanswered n ->
             say ("keepalive sent; " ++ String.fromInt n ++ " unanswered before it") |> Task.map (\_ -> session)
+
+        Connection.Sent _ ->
+            Task.succeed session
 
         Connection.Ended ->
             let
@@ -1600,6 +2076,15 @@ sessionMode r target =
             , session = sessionOf r.args
             , keepaliveSeconds = 0
             , keepaliveCountMax = 3
+            , pacing =
+                -- `--pacing UNSENT,PUMP,QUIET_MS,QUIET_UNSENT,QUIET_PUMP`, to
+                -- measure another (docs/sftp.md FT17)
+                when option "--pacing" r.args |> Maybe.map (String.split "," >> Array.map String.toInt) is
+                    Just [ Just unsent, Just pump, Just quietMs, Just quietUnsent, Just quietPump ] ->
+                        { unsent = unsent, pump = pump, quietMs = quietMs, quietUnsent = quietUnsent, quietPump = quietPump }
+
+                    _ ->
+                        Session.pacing
             }
 
         -- `--jump HOST:PORT`, again for each hop: the same user, keys and
@@ -1620,14 +2105,155 @@ sessionMode r target =
         |> Task.andThen
             (\sources ->
                 Process.spawn (Session.run { net = r.net, fs = r.fs } jumps options sources.notices sources.inputs)
-                    |> Task.andThen (\_ -> watch r.args sources [])
+                    |> Task.andThen
+                        (\_ ->
+                            when option "--sftp" r.args is
+                                Just dir ->
+                                    sftpOverSession r.args dir sources
+
+                                Nothing ->
+                                    when Array.findFirst (\a -> a == "--upload") r.args is
+                                        Just found ->
+                                            -- `--upload [OPTIONS] JOB...`, the rest of the
+                                            -- arguments (ShellDrive, docs/sftp.md FT18)
+                                            Os.Env.getEnvironment
+                                                |> Task.andThen (\env -> uploadOverSession r.fs (Array.dropFirst (found.index + 1) env.argsAsBytes) sources)
+
+                                        Nothing ->
+                                            watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0 }
+                        )
+            )
+
+
+{-| `--upload …`: once the session has started, `ShellDrive`'s batch,
+and the session hung up. -}
+uploadOverSession : File.Permission -> Array Bytes -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never {}
+uploadOverSession fs args sources =
+    untilSessionStarted sources
+        |> Task.andThen
+            (\started ->
+                if started then
+                    ShellDrive.run fs sources args
+                        |> Task.onError (\why -> say ("failed: " ++ why))
+                        |> Task.andThen (\_ -> Source.emit sources.inputs Session.Hangup)
+
+                else
+                    Task.succeed {}
+            )
+
+
+untilSessionStarted : { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never Bool
+untilSessionStarted sources =
+    Source.next sources.notices
+        |> Task.andThen
+            (\n ->
+                when n is
+                    Just Session.Started ->
+                        Task.succeed True
+
+                    Just (Session.Failed why) ->
+                        say ("failed: " ++ why) |> Task.map (\_ -> False)
+
+                    Just Session.Ended ->
+                        Task.succeed False
+
+                    Nothing ->
+                        Task.succeed False
+
+                    Just _ ->
+                        untilSessionStarted sources
+            )
+
+
+{-| `--sftp DIR`: once the session has started, an `sftp` subsystem on a
+channel beside it (docs/sftp.md FT14), and `SftpDrive`'s script over it,
+or with `--transfer SIZE,PIECE,MOST` its timed transfer. Questions are
+not answered here: the host's key must be known and the key need no
+passphrase. -}
+sftpOverSession : Array String -> String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never {}
+sftpOverSession args dir sources =
+    let
+        untilStarted _ =
+            Source.next sources.notices
+                |> Task.andThen
+                    (\n ->
+                        when n is
+                            Just Session.Started ->
+                                Task.succeed True
+
+                            Just (Session.Failed why) ->
+                                say ("failed: " ++ why) |> Task.map (\_ -> False)
+
+                            Just Session.Ended ->
+                                Task.succeed False
+
+                            Nothing ->
+                                Task.succeed False
+
+                            Just _ ->
+                                untilStarted {}
+                    )
+
+        -- the side channel's output, its end as nothing
+        receive _ =
+            Source.next sources.notices
+                |> Task.andThen
+                    (\n ->
+                        when n is
+                            Just (Session.Side { ref = 1, event = Connection.Output bytes }) ->
+                                Task.succeed bytes
+
+                            Just (Session.Side { ref = 1, event = Connection.Ended }) ->
+                                Task.succeed Bytes.empty
+
+                            Just (Session.Side { ref = 1, event = Connection.Refused why }) ->
+                                say ("the sftp channel was refused: " ++ why) |> Task.map (\_ -> Bytes.empty)
+
+                            Just Session.Ended ->
+                                Task.succeed Bytes.empty
+
+                            Nothing ->
+                                Task.succeed Bytes.empty
+
+                            Just _ ->
+                                receive {}
+                    )
+
+        link =
+            { send = \bytes -> Source.emit sources.inputs (Session.SideWrite { ref = 1, bytes = bytes }), receive = receive {} }
+
+        run =
+            when option "--transfer" args |> Maybe.map (String.split ",") |> Maybe.map (Array.map (\x -> String.toInt x |> Maybe.withDefault 0)) is
+                Just [ size, piece, most ] ->
+                    SftpDrive.transfer link (Bytes.fromString (dir ++ "/transfer")) size piece most
+
+                _ ->
+                    SftpDrive.script link dir
+    in
+    untilStarted {}
+        |> Task.andThen
+            (\started ->
+                if started then
+                    Source.emit sources.inputs (Session.OpenSubsystem { ref = 1, name = "sftp" })
+                        |> Task.andThen (\_ -> run |> Task.onError (\why -> say ("failed: " ++ why)))
+                        |> Task.andThen (\_ -> Source.emit sources.inputs Session.Hangup)
+
+                else
+                    Task.succeed {}
             )
 
 
 {-| The session's notices, each a line, each question answered from the
-options; the output shown at the end. -}
-watch : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Array Bytes -> Task Never {}
-watch args sources output =
+options; the output shown at the end. The side channels' lines
+(`--side-exec`, `--side-subsystem`, docs/sftp.md FT12) are kept by channel
+and said at the end, in order, so that how their events interleave with
+the session's does not move the pins. -}
+type alias Watch =
+    { output : Array Bytes, sides : Dict.Dict Int { lines : Array String, output : Array Bytes }, open : Int, opened : Int }
+
+
+watch : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Watch -> Task Never {}
+watch args sources w =
     Source.next sources.notices
         |> Task.andThen
             (\notice ->
@@ -1636,7 +2262,7 @@ watch args sources output =
                         Source.emit sources.inputs (Session.Answered a)
 
                     next =
-                        watch args sources output
+                        watch args sources w
                 in
                 when notice is
                     Nothing ->
@@ -1658,6 +2284,20 @@ watch args sources output =
                                                 answer (Session.Trust { remember = True })
 
                                             else if Array.member "--trust-once" args then
+                                                answer (Session.Trust { remember = False })
+
+                                            else
+                                                answer Session.Decline
+                                        )
+
+                            Session.HostKeyChanged k ->
+                                say ("asked whether to trust " ++ k.host ++ "'s changed " ++ k.algorithm ++ " key, known at line " ++ String.join "," (Array.map String.fromInt k.lineNumbers))
+                                    |> Task.andThen
+                                        (\_ ->
+                                            if Array.member "--replace-changed" args then
+                                                answer (Session.Trust { remember = True })
+
+                                            else if Array.member "--trust-changed-once" args then
                                                 answer (Session.Trust { remember = False })
 
                                             else
@@ -1686,19 +2326,168 @@ watch args sources output =
                                         Nothing ->
                                             Task.succeed {}
                                 )
-                            |> Task.andThen (\_ -> next)
+                            |> Task.andThen (\_ -> openSides args sources)
+                            |> Task.andThen (\opened -> watch args sources { w | open = opened, opened = opened })
 
                     Just (Session.Output bytes) ->
-                        watch args sources (Array.pushLast bytes output)
+                        if Array.member "--echo" args then
+                            -- what the command writes goes back as keys, at
+                            -- once (a latency measurement, docs/sftp.md FT12)
+                            Source.emit sources.inputs (Session.Keys bytes) |> Task.andThen (\_ -> next)
+
+                        else
+                            watch args sources { w | output = Array.pushLast bytes w.output }
 
                     Just (Session.Exited status) ->
-                        say ("output: " ++ String.replace "\r" "" (String.trim (Bytes.toStringLossy (Bytes.flatten output))))
+                        say ("output: " ++ String.replace "\r" "" (String.trim (Bytes.toStringLossy (Bytes.flatten w.output))))
                             |> Task.andThen (\_ -> say ("exit status " ++ String.fromInt status))
-                            |> Task.andThen (\_ -> watch args sources [])
+                            |> Task.andThen (\_ -> watch args sources { w | output = [] })
+
+                    Just (Session.Side side) ->
+                        let
+                            was =
+                                Dict.get side.ref w.sides |> Maybe.withDefault { lines = [], output = [] }
+
+                            line text =
+                                { was | lines = Array.pushLast text was.lines }
+
+                            shown =
+                                if Array.member "--hex" args then
+                                    String.fromInt (Bytes.length (Bytes.flatten was.output)) ++ " bytes"
+
+                                else
+                                    String.replace "\r" "" (String.trim (Bytes.toStringLossy (Bytes.flatten was.output)))
+
+                            now =
+                                when side.event is
+                                    Connection.Output bytes ->
+                                        { was | output = Array.pushLast bytes was.output }
+
+                                    Connection.ErrorOutput bytes ->
+                                        { was | output = Array.pushLast bytes was.output }
+
+                                    Connection.Started ->
+                                        line "started"
+
+                                    Connection.Refused why ->
+                                        line ("refused: " ++ why)
+
+                                    Connection.Exited status ->
+                                        line ("output: " ++ shown ++ "; exit status " ++ String.fromInt status)
+
+                                    Connection.Killed k ->
+                                        line ("killed by " ++ k.signal)
+
+                                    Connection.Ended ->
+                                        line "ended"
+
+                                    Connection.KeepaliveUnanswered _ ->
+                                        was
+
+                                    Connection.Sent _ ->
+                                        was
+
+                            stillOpen =
+                                if side.event == Connection.Ended then
+                                    w.open - 1
+
+                                else
+                                    w.open
+
+                            after =
+                                { w | sides = Dict.set side.ref now w.sides, open = stillOpen }
+                        in
+                        if stillOpen == 0 && w.open > 0 then
+                            -- every side channel is over: the session's
+                            -- command reads a line to end (`read x`)
+                            Source.emit sources.inputs (Session.Keys (Bytes.fromString "\n"))
+                                |> Task.andThen (\_ -> watch args sources after)
+
+                        else
+                            watch args sources after
 
                     Just (Session.Failed why) ->
                         say ("failed: " ++ why) |> Task.andThen (\_ -> next)
 
                     Just Session.Ended ->
-                        say "ended"
+                        Dict.foldl
+                            (\ref side acc -> Array.foldl (\l a -> a |> Task.andThen (\_ -> say ("side " ++ String.fromInt ref ++ ": " ++ l))) acc side.lines)
+                            (Task.succeed {})
+                            w.sides
+                            |> Task.andThen (\_ -> say "ended")
             )
+
+
+{-| The side channels the options ask for, opened once the session has
+started, numbered from 1 in order: `--side-exec CMD` and `--side-subsystem
+NAME`, each again for more. The first is given `--side-stdin TEXT` and
+`--side-stdin-bytes N` (that many `x`s), then its end,
+when `--side-eof`. How many were opened. -}
+openSides : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never Int
+openSides args sources =
+    let
+        indexed =
+            Array.indexedMap (\i a -> { index = i, arg = a }) args
+
+        asked =
+            indexed
+                |> Array.mapAndFlatten
+                    (\a ->
+                        when { arg = a.arg, value = Array.get (a.index + 1) args } is
+                            { arg = "--side-exec", value = Just command } ->
+                                [ \ref -> Session.OpenExec { ref = ref, command = Bytes.fromString command } ]
+
+                            { arg = "--side-subsystem", value = Just name } ->
+                                [ \ref -> Session.OpenSubsystem { ref = ref, name = name } ]
+
+                            _ ->
+                                []
+                    )
+
+        emit input =
+            Source.emit sources.inputs input
+
+        first =
+            [ option "--side-stdin" args |> Maybe.map (\t -> Session.SideWrite { ref = 1, bytes = Bytes.fromString (unescape t) })
+            , option "--side-stdin-bytes" args
+                |> Maybe.andThen String.toInt
+                |> Maybe.map (\n -> Session.SideWrite { ref = 1, bytes = Bytes.fromString (String.repeat n "x") })
+            , if Array.member "--side-eof" args then
+                Just (Session.SideEof 1)
+
+              else
+                Nothing
+            ]
+                |> Array.mapAndFlatten (\m -> Maybe.map (\x -> [ x ]) m |> Maybe.withDefault [])
+    in
+    Array.foldl (\x acc -> acc |> Task.andThen (\_ -> emit x))
+        (Task.succeed {})
+        (Array.indexedMap (\i make -> make (i + 1)) asked
+            ++ (if Array.isEmpty asked then
+                    []
+
+                else
+                    first
+               )
+        )
+        |> Task.map (\_ -> Array.length asked)
+
+
+{-| `COLUMNS,ROWS`, or `COLUMNS,ROWS,WIDTH,HEIGHT` with the size in pixels
+(0 by 0 when not given). -}
+sizeOf : Array String -> Maybe { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int }
+sizeOf parts =
+    let
+        sized c r w h =
+            Maybe.map2 (\columns rows -> { columns = columns, rows = rows }) (String.toInt c) (String.toInt r)
+                |> Maybe.andThen (\cells -> Maybe.map2 (\width height -> { columns = cells.columns, rows = cells.rows, widthInPixels = width, heightInPixels = height }) (String.toInt w) (String.toInt h))
+    in
+    when parts is
+        [ c, r ] ->
+            sized c r "0" "0"
+
+        [ c, r, w, h ] ->
+            sized c r w h
+
+        _ ->
+            Nothing

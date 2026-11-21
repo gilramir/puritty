@@ -1,0 +1,100 @@
+# For Gilbert to review
+
+Things found along the way that were left as they are, for Gilbert to
+decide on later. Numbered RV*n*; each says where it was found, what
+differs, and what fixing it would take. An item decided moves to the
+section that does it, and its line here says where.
+
+## RV1 · What the tree's preview shows of each pane (2026-11-16)
+
+Found with TM88, side by side with real tmux 3.8 and 3.6a
+(`bench/tmux/compare/scenes_mouse.py`, `tree-preview-labels`).
+
+**tmux** (`screen_write_preview`, every release): with the pane's cursor
+on, the part of its visible screen around the cursor: from a third of the
+preview's height above the cursor's row and a third of its width left of
+the cursor's column, held inside the screen; with the cursor off, the top
+left. It draws the cursor there too.
+
+**puritty** (`drawPreview`): the pane's last rows with text in them
+(`capture-pane`, trailing blank rows dropped), from the left edge, no
+cursor. So a pane whose prompt sits near the top shows the same rows in
+both; one with its cursor high up and text below it, or one in a program
+that hides the cursor (vim, less), shows different rows, and a wide line
+is cut at a different place.
+
+**To match it**, the preview's question would also ask each pane's
+`cursor_x`, `cursor_y` and `cursor_flag` (`pane_height`, `pane_width` it
+has), pick the rows and columns as tmux does, and draw the cursor; in
+tmux's look only, or in both.
+
+## RV2 · The prompt's emacs word keys and `word-separators` (2026-11-16)
+
+**Decided 2026-11-16: as tmux; done in `docs/tmux.md` TM104.** The
+defaults below were wrong: ` -_@` is 2.7–2.9's; 3.0–3.2's is a space and
+3.3's on the punctuation but `_`, so on 3.3 on Ctrl-W after `my_logs`
+deletes it whole, as puritty did.
+
+Found with TM100. puritty's Alt-B and Ctrl+Left, Alt-F and Ctrl+Right, and
+Ctrl-W at tmux's prompt stop at spaces only (`editLine`'s `wordStart`,
+`wordEnd`). tmux's stop at the session's `word-separators` too (space,
+`-`, `_` and `@` by default): 2.7 to 3.2 skip the separators and take a
+word as the run between them (`status_prompt_key`'s `M-f`, `M-b`, C-w);
+from 3.3 a run of separators is a word of its own (`prompt_forward_word`,
+`prompt_backward_word`, C-w by the same classes). With
+`new-window -n my_logs` and the caret at the end:
+
+| keys | tmux 3.8 | puritty |
+|---|---|---|
+| Ctrl-W | deletes `logs`, leaving `my_` | deletes `my_logs` |
+| Alt-B | to the start of `logs` | to the start of `my_logs` |
+| Alt-F from the start of `new-window` | after `new` | after `new-window` |
+
+The vi keys (TM100) follow tmux.
+
+**To match it**, the three keys would take the separators puritty asks
+(`word-separators`, TM100) and each version's rule, as the vi keys do.
+
+## RV3 · Kitty images in a `tmux -CC` pane, and `clear` (2026-11-17)
+
+Found with `docs/images.md` IM22. In a `-CC` pane a program writes to
+tmux, and tmux's `clear` is ED 0 from the top left (`CSI H CSI J CSI 3J`),
+not ED 2. puritty keeps Ghostty's rule for Kitty images, where only ED 2
+takes the placements, so a Kitty image stays under the prompt after
+`clear`, and later images draw over it.
+
+| in a `-CC` pane | tmux would show (3.8 for Sixel; master for Kitty) | puritty |
+|---|---|---|
+| `clear` after a Kitty image | the image gone | the image stays |
+| text written over a Kitty image | the image gone | text over the image |
+| Sixel or iTerm2's image, then `clear` | gone | gone (IM23) |
+
+**To match it**, a pane's terminal would take Kitty placements as tmux
+does, by an embedder setting the panes have and the window's terminal
+not (which Ghostty's oracle holds): any cell an image covers written or
+erased, a line inserted or deleted through it, frees the image, and RI, a
+scroll down and a clear free them all. Or Kitty images in a pane could
+take IM23's per-cell holes, as Sixel's do. Either is a day's work; left
+until there is a call.
+
+**Decided, 2026-11-18**: Gilbert, after gnuplot's and chafa's pictures
+piled up under `-CC` (`images.md` IM29): "Clear should remove them."
+Done as the per-cell way, in tmux's panes only (`images.md` IM30).
+
+## RV4 · A passphrase offered to the ssh agent (2026-11-18)
+
+Found building remembered passphrases (`saved-secrets.md` PW8): PW7
+chose "both, plus agent", a key's passphrase remembered and the key also
+offered to OpenSSH's agent or Pageant. Adding a key to an agent
+(`SSH2_AGENTC_ADD_IDENTITY`) sends its private numbers over the agent's
+pipe, which is written from Geng (`Ssh.Agent`), while SC16 keeps a
+private key in C, never as Geng bytes.
+
+**To build it**: either the message passes through Geng once, as the
+session keys do (accepted by SC12 question 7), or C writes it to the
+pipe itself, a bigger change. Then a key in the passphrase box ("A: add
+to the agent"), and the agent's answer said.
+
+**Left, 2026-11-18**: Gilbert, "Let's skip this feature for now. We will
+revisit later." The passphrase is remembered in Credential Manager
+alone.

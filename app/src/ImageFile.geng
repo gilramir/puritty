@@ -1,0 +1,182 @@
+module ImageFile exposing (Want, maxBytes, read)
+
+{-| The file a Kitty graphics command names, read for the core
+(`docs/images-kitty.md` KG9): `t=f`, a file, and `t=t`, a temporary
+file removed once read. The checks are Kitty's, as Ghostty copied them
+(`LoadingImage.zig`): an absolute path, followed through its links; nothing
+under `/proc`, `/sys` or `/dev` but `/dev/shm`; a regular file; at most
+400 MB; and a temporary file only in a temporary folder (`/tmp`,
+`/dev/shm`, `TMPDIR`, `TEMP`, `TMP`), with `tty-graphics-protocol` in its
+name. What fails is answered in Kitty's words, never with the platform's
+message, which would tell the program more of this machine than it asked.
+-}
+
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Os.Env
+import Os.Error exposing (Error)
+import Os.File as File
+import Os.Path as Path exposing (Path)
+import Reason
+import Task exposing (Task)
+
+
+type alias Want =
+    { path : String, temporary : Bool, offset : Int, size : Int }
+
+
+{-| Ghostty's `max_size`, the most a load holds. -}
+maxBytes : Int
+maxBytes =
+    400 * 1024 * 1024
+
+
+{-| The file's bytes from `offset`, `size` of them (0: to its end), or why
+not. A temporary file is removed once its checks pass, read or not. -}
+read : File.Permission -> Want -> Task x (Result String Bytes)
+read fs want =
+    let
+        path =
+            Path.fromString want.path
+    in
+    if not (Path.isAbsolute path) then
+        Task.succeed (Err "EINVAL: the path is not absolute")
+
+    else
+        Task.map2 (\real temps -> { real = real, temps = temps }) (File.realPath fs path) (temporaryFolders fs)
+            |> Task.andThen (\found -> checked fs want found.real found.temps)
+            |> Task.onError (\e -> Task.succeed (Err (inKittyWords e)))
+
+
+checked : File.Permission -> Want -> Path -> Array Path -> Task Error (Result String Bytes)
+checked fs want real temps =
+    let
+        text =
+            Path.toString real
+
+        inTemp =
+            Array.any (\dir -> Path.relativeTo dir real /= Nothing) temps
+    in
+    if sensitive text then
+        Task.succeed (Err "EPERM: that folder is not read")
+
+    else if want.temporary && not inTemp then
+        Task.succeed (Err "EPERM: a temporary file must be in a temporary folder")
+
+    else if want.temporary && not (String.contains "tty-graphics-protocol" (Path.filename real)) then
+        Task.succeed (Err "EPERM: a temporary file's name must hold tty-graphics-protocol")
+
+    else
+        File.metadata fs real
+            |> Task.andThen
+                (\meta ->
+                    let
+                        size =
+                            Int64.toInt meta.size
+
+                        left =
+                            max 0 (size - want.offset)
+
+                        count =
+                            if want.size > 0 then
+                                min want.size left
+
+                            else
+                                left
+                    in
+                    if meta.kind /= File.File then
+                        Task.succeed (Err "EINVAL: not a regular file")
+
+                    else if count > maxBytes then
+                        Task.succeed (Err "EINVAL: the file is too large")
+
+                    else
+                        File.withHandle fs
+                            File.ForRead
+                            real
+                            (\h ->
+                                File.seek (File.FromStart (Int64.fromInt want.offset)) h
+                                    |> Task.andThen (\_ -> readUpTo count h [] 0)
+                            )
+                            |> Task.andThen
+                                (\bytes ->
+                                    if want.temporary then
+                                        File.remove fs real
+                                            |> Task.map (\_ -> Ok bytes)
+                                            |> Task.onError (\_ -> Task.succeed (Ok bytes))
+
+                                    else
+                                        Task.succeed (Ok bytes)
+                                )
+                )
+
+
+{-| `count` bytes, or what there is before the end. -}
+readUpTo : Int -> File.Handle -> Array Bytes -> Int -> Task Error Bytes
+readUpTo count h pieces got =
+    if got >= count then
+        Task.succeed (Bytes.slice 0 count (Bytes.flatten pieces))
+
+    else
+        File.read h
+            |> Task.andThen
+                (\piece ->
+                    if Bytes.length piece == 0 then
+                        Task.succeed (Bytes.flatten pieces)
+
+                    else
+                        readUpTo count h (Array.pushLast piece pieces) (got + Bytes.length piece)
+                )
+
+
+{-| Kitty's blocked folders (Linux's): what the kernel shows of processes,
+devices and itself, where a read can block or never end. -}
+sensitive : String -> Bool
+sensitive text =
+    String.startsWith "/proc/" text
+        || String.startsWith "/sys/" text
+        || (String.startsWith "/dev/" text && not (String.startsWith "/dev/shm/" text))
+
+
+{-| The temporary folders that exist, followed through their links. -}
+temporaryFolders : File.Permission -> Task x (Array Path)
+temporaryFolders fs =
+    Os.Env.getEnvironmentVariables
+        |> Task.andThen
+            (\vars ->
+                let
+                    named =
+                        [ "TMPDIR", "TEMP", "TMP" ]
+                            |> Array.mapAndKeepJust (\name -> Dict.get name vars)
+                            |> Array.keepIf (\v -> v /= "")
+                in
+                Array.foldl
+                    (\dir acc ->
+                        acc
+                            |> Task.andThen
+                                (\found ->
+                                    File.realPath fs (Path.fromString dir)
+                                        |> Task.map (\real -> Array.pushLast real found)
+                                        |> Task.onError (\_ -> Task.succeed found)
+                                )
+                    )
+                    (Task.succeed [])
+                    (named ++ [ "/tmp", "/dev/shm" ])
+            )
+
+
+inKittyWords : Error -> String
+inKittyWords e =
+    when e.kind is
+        Os.Error.NotFound ->
+            "ENOENT: no such file"
+
+        Os.Error.PermissionDenied ->
+            "EPERM: permission denied"
+
+        Os.Error.IsADirectory ->
+            "EINVAL: not a regular file"
+
+        _ ->
+            "EIO: the file could not be read"

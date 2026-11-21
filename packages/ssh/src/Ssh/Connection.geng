@@ -2,36 +2,55 @@ module Ssh.Connection exposing
     ( Connection
     , Event(..)
     , Session
+    , SideEvent
     , Step
     , close
+    , closeSide
     , isConnectionMessage
     , keepalive
     , open
     , openDirect
+    , openExec
+    , openSubsystem
+    , pump
     , received
     , resize
     , sendEof
+    , sendEofSide
+    , sideWaiting
     , write
+    , writeSide
     )
 
-{-| SSH's connection protocol, a client's one session (RFC 4254; puritty
-`docs/ssh-client.md` SC11 step 7): a `session` channel, its terminal
-(`pty-req`, with `IUTF8` as the terminal's character set says), its
-variables (`env`), a shell or a command, the bytes both ways under each
-side's window, the terminal's size (`window-change`), and how it ended
-(`exit-status`, `exit-signal`). Keepalives are global requests a server
-must answer.
+{-| SSH's connection protocol, a client's session and the channels beside
+it (RFC 4254; puritty `docs/ssh-client.md` SC11 step 7, `docs/sftp.md`
+FT12): a `session` channel, its terminal (`pty-req`, with `IUTF8` as the
+terminal's character set says), its variables (`env`), a shell or a
+command, the bytes both ways under each side's window, the terminal's size
+(`window-change`), and how it ended (`exit-status`, `exit-signal`).
+Keepalives are global requests a server must answer.
 
 A `direct-tcpip` channel (§7.2) carries a connection to another host
 through this one, as OpenSSH's `ProxyJump` does: it opens without
 requests, and its bytes go both ways under the same windows
 ([`openDirect`](#openDirect)).
 
+**Side channels.** Beside the session, more `session` channels run a
+command ([`openExec`](#openExec)) or a subsystem such as `sftp`
+([`openSubsystem`](#openSubsystem)) on the same connection, with no second
+login. What happens on one is a [`SideEvent`](#SideEvent) naming it; its
+refusal, a message about it that does not read, or its end closes that
+channel only, never the session. The session's bytes are sent as soon as
+the server's window allows; a side channel's wait until the caller asks
+for them with [`pump`](#pump), so that a caller can send keys ahead of a
+file (FT11's measurement: keys waiting behind a file on one connection).
+
 Pure, as the transport and authentication are: each step answers the
 payloads to send and what happened.
 -}
 
 import Bytes exposing (Bytes)
+import Dict exposing (Dict)
 import Ssh.Reason as Reason
 import Ssh.Wire as Wire
 import UInt8
@@ -42,9 +61,9 @@ whether it is UTF-8), the variables to ask for, and the command, or the
 user's shell for none.
 -}
 type alias Session =
-    { terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool }
+    { terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool }
     , env : Array { name : String, value : String }
-    , command : Maybe String
+    , command : Maybe Bytes
     }
 
 
@@ -52,12 +71,15 @@ type alias Session =
 
   - `Started`: the shell or command runs.
   - `Refused`: the server would not open the channel, give the terminal or
-    run the command, and why; the session is over.
+    run the command, and why; the channel is over.
   - `Output`, `ErrorOutput`: the program's bytes, as they came, in no
     character set.
   - `Exited`: its exit status; `Killed`: the signal that ended it.
   - `Ended`: the channel is closed; nothing more comes.
-  - `KeepaliveUnanswered`: keepalives the server has not answered, counted.
+  - `KeepaliveUnanswered`: keepalives the server has not answered, counted
+    (the session's only).
+  - `Sent`: a side channel's data went, and this much of it still waits
+    for room (FT17).
 
 -}
 type Event
@@ -69,10 +91,19 @@ type Event
     | Killed { signal : String, message : String }
     | Ended
     | KeepaliveUnanswered Int
+    | Sent Int
 
 
+{-| An [`Event`](#Event) on a side channel, by the number
+[`openExec`](#openExec) or [`openSubsystem`](#openSubsystem) gave it. -}
+type alias SideEvent =
+    { channel : Int, event : Event }
+
+
+{-| The connection after a step, the payloads to send in order, the
+session's events and the side channels'. -}
 type alias Step =
-    { connection : Connection, send : Array Bytes, events : Array Event }
+    { connection : Connection, send : Array Bytes, events : Array Event, side : Array SideEvent }
 
 
 type Connection
@@ -87,29 +118,49 @@ type Phase
     | Closed
 
 
-{-| The remote channel and window once open; ours; what waits for room in
-theirs; how many of our requests wait for an answer, in order; keepalives
-in flight. -}
-type alias State =
-    { session : Session
-    , direct : Maybe { host : String, port : Int }
+{-| What a channel is for: the session (channel 0), or a side channel
+running a command or a subsystem. -}
+type Kind
+    = Main
+    | Exec Bytes
+    | Subsystem String
+
+
+{-| A channel: its phase, the server's number for it and its window and
+largest packet once open; how much of our window it has used; what waits
+for room in theirs; the EOF asked for and sent. -}
+type alias Channel =
+    { kind : Kind
     , phase : Phase
     , remote : Int
     , remoteWindow : Int
     , remoteMaxPacket : Int
-    , localWindow : Int
     , consumed : Int
-    , pending : Bytes
+    , pending : Array Bytes
+    , pendingLength : Int
     , eofPending : Bool
     , sentEof : Bool
-    , keepalives : Int
-    , send : Array Bytes
-    , events : Array Event
     }
 
 
-ourChannel : Int
-ourChannel =
+{-| The session as asked for; a direct channel's target; the channels by
+our number (0 is the session's); the next side channel's number;
+keepalives in flight; what to send and what happened, since the last step.
+-}
+type alias State =
+    { session : Session
+    , direct : Maybe { host : String, port : Int }
+    , channels : Dict Int Channel
+    , nextSide : Int
+    , keepalives : Int
+    , send : Array Bytes
+    , events : Array Event
+    , side : Array SideEvent
+    }
+
+
+mainChannel : Int
+mainChannel =
     0
 
 
@@ -211,12 +262,17 @@ numberOf payload =
 
 finish : State -> Step
 finish st =
-    { connection = Connection { st | send = [], events = [] }, send = st.send, events = st.events }
+    { connection = Connection { st | send = [], events = [], side = [] }, send = st.send, events = st.events, side = st.side }
 
 
-emit : Event -> State -> State
-emit e st =
-    { st | events = Array.pushLast e st.events }
+{-| An event on channel `id`: the session's, or a side channel's. -}
+emitOn : Int -> Event -> State -> State
+emitOn id e st =
+    if id == mainChannel then
+        { st | events = Array.pushLast e st.events }
+
+    else
+        { st | side = Array.pushLast { channel = id, event = e } st.side }
 
 
 queue : Bytes -> State -> State
@@ -224,19 +280,46 @@ queue payload st =
     { st | send = Array.pushLast payload st.send }
 
 
+channelOf : Int -> State -> Maybe Channel
+channelOf id st =
+    Dict.get id st.channels
+
+
+setChannel : Int -> Channel -> State -> State
+setChannel id ch st =
+    { st | channels = Dict.set id ch st.channels }
+
+
+fresh : Kind -> Channel
+fresh kind =
+    { kind = kind
+    , phase = Opening
+    , remote = 0
+    , remoteWindow = 0
+    , remoteMaxPacket = 0
+    , consumed = 0
+    , pending = []
+    , pendingLength = 0
+    , eofPending = False
+    , sentEof = False
+    }
+
+
+openSession : Int -> Bytes
+openSession id =
+    Bytes.flatten
+        [ Wire.writeByte msgOpen
+        , Wire.writeText "session"
+        , Wire.writeUint32 id
+        , Wire.writeUint32 windowSize
+        , Wire.writeUint32 maxPacket
+        ]
+
+
 {-| The session channel asked for, once authentication is done. -}
 open : Session -> Step
 open session =
-    opening session
-        Nothing
-        (Bytes.flatten
-            [ Wire.writeByte msgOpen
-            , Wire.writeText "session"
-            , Wire.writeUint32 ourChannel
-            , Wire.writeUint32 windowSize
-            , Wire.writeUint32 maxPacket
-            ]
-        )
+    opening session Nothing (openSession mainChannel)
 
 
 {-| A `direct-tcpip` channel to `host` and `port` asked for, once
@@ -251,7 +334,7 @@ openDirect target =
         (Bytes.flatten
             [ Wire.writeByte msgOpen
             , Wire.writeText "direct-tcpip"
-            , Wire.writeUint32 ourChannel
+            , Wire.writeUint32 mainChannel
             , Wire.writeUint32 windowSize
             , Wire.writeUint32 maxPacket
             , Wire.writeText target.host
@@ -267,24 +350,46 @@ opening session direct request =
     finish
         { session = session
         , direct = direct
-        , phase = Opening
-        , remote = 0
-        , remoteWindow = 0
-        , remoteMaxPacket = 0
-        , localWindow = windowSize
-        , consumed = 0
-        , pending = Bytes.empty
-        , eofPending = False
-        , sentEof = False
+        , channels = Dict.singleton mainChannel (fresh Main)
+        , nextSide = 1
         , keepalives = 0
         , send = [ request ]
         , events = []
+        , side = []
         }
 
 
-channelRequest : State -> String -> Bool -> Bytes -> Bytes
-channelRequest st name wantReply body =
-    Bytes.flatten [ Wire.writeByte msgRequest, Wire.writeUint32 st.remote, Wire.writeText name, Wire.writeBool wantReply, body ]
+{-| A side channel that runs `command` (an `exec` request, no terminal),
+on a connection whose session has started: its number, for its
+[`SideEvent`](#SideEvent)s and [`writeSide`](#writeSide). The command is
+bytes, as SSH sends it, so that a name in it can be in the host's own
+character set, EUC-KR as well as UTF-8 (puritty `docs/sftp.md` FT19). -}
+openExec : Bytes -> Connection -> { channel : Int, step : Step }
+openExec command conn =
+    openSide (Exec command) conn
+
+
+{-| A side channel that runs a subsystem (`sftp`), as
+[`openExec`](#openExec). -}
+openSubsystem : String -> Connection -> { channel : Int, step : Step }
+openSubsystem name conn =
+    openSide (Subsystem name) conn
+
+
+openSide : Kind -> Connection -> { channel : Int, step : Step }
+openSide kind (Connection st) =
+    let
+        id =
+            st.nextSide
+    in
+    { channel = id
+    , step = finish (queue (openSession id) (setChannel id (fresh kind) { st | nextSide = id + 1 }))
+    }
+
+
+channelRequest : Channel -> String -> Bool -> Bytes -> Bytes
+channelRequest ch name wantReply body =
+    Bytes.flatten [ Wire.writeByte msgRequest, Wire.writeUint32 ch.remote, Wire.writeText name, Wire.writeBool wantReply, body ]
 
 
 {-| The terminal's modes (RFC 4254 §8): `IUTF8` (42), and the end. -}
@@ -303,26 +408,47 @@ modes utf8 =
         ]
 
 
-{-| The requests after the channel opens, in order: the terminal, each
-variable (no reply asked: a server that does not take one says nothing,
-as OpenSSH's `AcceptEnv` does), then the shell or command. Those that ask
-for a reply are named in `Requesting`, to match the replies in order. -}
-afterOpen : State -> State
-afterOpen st =
+{-| The requests after a channel opens, in order. The session's: the
+terminal, each variable (no reply asked: a server that does not take one
+says nothing, as OpenSSH's `AcceptEnv` does), then the shell or command. A
+side channel's: its command or subsystem. Those that ask for a reply are
+named in `Requesting`, to match the replies in order. -}
+afterOpen : Int -> Channel -> State -> State
+afterOpen id ch st =
+    let
+        requests =
+            when ch.kind is
+                Main ->
+                    sessionRequests ch st.session
+
+                Exec command ->
+                    [ { payload = channelRequest ch "exec" True (Wire.writeString command), awaits = Just "the command" } ]
+
+                Subsystem name ->
+                    [ { payload = channelRequest ch "subsystem" True (Wire.writeText name), awaits = Just ("the " ++ name ++ " subsystem") } ]
+
+        awaited =
+            Array.mapAndFlatten (\r -> Maybe.map (\a -> [ a ]) r.awaits |> Maybe.withDefault (meant Reason.NotSet [])) requests
+    in
+    Array.foldl (\r acc -> queue r.payload acc) (setChannel id { ch | phase = Requesting awaited } st) requests
+
+
+sessionRequests : Channel -> Session -> Array { payload : Bytes, awaits : Maybe String }
+sessionRequests ch session =
     let
         terminal =
-            when st.session.terminal is
+            when session.terminal is
                 Just t ->
                     [ { payload =
-                            channelRequest st
+                            channelRequest ch
                                 "pty-req"
                                 True
                                 (Bytes.flatten
                                     [ Wire.writeText t.term
                                     , Wire.writeUint32 t.columns
                                     , Wire.writeUint32 t.rows
-                                    , Wire.writeUint32 0
-                                    , Wire.writeUint32 0
+                                    , Wire.writeUint32 t.widthInPixels
+                                    , Wire.writeUint32 t.heightInPixels
                                     , Wire.writeString (modes t.utf8)
                                     ]
                                 )
@@ -335,23 +461,18 @@ afterOpen st =
 
         variables =
             Array.map
-                (\v -> { payload = channelRequest st "env" False (Bytes.flatten [ Wire.writeText v.name, Wire.writeText v.value ]), awaits = Nothing })
-                st.session.env
+                (\v -> { payload = channelRequest ch "env" False (Bytes.flatten [ Wire.writeText v.name, Wire.writeText v.value ]), awaits = Nothing })
+                session.env
 
         run =
-            when st.session.command is
+            when session.command is
                 Just command ->
-                    { payload = channelRequest st "exec" True (Wire.writeText command), awaits = Just "the command" }
+                    { payload = channelRequest ch "exec" True (Wire.writeString command), awaits = Just "the command" }
 
                 Nothing ->
-                    meant Reason.NotSet { payload = channelRequest st "shell" True Bytes.empty, awaits = Just "the shell" }
-
-        all =
-            terminal ++ variables ++ [ run ]
+                    meant Reason.NotSet { payload = channelRequest ch "shell" True Bytes.empty, awaits = Just "the shell" }
     in
-    Array.foldl (\r acc -> queue r.payload acc)
-        { st | phase = Requesting (Array.mapAndFlatten (\r -> Maybe.map (\a -> [ a ]) r.awaits |> Maybe.withDefault (meant Reason.NotSet [])) all) }
-        all
+    terminal ++ variables ++ [ run ]
 
 
 {-| A payload that [`isConnectionMessage`](#isConnectionMessage). -}
@@ -384,18 +505,40 @@ received payload (Connection st) =
         -- a keepalive answered
         finish { st | keepalives = max 0 (st.keepalives - 1) }
 
-    else if st.phase == Closed then
-        finish st
-
     else
-        finish (onChannel n body st)
+        let
+            afterChannel =
+                body |> Result.andThen Wire.uint32
+
+            -- the channel the message is about; one whose number does not
+            -- read is taken as the session's, which then ends, as before
+            -- side channels
+            id =
+                when afterChannel is
+                    Ok c ->
+                        c.value
+
+                    Err _ ->
+                        meant Reason.FromOutside mainChannel
+        in
+        when channelOf id st is
+            Just ch ->
+                if ch.phase == Closed then
+                    finish st
+
+                else
+                    finish (onChannel n afterChannel id ch st)
+
+            Nothing ->
+                -- a channel that is not ours, or one already gone
+                meant Reason.NotKnown finish st
 
 
-onChannel : Int -> Result String Wire.Reader -> State -> State
-onChannel n body st =
+onChannel : Int -> Result String { value : Int, next : Wire.Reader } -> Int -> Channel -> State -> State
+onChannel n afterChannel id ch st =
     let
-        afterChannel =
-            body |> Result.andThen Wire.uint32
+        fails what =
+            ended id ch (emitOn id (Refused (what ++ endsWhat id)) st)
     in
     if n == msgOpenConfirmation then
         when
@@ -408,24 +551,24 @@ onChannel n body st =
                     )
         is
             Ok opened ->
-                if st.phase /= Opening then
+                if ch.phase /= Opening then
                     st
 
                 else
                     let
                         open1 =
-                            { st | remote = opened.remote, remoteWindow = opened.window, remoteMaxPacket = max 1 (min opened.most maxPacket) }
+                            { ch | remote = opened.remote, remoteWindow = opened.window, remoteMaxPacket = max 1 (min opened.most maxPacket) }
                     in
-                    when st.direct is
+                    when { direct = st.direct, kind = ch.kind } is
                         -- a direct channel asks nothing more: it runs
-                        Just _ ->
-                            flush (emit Started { open1 | phase = Running })
+                        { direct = Just _, kind = Main } ->
+                            running id { open1 | phase = Running } (emitOn id Started st)
 
-                        Nothing ->
-                            meant Reason.NotSet afterOpen open1
+                        _ ->
+                            afterOpen id open1 st
 
             Err _ ->
-                meant Reason.FromOutside ended (emit (Refused "a channel confirmation that does not read") st)
+                meant Reason.FromOutside ended id ch (emitOn id (Refused "a channel confirmation that does not read") st)
 
     else if n == msgOpenFailure then
         let
@@ -460,102 +603,119 @@ onChannel n body st =
 
                 else
                     reason ++ " (" ++ failure.text ++ ")"
-        in
-        ended
-            (emit
-                (Refused
-                    (when st.direct is
-                        Just target ->
-                            "the server would not connect to " ++ target.host ++ ":" ++ String.fromInt target.port ++ ": " ++ why
 
-                        Nothing ->
-                            meant Reason.NotSet "the server would not open a session: " ++ why
-                    )
-                )
-                st
-            )
+            what =
+                when { direct = st.direct, kind = ch.kind } is
+                    { direct = Just target, kind = Main } ->
+                        "the server would not connect to " ++ target.host ++ ":" ++ String.fromInt target.port
+
+                    { kind = Main } ->
+                        "the server would not open a session"
+
+                    _ ->
+                        "the server would not open another session"
+        in
+        ended id ch (emitOn id (Refused (what ++ ": " ++ why)) st)
 
     else if n == msgWindowAdjust then
         when afterChannel |> Result.andThen (\c -> Wire.uint32Clamped c.next) is
             Ok more ->
-                flush { st | remoteWindow = min 2147483647 (st.remoteWindow + more.value) }
+                running id { ch | remoteWindow = min 2147483647 (ch.remoteWindow + more.value) } st
 
             Err _ ->
-                meant Reason.FromOutside ended (emit (Refused ("a window adjustment that does not read; the session ends")) st)
+                meant Reason.FromOutside fails "a window adjustment that does not read"
 
     else if n == msgData then
         when afterChannel |> Result.andThen (\c -> Wire.string c.next) is
             Ok data ->
-                consume (Bytes.length data.value) (emit (Output data.value) st)
+                consume id (Bytes.length data.value) ch (emitOn id (Output data.value) st)
 
             Err _ ->
-                meant Reason.FromOutside ended (emit (Refused ("channel data that does not read; the session ends")) st)
+                meant Reason.FromOutside fails "channel data that does not read"
 
     else if n == msgExtendedData then
         when afterChannel |> Result.andThen (\c -> Wire.uint32 c.next) |> Result.andThen (\code -> Wire.string code.next) is
             Ok data ->
-                consume (Bytes.length data.value) (emit (ErrorOutput data.value) st)
+                consume id (Bytes.length data.value) ch (emitOn id (ErrorOutput data.value) st)
 
             Err _ ->
-                meant Reason.FromOutside ended (emit (Refused ("extended channel data that does not read; the session ends")) st)
+                meant Reason.FromOutside fails "extended channel data that does not read"
 
     else if n == msgEof then
         st
 
     else if n == msgClose then
-        ended
-            (if st.phase == Closing then
+        ended id
+            ch
+            (if ch.phase == Closing then
                 st
 
              else
-                queue (Bytes.flatten [ Wire.writeByte msgClose, Wire.writeUint32 st.remote ]) st
+                queue (Bytes.flatten [ Wire.writeByte msgClose, Wire.writeUint32 ch.remote ]) st
             )
 
     else if n == msgRequest then
-        channelRequestFromServer afterChannel st
+        channelRequestFromServer afterChannel id ch st
 
     else if n == msgSuccess || n == msgFailure then
-        replied (n == msgSuccess) st
+        replied (n == msgSuccess) id ch st
 
     else
         st
 
 
-ended : State -> State
-ended st =
-    emit Ended { st | phase = Closed }
+{-| How a refusal of channel `id` ends: the session's, or only that
+channel. -}
+endsWhat : Int -> String
+endsWhat id =
+    if id == mainChannel then
+        "; the session ends"
+
+    else
+        "; the channel is closed"
+
+
+{-| Channel `id` over: `Ended` said, and a side channel forgotten. -}
+ended : Int -> Channel -> State -> State
+ended id ch st =
+    if id == mainChannel then
+        emitOn id Ended (setChannel id { ch | phase = Closed } st)
+
+    else
+        emitOn id Ended { st | channels = Dict.remove id st.channels }
 
 
 {-| Our window used by what came; given back once half is used, so the
 server never waits for room while the program reads. -}
-consume : Int -> State -> State
-consume n st =
+consume : Int -> Int -> Channel -> State -> State
+consume id n ch st =
     let
         used =
-            st.consumed + n
+            ch.consumed + n
     in
     if used >= windowSize // 2 then
-        queue (Bytes.flatten [ Wire.writeByte msgWindowAdjust, Wire.writeUint32 st.remote, Wire.writeUint32 used ]) { st | consumed = 0 }
+        queue (Bytes.flatten [ Wire.writeByte msgWindowAdjust, Wire.writeUint32 ch.remote, Wire.writeUint32 used ]) (setChannel id { ch | consumed = 0 } st)
 
     else
-        { st | consumed = used }
+        setChannel id { ch | consumed = used } st
 
 
-{-| A reply to the first of our requests that wanted one. -}
-replied : Bool -> State -> State
-replied ok st =
-    when st.phase is
+{-| A reply to the first of our requests on channel `id` that wanted one.
+-}
+replied : Bool -> Int -> Channel -> State -> State
+replied ok id ch st =
+    when ch.phase is
         Requesting awaiting ->
             when Array.popFirst awaiting is
                 Just a ->
                     if not ok then
-                        emit (Refused ("the server refused " ++ a.first)) (closing st)
+                        emitOn id (Refused ("the server refused " ++ a.first)) (closing id ch st)
 
                     else if Array.isEmpty a.rest then
-                        flush (emit Started { st | phase = Running })
+                        running id { ch | phase = Running } (emitOn id Started st)
 
                     else
-                        { st | phase = Requesting a.rest }
+                        setChannel id { ch | phase = Requesting a.rest } st
 
                 Nothing ->
                     meant Reason.FromOutside st
@@ -566,14 +726,14 @@ replied ok st =
 
 {-| `exit-status` and `exit-signal`; anything else the server asks is
 refused when it wants an answer (OpenSSH's `keepalive@openssh.com`). -}
-channelRequestFromServer : Result String { value : Int, next : Wire.Reader } -> State -> State
-channelRequestFromServer afterChannel st =
+channelRequestFromServer : Result String { value : Int, next : Wire.Reader } -> Int -> Channel -> State -> State
+channelRequestFromServer afterChannel id ch st =
     when afterChannel |> Result.andThen (\c -> Wire.name c.next) |> Result.andThen (\name -> Wire.boolean name.next |> Result.map (\want -> { name = name.value, want = want.value, rest = want.next })) is
         Ok request ->
             if request.name == "exit-status" then
                 when Wire.uint32 request.rest is
                     Ok status ->
-                        emit (Exited status.value) st
+                        emitOn id (Exited status.value) st
 
                     Err _ ->
                         meant Reason.FromOutside st
@@ -581,13 +741,13 @@ channelRequestFromServer afterChannel st =
             else if request.name == "exit-signal" then
                 when Wire.name request.rest |> Result.andThen (\signal -> Wire.boolean signal.next |> Result.andThen (\core -> Wire.name core.next) |> Result.map (\message -> { signal = signal.value, message = message.value })) is
                     Ok signal ->
-                        emit (Killed signal) st
+                        emitOn id (Killed signal) st
 
                     Err _ ->
                         meant Reason.FromOutside st
 
             else if request.want then
-                queue (Bytes.flatten [ Wire.writeByte msgFailure, Wire.writeUint32 st.remote ]) st
+                queue (Bytes.flatten [ Wire.writeByte msgFailure, Wire.writeUint32 ch.remote ]) st
 
             else
                 st
@@ -596,66 +756,231 @@ channelRequestFromServer afterChannel st =
             meant Reason.FromOutside st
 
 
-{-| What waits, sent as far as the server's window and largest packet let
-it, then the EOF if one was asked for after it. -}
-flush : State -> State
-flush st =
-    if st.phase /= Running then
-        st
+{-| Channel `id` stored after a change that may let it send: the session's
+bytes go at once; a side channel's wait for [`pump`](#pump). -}
+running : Int -> Channel -> State -> State
+running id ch st =
+    if id == mainChannel then
+        flushAll id ch st
 
-    else if not (Bytes.isEmpty st.pending) && st.remoteWindow > 0 then
+    else
+        setChannel id ch st
+
+
+{-| What waits on channel `id`, sent as far as the server's window and
+largest packet let it, then the EOF if one was asked for after it. -}
+flushAll : Int -> Channel -> State -> State
+flushAll id ch st =
+    let
+        sent =
+            flushUpTo 2147483647 ch st
+    in
+    setChannel id sent.channel sent.state
+
+
+{-| As [`flushAll`](#flushAll), at most `budget` bytes: the channel after,
+the state with its payloads queued, and the bytes sent. -}
+flushUpTo : Int -> Channel -> State -> { channel : Channel, state : State, sent : Int }
+flushUpTo budget ch st =
+    if ch.phase /= Running then
+        { channel = ch, state = st, sent = 0 }
+
+    else if ch.pendingLength > 0 && ch.remoteWindow > 0 && budget > 0 then
         let
             n =
-                min (Bytes.length st.pending) (min st.remoteWindow st.remoteMaxPacket)
+                min budget (min ch.pendingLength (min ch.remoteWindow ch.remoteMaxPacket))
+
+            taken =
+                takePending n ch.pending
+
+            rest =
+                flushUpTo (budget - n)
+                    { ch | pending = taken.rest, pendingLength = ch.pendingLength - n, remoteWindow = ch.remoteWindow - n }
+                    (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 ch.remote, Wire.writeString taken.bytes ]) st)
         in
-        flush
-            (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 st.remote, Wire.writeString (Bytes.slice 0 n st.pending) ])
-                { st | pending = Bytes.slice n (Bytes.length st.pending) st.pending, remoteWindow = st.remoteWindow - n }
+        { rest | sent = rest.sent + n }
+
+    else if ch.pendingLength == 0 && ch.eofPending && not ch.sentEof then
+        { channel = { ch | sentEof = True, eofPending = False }
+        , state = queue (Bytes.flatten [ Wire.writeByte msgEof, Wire.writeUint32 ch.remote ]) st
+        , sent = 0
+        }
+
+    else
+        { channel = ch, state = st, sent = 0 }
+
+
+{-| The first `n` bytes of what waits, as one piece, and the pieces left:
+only those bytes are copied, and a piece cut is kept as a view of its
+rest (`Bytes.slice` costs nothing), so what waits is never copied whole
+(FT17). -}
+takePending : Int -> Array Bytes -> { bytes : Bytes, rest : Array Bytes }
+takePending n pieces =
+    let
+        took =
+            Array.foldl
+                (\piece acc ->
+                    if acc.want <= 0 then
+                        { acc | rest = Array.pushLast piece acc.rest }
+
+                    else if Bytes.length piece <= acc.want then
+                        { acc | want = acc.want - Bytes.length piece, taken = Array.pushLast piece acc.taken }
+
+                    else
+                        { want = 0
+                        , taken = Array.pushLast (Bytes.slice 0 acc.want piece) acc.taken
+                        , rest = Array.pushLast (Bytes.slice acc.want (Bytes.length piece) piece) acc.rest
+                        }
+                )
+                { want = n, taken = [], rest = [] }
+                pieces
+    in
+    { bytes =
+        when took.taken is
+            [ one ] ->
+                one
+
+            _ ->
+                Bytes.flatten took.taken
+    , rest = took.rest
+    }
+
+
+{-| Whether channel `id` could send now: running, with bytes and room for
+them in the server's window, or an EOF to send. -}
+canSend : Channel -> Bool
+canSend ch =
+    ch.phase == Running && ((ch.pendingLength > 0 && ch.remoteWindow > 0) || (ch.pendingLength == 0 && ch.eofPending && not ch.sentEof))
+
+
+{-| The side channels' bytes that could be sent now, the server's windows
+allowing: what [`pump`](#pump) would send, given room. -}
+sideWaiting : Connection -> Int
+sideWaiting (Connection st) =
+    Dict.foldl
+        (\id ch acc ->
+            if id /= mainChannel && canSend ch then
+                acc + max 1 (min ch.pendingLength ch.remoteWindow)
+
+            else
+                acc
+        )
+        0
+        st.channels
+
+
+{-| Up to `budget` bytes of the side channels' data sent, from the lowest
+number up, and their EOFs once their data is gone. The caller pumps when
+the connection's link has room, so the session's bytes, sent at once,
+never wait behind more than one pump of a file. Each side channel that
+sent anything says how much of its data still waits ([`Sent`](#Event)),
+so that its writer can keep a little queued, not a whole file (FT17). -}
+pump : Int -> Connection -> Step
+pump budget (Connection st) =
+    finish
+        (Dict.foldl
+            (\id ch acc ->
+                if id == mainChannel || acc.left <= 0 && ch.pendingLength > 0 then
+                    acc
+
+                else
+                    let
+                        sent =
+                            flushUpTo acc.left ch acc.state
+
+                        told =
+                            if sent.sent > 0 then
+                                emitOn id (Sent sent.channel.pendingLength) sent.state
+
+                            else
+                                sent.state
+                    in
+                    { state = setChannel id sent.channel told, left = acc.left - sent.sent }
             )
-
-    else if Bytes.isEmpty st.pending && st.eofPending && not st.sentEof then
-        queue (Bytes.flatten [ Wire.writeByte msgEof, Wire.writeUint32 st.remote ]) { st | sentEof = True, eofPending = False }
-
-    else
-        st
+            { state = st, left = budget }
+            st.channels
+        ).state
 
 
-{-| Bytes for the program: what the keys typed, in the session's
-character set. Sent as the server's window allows; the rest waits. -}
+{-| Bytes for the session's program: what the keys typed, in the
+session's character set. Sent as the server's window allows; the rest
+waits. -}
 write : Bytes -> Connection -> Step
-write bytes (Connection st) =
-    if st.sentEof || st.eofPending || st.phase == Closed || st.phase == Closing then
-        finish st
-
-    else
-        finish (flush { st | pending = Bytes.flatten [ st.pending, bytes ] })
+write bytes conn =
+    writeOn mainChannel bytes conn
 
 
-{-| The end of what the program is sent, after what waits. -}
+{-| Bytes for a side channel's program, kept until [`pump`](#pump) sends
+them. -}
+writeSide : Int -> Bytes -> Connection -> Step
+writeSide id bytes conn =
+    writeOn id bytes conn
+
+
+writeOn : Int -> Bytes -> Connection -> Step
+writeOn id bytes (Connection st) =
+    when channelOf id st is
+        Just ch ->
+            if ch.sentEof || ch.eofPending || ch.phase == Closed || ch.phase == Closing then
+                finish st
+
+            else
+                finish (running id { ch | pending = Array.pushLast bytes ch.pending, pendingLength = ch.pendingLength + Bytes.length bytes } st)
+
+        Nothing ->
+            meant Reason.NotKnown finish st
+
+
+{-| The end of what the session's program is sent, after what waits. -}
 sendEof : Connection -> Step
-sendEof (Connection st) =
-    finish (flush { st | eofPending = True })
+sendEof conn =
+    eofOn mainChannel conn
+
+
+{-| The end of what a side channel's program is sent, after what waits;
+[`pump`](#pump) sends it. -}
+sendEofSide : Int -> Connection -> Step
+sendEofSide id conn =
+    eofOn id conn
+
+
+eofOn : Int -> Connection -> Step
+eofOn id (Connection st) =
+    when channelOf id st is
+        Just ch ->
+            finish (running id { ch | eofPending = True } st)
+
+        Nothing ->
+            meant Reason.NotKnown finish st
 
 
 {-| The terminal's new size (`window-change`). -}
-resize : { columns : Int, rows : Int } -> Connection -> Step
+resize : { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int } -> Connection -> Step
 resize size (Connection st) =
     let
         session =
             st.session
 
         terminal =
-            Maybe.map (\t -> { t | columns = size.columns, rows = size.rows }) session.terminal
-    in
-    if st.phase == Closed || st.phase == Opening || terminal == Nothing then
-        finish { st | session = { session | terminal = terminal } }
+            Maybe.map (\t -> { t | columns = size.columns, rows = size.rows, widthInPixels = size.widthInPixels, heightInPixels = size.heightInPixels }) session.terminal
 
-    else
-        finish
-            (queue
-                (channelRequest st "window-change" False (Bytes.flatten [ Wire.writeUint32 size.columns, Wire.writeUint32 size.rows, Wire.writeUint32 0, Wire.writeUint32 0 ]))
-                { st | session = { session | terminal = terminal } }
-            )
+        resized =
+            { st | session = { session | terminal = terminal } }
+    in
+    when channelOf mainChannel st is
+        Just ch ->
+            if ch.phase == Closed || ch.phase == Opening || terminal == Nothing then
+                finish resized
+
+            else
+                finish
+                    (queue
+                        (channelRequest ch "window-change" False (Bytes.flatten [ Wire.writeUint32 size.columns, Wire.writeUint32 size.rows, Wire.writeUint32 size.widthInPixels, Wire.writeUint32 size.heightInPixels ]))
+                        resized
+                    )
+
+        Nothing ->
+            meant Reason.NotKnown finish resized
 
 
 {-| A keepalive (OpenSSH's `ServerAliveInterval`): a global request the
@@ -669,21 +994,39 @@ keepalive (Connection st) =
             st.keepalives + 1
     in
     finish
-        (emit (KeepaliveUnanswered st.keepalives)
+        (emitOn mainChannel
+            (KeepaliveUnanswered st.keepalives)
             (queue (Bytes.flatten [ Wire.writeByte msgGlobalRequest, Wire.writeText "keepalive@openssh.com", Wire.writeBool True ]) { st | keepalives = waiting })
         )
 
 
-{-| The channel closed from this side. -}
+{-| The session's channel closed from this side. -}
 close : Connection -> Step
-close (Connection st) =
-    if st.phase == Closed || st.phase == Closing || st.phase == Opening then
-        finish st
-
-    else
-        finish (closing st)
+close conn =
+    closeOn mainChannel conn
 
 
-closing : State -> State
-closing st =
-    queue (Bytes.flatten [ Wire.writeByte msgClose, Wire.writeUint32 st.remote ]) { st | phase = Closing }
+{-| A side channel closed from this side; `Ended` follows when the server
+closes it too. -}
+closeSide : Int -> Connection -> Step
+closeSide id conn =
+    closeOn id conn
+
+
+closeOn : Int -> Connection -> Step
+closeOn id (Connection st) =
+    when channelOf id st is
+        Just ch ->
+            if ch.phase == Closed || ch.phase == Closing || ch.phase == Opening then
+                finish st
+
+            else
+                finish (closing id ch st)
+
+        Nothing ->
+            meant Reason.NotKnown finish st
+
+
+closing : Int -> Channel -> State -> State
+closing id ch st =
+    queue (Bytes.flatten [ Wire.writeByte msgClose, Wire.writeUint32 ch.remote ]) (setChannel id { ch | phase = Closing } st)
