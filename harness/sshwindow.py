@@ -95,6 +95,14 @@ CASES = [
     # ran tmux is: its prompt is the first thing after control mode
     ("tmux-client-killed-shell", "ed", "", "known", ["sleep:2", "type:echo hello >> size.txt", "Return", "type:exit", "Return"],
      "cd $(dirname {size}); echo first > {size}; T=sw-ks; (sleep 2; pkill -9 -f 'tmux -L sw-k[s] -f') & tmux -L $T -f /dev/null -CC new-session; tmux -L $T kill-server; PS1='$ ' exec sh -i"),
+    # another program writing into the terminal tmux -CC runs in, as `wall`
+    # does when a UPS loses its link (TK14): written to the client's tty
+    # rather than by wall itself, which would reach every terminal of this
+    # machine. Control mode must go on: the line typed after it reaches the
+    # pane, waiting in `read`, through tmux, and the session ends as tmux
+    # ends it
+    ("tmux-wall", "ed", "", "known", ["sleep:5", "type:hello", "Return", "sleep:2"],
+     "echo first > {size}; TT=$(tty); T=sw-w; (sleep 2; printf '\\007\\007\\r\\nBroadcast message from root@nene (somewhere) (Sat Nov 21 06:03:16 2026):\\r\\n\\r\\nWarning communications lost with UPS\\r\\n\\r\\n' > $TT) & tmux -L $T -f /dev/null -CC new-session 'read l; echo pane:$l >> {size}'; echo after >> {size}; exit 0"),
     ("tmux-server-killed", "ed", "", "known", ["sleep:2", "type:hello", "Return"],
      "echo first > {size}; (sleep 2; tmux -L sw-s kill-server) & tmux -L sw-s -f /dev/null -CC new-session; read l; echo $l >> {size}; exit 0"),
     ("tmux-detached-elsewhere", "ed", "", "known", ["sleep:2", "type:hello", "Return"],
@@ -211,7 +219,7 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
             (f'[hosts.test]\npaste_folder = {toml_text(str(folder))}\n' if folder
              else f'[hosts.test]\npaste_folder = {toml_text(str(home / KOREAN_FOLDER))}\ncharset = "euc-kr"\n' if korean else "[hosts.test]\n")
             + f'host = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
-            f'identity = "{keys[key]}"\nclient = "{"openssh" if name.endswith("-openssh") else "built-in"}"\ncommand = "{command.format(size=home / KOREAN_OUT if korean else size, check=CHECK, picture=PICTURE)}"\n' + jump
+            f'identity = "{keys[key]}"\nclient = "{"openssh" if name.endswith("-openssh") else "built-in"}"\ncommand = {toml_text(command.format(size=home / KOREAN_OUT if korean else size, check=CHECK, picture=PICTURE))}\n' + jump
             # the diagnostic log, for a case that fails
             + "\n[debug]\nlog = true\n" + EXTRA.get(name, ""))
         env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser(),

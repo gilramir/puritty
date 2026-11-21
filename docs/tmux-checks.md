@@ -832,3 +832,67 @@ the session, comes.
   shell's that holds the tmux command (a bracket in the pattern, and the
   attach through a variable); and `-t main` is looked up as a window
   first, so a window named `main …` answered for the session (`main:`).
+
+## TK14 · Another program writing into tmux's terminal (2026-11-21)
+
+**What happened.** Gilbert's puritty 0.1.1 on gmktec7, attached by ssh to
+`tmux -CC` on nene, showed tmux's control lines as text
+(`%extended-output %0 0 : \033[?25l…`), screen after screen, while
+PuTTY and the Chromebook's terminal, attached to the same session, were
+fine. Its diagnostic log: at 06:03:16.351 "control mode ended" in the
+middle of a pane's output, no `%exit` from tmux, a bell rung, and every
+read after it "outside control mode". nene's journal, the same second:
+`apcupsd: Communications with UPS lost.` apcupsd, installed a minute
+before, runs `apccontrol commfailure` on that, which pipes "Warning
+communications lost with UPS" into `wall`; `wall` writes to every terminal
+on the machine, the one `tmux -CC attach` ran in too: two bells, then
+"Broadcast message from root@nene …". TK13's rule took the first line
+that was not `%` for a killed client's shell, and ended control mode;
+tmux went on. The ordinary clients drew the message and tmux drew over it.
+
+**The rule now** (`Tmux.Control`, `TmuxMode`): once tmux has spoken, a
+line outside a reply that is not `%` is in doubt, held whole (to the end
+of the read when it has no end yet, a prompt) with what follows it until
+tmux speaks. `Stray` asks tmux `: puritty` (`Command.probe`): tmux 2.7,
+3.4 and 3.8 answer `%begin`, `parse error: unknown command: :`, `%error`,
+and a shell after a killed client runs `:`, which does nothing. Any `%`
+line after the doubt makes it another program's (`Foreign`): it is said on
+the status line, "Written to the terminal: …", and control mode goes on.
+With no answer in 1.5 s (`strayMs`), the next tick gives up
+(`Control.giveUp`) and an empty read ends control mode with the doubted
+bytes and everything since, the terminal's, as TK13 did at once. tmux's
+own `ESC \` while a line is in doubt ends it as before, the line the
+terminal's. The wait starts at the next tick, since a read does not know
+the time and `clock` is the last tick's: the first build started it from
+there, and gave up 5 ms after the probe, before tmux could answer.
+
+**Checked.**
+- The tmux suite, 136 (three new, two of TK13's now through the doubt):
+  `wall`'s message then tmux's reply to the probe, `Foreign` and the
+  session going on; the message split over two reads, held whole; `ESC \`
+  while a line is in doubt. TK13's two: a shell's `Killed` and prompt, a
+  prompt with no line end and a colored one, each `Stray`, then `Exited`
+  and the bytes once given up on.
+- `harness/sshwindow.py` `tmux-wall`, new, over the built-in client: two
+  seconds into a session the remote command writes a `wall`-shaped message
+  (two bells, the banner, the UPS line) to the terminal `tmux -CC` runs
+  in, its own `tty` (not `wall`, which would reach every terminal of the
+  machine); a line typed three seconds later must reach the pane, waiting
+  in `read`, through tmux. With the build before: "control mode ended" at
+  the write, the title back to the host's, the line never in the pane,
+  and the session never ended. Now: tmux answers 11 ms after the probe,
+  the pane writes `pane:hello`, tmux ends the session and the command's
+  `after` follows. All 33 cases pass; `tmux-client-killed-shell`'s log
+  shows the new path, its prompt in doubt and given up on 1.5 s later.
+  The harness's commands go into the settings through `toml_text` now:
+  the case's backslashes broke the TOML string they were written into raw.
+- `harness/puppet-trials.py` on tmux 3.8, the trials that end control
+  mode and the two that write odd bytes: client-killed, server-crashed,
+  kill-server, detached-elsewhere, last-pane-killed, fake-control-lines,
+  garbage-output, all pass. Its `shell` step waits 2.5 s where it waited
+  1.5 s: a killed client is given up on 1.5 s after its prompt.
+
+**Left.** A killed client whose shell writes nothing is TK13's, unchanged:
+nothing is in doubt, so nothing is asked. A program writing into the
+terminal in the middle of one of tmux's lines spoils that line, which no
+rule can mend; `wall` writes whole lines, and tmux's are short.

@@ -3,6 +3,8 @@ module Tmux.Control exposing
     , Notice(..)
     , Reader
     , feed
+    , giveUp
+    , isGivingUp
     , isInside
     , reader
     , startsControl
@@ -33,8 +35,14 @@ type alias Reader =
     , held : Bytes
     , block : Maybe Block
     -- whether tmux has written a `%` line since control mode began: a
-    -- line that is not one ends it only after (TK13)
+    -- line that is not one is in doubt only after (TK13)
     , spoken : Bool
+    -- the lines in doubt (TK14): written outside a reply, not tmux's, by
+    -- a shell after a killed client or by another program into the
+    -- terminal (`wall`); `Foreign` when tmux speaks again, the terminal's
+    -- when `giveUp` says it will not
+    , stray : Maybe Bytes
+    , givingUp : Bool
     }
 
 
@@ -49,12 +57,29 @@ type alias Block =
 
 reader : Reader
 reader =
-    { inside = False, held = Bytes.empty, block = Nothing, spoken = False }
+    { inside = False, held = Bytes.empty, block = Nothing, spoken = False, stray = Nothing, givingUp = False }
 
 
 isInside : Reader -> Bool
 isInside r =
     r.inside
+
+
+{-| tmux did not speak after the lines in doubt (TK14): its client is gone,
+and the next `feed`, an empty one will do, ends control mode with them,
+and what was held, the terminal's. -}
+giveUp : Reader -> Reader
+giveUp r =
+    if r.inside && r.stray /= Nothing then
+        { r | givingUp = True }
+
+    else
+        r
+
+
+isGivingUp : Reader -> Bool
+isGivingUp r =
+    r.givingUp
 
 
 {-| What the bytes said. `Reply`'s `number` is `%begin`'s, which tmux
@@ -66,6 +91,12 @@ type Event
     | Notice Notice
     | Reply { number : Int, flags : Int, ok : Bool, lines : Array Bytes }
     | Exited
+    -- a line outside a reply that is not tmux's (TK14): ask tmux
+    -- something, and `giveUp` if it does not answer
+    | Stray
+    -- the lines in doubt, tmux having spoken since: another program's,
+    -- written into the terminal (`wall`), control mode going on
+    | Foreign Bytes
 
 
 {-| tmux 3.8's notifications (`docs/tmux.md` TM5.3). Ids are the numbers
@@ -111,7 +142,21 @@ feed bytes r =
             else
                 Bytes.flatten [ r.held, bytes ]
     in
-    step data 0 { r | held = Bytes.empty } []
+    if r.givingUp then
+        -- the lines in doubt and everything since are the terminal's
+        let
+            doubted =
+                when r.stray is
+                    Just b ->
+                        b
+
+                    Nothing ->
+                        meant Reason.NotOpen Bytes.empty
+        in
+        step (Bytes.flatten [ doubted, data ]) 0 reader [ Exited ]
+
+    else
+        step data 0 { r | held = Bytes.empty } []
 
 
 step : Bytes -> Int -> Reader -> Array Event -> { reader : Reader, events : Array Event }
@@ -148,7 +193,7 @@ outside data from at r events =
                 Bytes.slice esc (min n (esc + 7)) data
         in
         if seen == entry then
-            step data (esc + 7) { r | inside = True, spoken = False } (Array.pushLast Entered (withOutside data from esc events))
+            step data (esc + 7) { r | inside = True, spoken = False, stray = Nothing } (Array.pushLast Entered (withOutside data from esc events))
 
         else if Bytes.length seen < 7 && seen == Bytes.slice 0 (Bytes.length seen) entry then
             -- the start of `ESC P 1000 p`, or not: the next read says
@@ -182,7 +227,17 @@ inside data at r events =
         { reader = { r | held = Bytes.slice at n data }, events = events }
 
     else if byteAt at data == 0x1B && byteAt (at + 1) data == 0x5C then
-        step data (at + 2) { r | inside = False, block = Nothing } (Array.pushLast Exited events)
+        -- lines in doubt before it go to the terminal it leaves
+        let
+            left =
+                when r.stray is
+                    Just b ->
+                        [ Exited, Outside b ]
+
+                    Nothing ->
+                        meant Reason.NotOpen [ Exited ]
+        in
+        step data (at + 2) { r | inside = False, block = Nothing, stray = Nothing } (events ++ left)
 
     else if r.block == Nothing && r.spoken && byteAt at data /= 0x25 then
         -- once tmux has begun, it writes outside a reply only `%` lines
@@ -190,10 +245,33 @@ inside data at r events =
         -- (`control.c`; 2.7's parse error is inside its guards). Before,
         -- a command it cannot read is said as a bare line, then `%exit`
         -- (TM70). Anything else after, an escape too (a colored prompt),
-        -- is not tmux's: its client is gone with no `%exit`, killed, and
-        -- the shell it ran in writes again (docs/tmux-checks.md TK13).
-        -- Control mode is over, and these bytes are the terminal's
-        step data at { r | inside = False, block = Nothing } (Array.pushLast Exited events)
+        -- is not tmux's. Its client may be gone with no `%exit`, killed,
+        -- and the shell it ran in writing again (docs/tmux-checks.md
+        -- TK13); or another program wrote into the terminal, `wall` as a
+        -- UPS lost its link (TK14), and tmux goes on. The line is held in
+        -- doubt, to the end of the read when it has no end yet (a prompt),
+        -- and `Stray` asks the caller to find out
+        let
+            nl =
+                indexOf 0x0A at data
+
+            lineEnd =
+                if nl < 0 then
+                    n
+
+                else
+                    nl + 1
+
+            doubtful =
+                Bytes.slice at lineEnd data
+        in
+        when r.stray is
+            Just b ->
+                inside data lineEnd { r | stray = Just (Bytes.flatten [ b, doubtful ]) } events
+
+            Nothing ->
+                -- the first line in doubt: tmux asked
+                meant Reason.NotOpen (inside data lineEnd { r | stray = Just doubtful } (Array.pushLast Stray events))
 
     else
         -- a line, which may start with an escape: a reply's line is the
@@ -215,10 +293,25 @@ inside data at r events =
                     else
                         nl
 
+                -- tmux speaking after lines in doubt: they were another
+                -- program's (TK14)
+                resolved =
+                    when r.stray is
+                        Just b ->
+                            if byteAt at data == 0x25 then
+                                { stray = Nothing, events = Array.pushLast (Foreign b) events }
+
+                            else
+                                -- a reply's line, which may be anything
+                                { stray = r.stray, events = events }
+
+                        Nothing ->
+                            meant Reason.NotOpen { stray = Nothing, events = events }
+
                 read =
-                    line (Bytes.slice at end data) r.block events
+                    line (Bytes.slice at end data) r.block resolved.events
             in
-            inside data (nl + 1) { r | block = read.block, spoken = r.spoken || byteAt at data == 0x25 } read.events
+            inside data (nl + 1) { r | block = read.block, spoken = r.spoken || byteAt at data == 0x25, stray = resolved.stray } read.events
 
 
 {-| One line: a reply's, a guard, or a notification. -}

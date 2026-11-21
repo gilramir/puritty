@@ -304,8 +304,10 @@ def run_trial(v, key, display):
                 # control mode is over: the shell has said the status and
                 # waits; a line typed must reach it, not tmux. Only it has
                 # OUTER (a pane of tmux in the same container would write
-                # the file too, empty)
-                time.sleep(1.5)
+                # the file too, empty). 2.5 s: a client killed with no
+                # %exit is given up on 1.5 s after its shell's prompt
+                # (docs/tmux-checks.md TK14)
+                time.sleep(2.5)
                 if proc.poll() is not None:
                     failures.append(f"{label}: puritty exited, status {proc.returncode}, where the shell goes on")
                     break

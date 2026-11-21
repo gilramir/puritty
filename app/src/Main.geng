@@ -2546,7 +2546,10 @@ race remote m0 =
                                                         |> Task.andThen (\next -> step remote ms next)
 
                                             Due ->
-                                                reloadIfDue ms (expireNote ms (expireClosed ms (blink ms (pickerTick ms (tmuxTick ms m))))) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
+                                                tmuxDue remote ms m
+                                                    |> Task.andThen (\t -> reloadIfDue ms (expireNote ms (expireClosed ms (blink ms (pickerTick ms t)))))
+                                                    |> Task.andThen (saveIfDue ms)
+                                                    |> Task.andThen (\next -> step next.remote ms next)
 
                                             Writable ->
                                                 step remote ms m
@@ -3890,6 +3893,23 @@ tmuxTick ms m =
             TmuxMode.tick ms m.tmux
     in
     sendCommands r.commands { m | tmux = r.state, urgent = m.urgent || (due >= 0 && Clock.reached due ms) }
+
+
+{-| The time told to tmux's control mode, and, when tmux did not answer
+after a line that was not its own (docs/tmux-checks.md TK14), control mode
+ended with an empty read: its client is gone, and what the shell wrote
+goes to the terminal. -}
+tmuxDue : Backend -> Int -> (taken m : Model) -> Task Error Model
+tmuxDue remote ms m =
+    let
+        ticked =
+            tmuxTick ms m
+    in
+    if TmuxMode.givingUp ticked.tmux then
+        feed remote Bytes.empty ms ticked
+
+    else
+        Task.succeed ticked
 
 
 blink : Int -> (taken m : Model) -> Model

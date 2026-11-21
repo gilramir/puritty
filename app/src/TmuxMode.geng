@@ -14,6 +14,7 @@ module TmuxMode exposing
     , dropTarget
     , dueAt
     , encodeKey
+    , givingUp
     , idle
     , isAsking
     , isEnding
@@ -189,6 +190,11 @@ type alias State =
     -- when the status line is next asked, before tmux 3.2 has
     -- subscriptions (TM72); -1 when it is told
     , pollAt : Int
+    -- when tmux, asked after a line that was not its own, is given up on
+    -- (docs/tmux-checks.md TK14); -1 when nothing is in doubt, -2 when the
+    -- wait starts at the next tick, which knows the time (a read does not,
+    -- and `clock` is the last tick's)
+    , strayUntil : Int
     , panesMs : Int
     -- tmux's status line as it subscribes to it (TM29), tmux 3.8's
     -- theme names in it written as the theme's colors (TM65), and as
@@ -831,6 +837,7 @@ idle _ =
     , numbers = Nothing
     , clock = 0
     , pollAt = -1
+    , strayUntil = -1
     , panesMs = 1000
     , status = noStatus
     , rawStatus = noStatus
@@ -1074,6 +1081,12 @@ describe next e =
 
         Exited ->
             [ "control mode ended" ]
+
+        Stray ->
+            [ "a line that is not tmux's: tmux asked whether it is there" ]
+
+        Foreign b ->
+            [ "tmux answered: " ++ String.fromInt (Bytes.length b) ++ " bytes another program wrote into the terminal" ]
 
         Notice n ->
             [ noticeLine n ]
@@ -2460,6 +2473,31 @@ event size e acc =
                         }
                 , outside = acc.outside ++ said
             }
+
+        Stray ->
+            -- tmux asked something it answers at once, and given up on if
+            -- it does not (TK14)
+            let
+                st =
+                    acc.state
+            in
+            ask [ { command = Command.probe, expect = ForNothing } ] { acc | state = { st | strayUntil = -2 } }
+
+        Foreign b ->
+            -- another program wrote into the terminal tmux runs in, as
+            -- `wall` does: said on the status line, as a message
+            let
+                st =
+                    acc.state
+
+                text =
+                    Bytes.toStringLossy b
+                        |> String.lines
+                        |> Array.map (\l -> String.trim (String.fromArray (Array.keepIf (\c -> Char.toCode c >= 0x20) (String.toArray l))))
+                        |> Array.keepIf (\l -> l /= "")
+                        |> String.join " · "
+            in
+            { acc | state = { st | strayUntil = -1, said = "Written to the terminal: " ++ text } }
 
         Reply r ->
             when starting is
@@ -10910,7 +10948,16 @@ dueAt s =
             else
                 -1
     in
-    Clock.soonest s.pollAt
+    Clock.soonest
+        (Clock.soonest s.pollAt
+            (if s.strayUntil == -2 then
+                -- at once: the wait starts from the next tick's time
+                s.clock
+
+             else
+                s.strayUntil
+            )
+        )
         (when s.numbers is
             Just n ->
                 if clockDue >= 0 then
@@ -10934,7 +10981,7 @@ tick ms s0 =
         s1 =
             { s0 | dayAt = Maybe.map (\d -> { clock = ms, ms = modBy 86400000 (d.ms + Clock.since d.clock ms) }) s0.dayAt }
 
-        s =
+        s2 =
             when s1.numbers is
                 Just n ->
                     if Clock.reached n.until ms then
@@ -10945,6 +10992,19 @@ tick ms s0 =
 
                 Nothing ->
                     meant Reason.NotOpen { s1 | clock = ms }
+
+        -- the wait after a line that was not tmux's starts now, and when it
+        -- is over with no answer, its client is gone: the next read ends
+        -- control mode (TK14)
+        s =
+            if s2.strayUntil == -2 then
+                { s2 | strayUntil = Clock.after ms strayMs }
+
+            else if s2.strayUntil >= 0 && Clock.reached s2.strayUntil ms then
+                { s2 | reader = Control.giveUp s2.reader, strayUntil = -1 }
+
+            else
+                s2
     in
     if s.on && s.pollAt >= 0 && Clock.reached s.pollAt ms then
         let
@@ -10955,6 +11015,21 @@ tick ms s0 =
 
     else
         { state = s, commands = [] }
+
+
+{-| How long tmux is given to answer after a line that was not its own
+(TK14): it answers a command at once, and a client killed with no `%exit`
+waits this long before what was typed reaches the shell. -}
+strayMs : Int
+strayMs =
+    1500
+
+
+{-| Whether control mode is to end at the next read, which may be an empty
+one: tmux did not answer after a line that was not its own (TK14). -}
+givingUp : State -> Bool
+givingUp s =
+    Control.isGivingUp s.reader
 
 
 {-| A pane's number as tmux draws it (`window_clock_table`'s digits, five

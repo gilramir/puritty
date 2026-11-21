@@ -71,6 +71,20 @@ split b at =
     merged (first.events ++ second.events)
 
 
+{-| The events of `b`, then of an empty read after tmux was given up on
+(docs/tmux-checks.md TK14). -}
+givenUp : Bytes -> Array Event
+givenUp b =
+    let
+        first =
+            Control.feed b Control.reader
+
+        after =
+            Control.feed Bytes.empty (Control.giveUp first.reader)
+    in
+    merged (first.events ++ after.events)
+
+
 {-| `Outside` runs side by side as one, as a split read gives two. -}
 merged : Array Event -> Array Event
 merged all =
@@ -257,18 +271,49 @@ control =
                     Expect.equal [ Notice (Unknown "%frobnicate @1"), Notice SessionsChanged ]
                         (events (Bytes.fromString "\u{001B}P1000p%frobnicate @1\r\n%sessions-changed\r\n") |> Array.dropFirst 1)
           }
-        , { name = "the client killed: the shell's line outside a reply ends control mode, and is the terminal's (TK13)"
+        , { name = "the client killed: the shell's line outside a reply is in doubt, and given up on it is the terminal's (TK13, TK14)"
           , test =
                 \_ ->
-                    Expect.equal [ Entered, Notice SessionsChanged, Exited, Outside (Bytes.fromString "Killed\r\n$ ") ]
-                        (merged (events (Bytes.fromString "\u{001B}P1000p%sessions-changed\r\nKilled\r\n$ ")))
+                    Expect.equal [ Entered, Notice SessionsChanged, Stray, Exited, Outside (Bytes.fromString "Killed\r\n$ ") ]
+                        (givenUp (Bytes.fromString "\u{001B}P1000p%sessions-changed\r\nKilled\r\n$ "))
           }
-        , { name = "the client killed: a prompt with no line end, or a colored one, ends it too"
+        , { name = "the client killed: a prompt with no line end, or a colored one, is in doubt too"
           , test =
                 \_ ->
                     Expect.equal
-                        [ [ Entered, Notice SessionsChanged, Exited, Outside (Bytes.fromString "$ ") ], [ Entered, Notice SessionsChanged, Exited, Outside (Bytes.fromString "\u{001B}[32m$ ") ] ]
-                        [ merged (events (Bytes.fromString "\u{001B}P1000p%sessions-changed\n$ ")), merged (events (Bytes.fromString "\u{001B}P1000p%sessions-changed\n\u{001B}[32m$ ")) ]
+                        [ [ Entered, Notice SessionsChanged, Stray, Exited, Outside (Bytes.fromString "$ ") ], [ Entered, Notice SessionsChanged, Stray, Exited, Outside (Bytes.fromString "\u{001B}[32m$ ") ] ]
+                        [ givenUp (Bytes.fromString "\u{001B}P1000p%sessions-changed\n$ "), givenUp (Bytes.fromString "\u{001B}P1000p%sessions-changed\n\u{001B}[32m$ ") ]
+          }
+        , { name = "wall's message is in doubt, and tmux speaking after makes it another program's: control mode goes on (TK14)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Entered
+                        , Notice SessionsChanged
+                        , Stray
+                        , Foreign (Bytes.fromString wallMessage)
+                        , Reply { number = 9, flags = 1, ok = False, lines = [ Bytes.fromString "parse error: unknown command: :" ] }
+                        , Notice (Output { pane = 0, bytes = Bytes.fromString "x" })
+                        ]
+                        (events (Bytes.fromString ("\u{001B}P1000p%sessions-changed\r\n" ++ wallMessage ++ "%begin 1 9 1\r\nparse error: unknown command: :\r\n%error 1 9 1\r\n%output %0 x\r\n")))
+          }
+        , { name = "wall's message split over reads is held in doubt whole until tmux speaks"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Control.feed (Bytes.fromString ("\u{001B}P1000p%sessions-changed\r\n" ++ String.takeFirst 30 wallMessage)) Control.reader
+
+                        second =
+                            Control.feed (Bytes.fromString (String.dropFirst 30 wallMessage ++ "%sessions-changed\r\n")) first.reader
+                    in
+                    Expect.equal [ Entered, Notice SessionsChanged, Stray, Foreign (Bytes.fromString wallMessage), Notice SessionsChanged ] (first.events ++ second.events)
+          }
+        , { name = "control mode ended by tmux while a line is in doubt: the line is the terminal's"
+          , test =
+                \_ ->
+                    Expect.equal [ Entered, Notice SessionsChanged, Stray, Exited, Outside (Bytes.fromString "odd\r\nbye") ]
+                        (merged (events (Bytes.fromString "\u{001B}P1000p%sessions-changed\r\nodd\r\n\u{001B}\\bye")))
           }
         , { name = "before tmux's first % line a bare line is its error, and control mode goes on to %exit (TM70)"
           , test =
@@ -303,6 +348,13 @@ control =
                     Expect.equal (bytes [ 0x61, 0x0D, 0x5C, 0x5C, 0x39, 0x62 ]) (Control.unescape (Bytes.fromString "a\\015\\134\\9b"))
           }
         ]
+
+
+{-| What `wall` writes into every terminal, as util-linux's does: two bells,
+then the banner and the message (docs/tmux-checks.md TK14). -}
+wallMessage : String
+wallMessage =
+    "\u{0007}\u{0007}\r\nBroadcast message from root@nene (somewhere) (Sat Nov 21 06:03:16 2026):\r\n\r\nWarning communications lost with UPS\r\n\r\n"
 
 
 layout : U.Suite
