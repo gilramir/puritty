@@ -1940,3 +1940,159 @@ gives it a config of the case's; the first runs also met the socket
 path's limit, under the harness's deep folders, which is how the `/tmp`
 fallback came to be.
 
+
+## FT32 · The remote folder picker, redesigned: survey and plan (2026-11-20)
+
+Gilbert tried FT24's chooser on Windows (the test build of 5a08b39): "it
+works. i find the directory-selection UI awkard … I find the
+keyboard-only control limiting; no mouse?" and then: "we have the
+opportunity to make a really good UI here, i might even say, the best. Do
+a survey of different styles of directory/file selection UIs across OSes,
+and even across time".
+
+**The survey** is in `research/research_notes/folder picker survey/`, each
+claim with its link: `os_dialogs.md` (Windows IFileDialog and the old
+Browse For Folder tree, the Mac's panels, GTK, KDE, Qt's own dialog, the
+desktop portal), `history.md` (Norton Commander, FAR, Total Commander,
+Midnight Commander, XTree, Windows 3.x File Manager and its dialogs,
+System 7's Standard File, NeXTSTEP, Amiga ASL and ReqTools, RISC OS's drag
+to save) and `terminal_and_remote.md` (ranger, lf, nnn, yazi, fzf, zoxide,
+VS Code's remote dialog, JetBrains, WinSCP, FileZilla, Cyberduck and
+Transmit, MobaXterm, Termius, Tabby, iTerm2, kitty). Reddit and Stack
+Exchange were out of reach, as in FT1; the users' voice is Hacker News,
+GitHub issues, vendors' trackers and forums, and designers' own documents.
+
+**What users say, in every era:**
+
+1. A path you can type, always visible. GTK hides its field behind Ctrl+L
+   and it is that dialog's longest complaint (#2443: "removing/hiding the
+   address bar is very counter intuitive"); Tabby's SFTP panel had none
+   (#5646).
+2. Enter in a typed path goes there and does not choose it. GTK #268:
+   "Hitting enter after typing the path closes the dialog and selects the
+   path you just typed".
+3. The default is what most people take. Microsoft's Windows 95 tests:
+   intermediate users "usually saved all of their documents in the default
+   directory"; Norton Commander's F5 filled in the other panel, so a copy
+   was one Enter. Following the shell's folder is what users leave tools
+   for (Tabby #10481, on MobaXterm).
+4. Say exactly where it goes. Windows' "Select Folder" takes the
+   highlighted subfolder, else the current one; FileZilla #2191 (critical,
+   22 years): "I brought down a client's site overnight."
+5. Places beat navigation: XTree's histories, NeXT's shelf, Default Folder
+   (sold because System 7 had no recent folders), mc's hotlist, iTerm2's
+   recent folders per user@host. Losing them is "absolutely maddening"
+   (macOS).
+6. A remote listing never blocks. mc takes 9 s for a folder of 1023 that
+   `sftp` lists in 0.7 s, stat'ing each entry again (mc #5179); VS Code's
+   remote dialog "takes 35 – 40 seconds" (remote-release #970).
+
+**Five styles short-listed**, shown to Gilbert with screenshots: two panels
+(Norton Commander, WinSCP Commander), one list with places and a breadcrumb
+(Windows, KDE, Standard File), a path box over the list (VS Code's remote
+dialog, iTerm2's recent folders), columns (NeXTSTEP, ranger), and dropping
+on a folder you can see (RISC OS, MobaXterm's panel).
+
+### What was decided
+
+- **An overlay that opens with the drop**, not a docked panel: "i don't like
+  the docked pane; I like the overlay that pops up when you perform the drag
+  and drop." Columns are left out ("correct"): they take width, and each is
+  another remote listing.
+- **One list with places and a breadcrumb, a path you can type, and folder
+  rows a drag can drop on**: "I like your proposal."
+- **The destination is the folder you are in**, never the highlighted row:
+  "Now (a) makes sense (the folder you're in)." Moving the highlight never
+  changes where files go; opening a folder does. Dropping on a folder row
+  sends into that row's folder, and the row says so while the drag is over
+  it.
+- **The send button names the destination** (Gilbert: "Send here" was
+  ambiguous, "here" being the highlight or the folder). It reads `Send to
+  site/   Ctrl+Enter`: as much of the path's end as fits a third of the
+  box, `…/` before it when cut, the folder's segment in the breadcrumb
+  drawn in the button's color.
+- **Plain Enter goes into a folder; Ctrl+Enter sends** ("ok"). In a drop
+  whose folder puritty found itself, FT28's Send / Another folder… / Don't
+  send box stays, and "Another folder…" opens the picker there.
+- **Typing filters the list** ("good"), as Total Commander and nnn do,
+  rather than jumping to the first match.
+- **Long paths** (Gilbert: "some Unix paths are very long"). The breadcrumb
+  keeps its first segment (`/`, or `~` under the home) and as many of the
+  last as fit, the middle a `…` that drops down the hidden ones; one name
+  too long for its room loses its middle, not its end
+  (`customer-portal-…-2026-11-20-final`); the full path is shown on the
+  box's status line under the pointer, and the breadcrumb clicked, or `/`
+  or `~` typed, becomes the path as text, which scrolls. The same rules for
+  the drop question, the tmux pane label and the upload's note.
+- **Bookmarks are per user@host**, toggled by the ☆ in the path bar or
+  Ctrl+D for the folder you are in, or a folder row dragged onto the places
+  column; removed by the ✕ beside one or Delete. They are settings, kept in
+  the host's table of `config.toml` (`[hosts."web1"] bookmarks = [...]`),
+  the table made for a host typed in a tab. Recent folders, only ones files
+  were sent to, are kept in a state file beside the window state: they
+  change with every send, and the settings file, which people keep under
+  version control or sync, would change with them.
+
+### The picker
+
+The box is drawn with the dialogs' records (`Dialog`, `SettingsGui`), as
+large as the window allows, nothing in it moving under the pointer while a
+drag is over it.
+
+- **Title**: what is sent and to which host, `Send report.pdf and 2 more to
+  deploy@web1`.
+- **Path bar**: the breadcrumb, each segment a button; ☆ or ★ at its right
+  end; the filter, when one is typed, beside it.
+- **Places**, a column at the left: the shell's folder (OSC 7, tmux) when
+  known, Home, `/`, then Recent on this host and Bookmarks. The place the
+  folder you are in is drawn marked.
+- **The list**: `..`, then folders, then files, each by name with case not
+  counted and hidden ones last; a folder that is a link shows where it
+  leads; files are dimmed and can't be opened, and one with a dropped
+  file's name is marked `◆ same name`. Size and modification time in
+  columns.
+- **Status line**: the full path of what is under the pointer, or what the
+  listing is doing (`Reading… 1,200 so far`), or what went wrong in the
+  server's words.
+- **Footer**: New folder, Cancel, and the send button.
+
+| action | mouse | keys |
+|---|---|---|
+| highlight | click a row, the wheel | Up, Down, PgUp, PgDn, Home, End |
+| go into a folder | double-click | Enter, Right |
+| go up | a breadcrumb segment, `..` | Backspace (no filter), Left |
+| a place | click it | Tab to the places, or Alt+1…9 |
+| type a path | the breadcrumb's blank end | `/`, `~` or Ctrl+L; Tab completes; Enter goes there |
+| filter | — | any other character; Esc clears it |
+| new folder | the button | Ctrl+N; a name, then Enter goes into it |
+| bookmark this folder | ☆ | Ctrl+D |
+| refresh | — | Ctrl+R |
+| send | the button, or a drop on a row | Ctrl+Enter |
+| cancel | the button | Esc with nothing typed |
+
+No F-key or Alt+letter is the only way to anything: the program in the
+terminal may own them.
+
+Listings come a READDIR at a time and are shown as they come, folders
+from READDIR's own attributes with no `stat` per entry except for links;
+a folder listed once is kept for the box's life and shown at once when
+gone back to, with Ctrl+R to read it again. Completion reads what is kept,
+and lists a folder it has not seen without going there.
+
+### First a working model
+
+Gilbert: "make a working model of the UI that lets me play with it before
+you hook it up into actually saving bookmarks and history and files."
+
+So the picker is built first as the real code, `app/src/Picker.geng`, pure
+as FT24's chooser was: told keys, pointer events and listings, it answers
+what to list and what came of it. It is driven by a pretend host,
+`app/src/PickerDemo.geng`: folders held in memory, each listing answered
+after a delay (a slow one in pieces), a folder too big for the box
+(`/usr/lib`, 2,000 entries), long names, a deep path, links, and a folder
+not readable. `puritty --try-folder-picker` opens the picker at start over
+the first tab with three pretend files, and every drop while it runs opens
+it with the dropped ones; Send and Cancel say in the note what would have
+happened. Bookmarks and recent folders live in memory only. Hooking it to
+SFTP (replacing FT24's box), keeping bookmarks and recent folders, and the
+long-path rules elsewhere come after Gilbert has used it.
