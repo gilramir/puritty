@@ -52,7 +52,19 @@ type alias Table =
 {-| A scan's component: its place in the frame, its tables, and the
 quantization table it had when the scan began. -}
 type alias ScanComp =
-    { index : Int, dc : Table, ac : Table, quant : Array Int }
+    { index : Int, dc : Table, ac : Table, quant : Quant }
+
+
+{-| A quantization table: DQT gives 64 values, in zigzag order. -}
+type alias Quant =
+    (q : Array Int where Array.length q == 64)
+
+
+{-| A `Quant` kept in `Parsed`'s `Dict`, whose value cannot be a refined
+alias in a record's field: the constructor asks its length where it is
+built and knows it where it is matched. -}
+type QuantTable
+    = QuantTable Quant
 
 
 type alias Scan =
@@ -61,7 +73,7 @@ type alias Scan =
 
 type alias Parsed =
     { frame : Maybe Frame
-    , quant : Dict Int (Array Int)
+    , quant : Dict Int QuantTable
     , dc : Dict Int Table
     , ac : Dict Int Table
     , restart : Int
@@ -324,7 +336,7 @@ quantTables body at p =
                     128
                   )
             )
-            { p | quant = Dict.set id values p.quant }
+            { p | quant = Dict.set id (QuantTable values) p.quant }
 
 
 {-| SOS's header: each component of the scan with its tables. -}
@@ -356,7 +368,7 @@ scanOf body p =
                     -- a progressive scan uses one of its two tables, and
                     -- the other need not be defined yet (IT6)
                     when { dc = tableOr p.progressive (Dict.get (Bitwise.shiftRightBy 4 td) p.dc), ac = tableOr p.progressive (Dict.get (Bitwise.and 15 td) p.ac), quant = Dict.get q p.quant } is
-                        { dc = Just dc, ac = Just ac, quant = Just quant } ->
+                        { dc = Just dc, ac = Just ac, quant = Just (QuantTable quant) } ->
                             if index < 0 then
                                 Err "a scan's component not in the frame"
 
@@ -784,7 +796,7 @@ corrected data pos al z v out =
 {-| The coefficients made samples: each block dequantized by its
 component's table (its values in zigzag order) and transformed, in place
 in its plane. -}
-transformed : Frame -> Array Int -> Dict Int (Array Int) -> Array Int -> Builder Int
+transformed : Frame -> Array Int -> Dict Int QuantTable -> Array Int -> Builder Int
 transformed f offsets quants coefs =
     Array.foldl
         (\k out ->
@@ -793,7 +805,12 @@ transformed f offsets quants coefs =
                     component f k
 
                 quant =
-                    Maybe.withDefault (meant Reason.FromOutside (Array.repeat 64 1)) (Dict.get c.q quants)
+                    when Dict.get c.q quants is
+                        Just (QuantTable table) ->
+                            table
+
+                        Nothing ->
+                            meant Reason.FromOutside (Array.repeat 64 1)
 
                 bpl =
                     f.mcusX * c.h
@@ -815,7 +832,7 @@ transformed f offsets quants coefs =
                             clamp 0 400000000 off + 64 * blockIndex
 
                         natural =
-                            Array.initialize 64 0 (\i -> Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (at + clamp 0 63 i) coefs) * quantAt quant (unzigAt i))
+                            Array.initialize 64 0 (\i -> Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (at + clamp 0 63 i) coefs) * quantAt quant (unzigAt (clamp 0 63 i)))
 
                         samples =
                             idct natural
@@ -836,13 +853,13 @@ transformed f offsets quants coefs =
 
 
 {-| The zigzag position of natural index `i`. -}
-unzigAt : Int -> Int
+unzigAt : (i : Int where 0 <= i && i < 64) -> (r : Int where 0 <= r && r < 64)
 unzigAt i =
-    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i unzig)
+    Array.getProven i unzig
 
 
 {-| `zigzag` turned about: each natural index's zigzag position. -}
-unzig : Array Int
+unzig : (u : Array (z : Int where 0 <= z && z < 64) where Array.length u == 64)
 unzig =
     [ 0, 1, 5, 6, 14, 15, 27, 28, 2, 4, 7, 13, 16, 26, 29, 42, 3, 8, 12, 17, 25, 30, 41, 43, 9, 11, 18, 24, 31, 40, 44, 53, 10, 19, 23, 32, 39, 45, 52, 54, 20, 22, 33, 38, 46, 51, 55, 60, 21, 34, 37, 47, 50, 56, 59, 61, 35, 36, 48, 49, 57, 58, 62, 63 ]
 
@@ -990,14 +1007,14 @@ written samples base w i out =
         written samples base w (i + 1) (Builder.set (base + (i // 8) * w + modBy 8 i) (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i samples)) out)
 
 
-quantAt : Array Int -> Int -> Int
+quantAt : (quant : Quant) -> (k : Int where 0 <= k && k < 64) -> Int
 quantAt quant k =
-    Maybe.withDefault (meant Reason.OutOfRange 1) (Array.get k quant)
+    Array.getProven k quant
 
 
 {-| The AC coefficients from `k` to 63, each dequantized and put in its
 place in the natural order. -}
-acs : Bytes -> Table -> Int -> Int -> (taken out : Builder Int) -> Array Int -> { pos : Int, out : Builder Int }
+acs : Bytes -> Table -> Int -> Int -> (taken out : Builder Int) -> Quant -> { pos : Int, out : Builder Int }
 acs data table pos k out quant =
     if k > 63 then
         { pos = pos, out = out }
@@ -1029,8 +1046,17 @@ acs data table pos k out quant =
 
                 v =
                     received data s rs.pos
+
+                -- a run past the block's end is a damaged file's: its value
+                -- goes to the last place, undequantized, as before
+                q =
+                    if at <= 63 then
+                        quantAt quant at
+
+                    else
+                        1
             in
-            acs data table v.pos (at + 1) (Builder.set (zigzagAt at) (v.value * quantAt quant at) out) quant
+            acs data table v.pos (at + 1) (Builder.set (zigzagAt at) (v.value * q) out) quant
 
 
 zigzagAt : Int -> (r : Int where 0 <= r && r <= 63)
