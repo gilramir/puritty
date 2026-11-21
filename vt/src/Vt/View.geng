@@ -882,7 +882,7 @@ rotl h =
 
 
 type alias Band =
-    { score : Int, top : Int, bottom : Int, k : Int }
+    { score : Int, top : Int, bottom : Int, k : Int where -1 <= top && top <= 1000 && -1 <= bottom && bottom <= 999 && -1000 <= k && k <= 1000 }
 
 
 {-| The best band over every shift `k` from `k` to `rows - 1`, 0 left out:
@@ -902,7 +902,7 @@ searchK k rows current hashes best =
 {-| Rows `y` to `end` at shift `k`: a run of rows that each match the row
 `k` below it last frame, `start` its first row (`-1` outside a run) and
 `score` its rows that are not blank. -}
-scanY : (k : Int where -1000 <= k && k <= 1000) -> (y : Int where 0 <= y) -> (end : Int where end <= 1000) -> Int -> Int -> Array Int -> Builder Int -> Band -> Band
+scanY : (k : Int where -1000 <= k && k <= 1000) -> (y : Int where 0 <= y && y <= 1000) -> (end : Int where end <= 1000) -> (start : Int where -1 <= start && start <= 1000) -> Int -> Array Int -> Builder Int -> Band -> Band
 scanY k y end start score current hashes best =
     let
         closed =
@@ -947,7 +947,7 @@ scanY k y end start score current hashes best =
 {-| The band moved in the shadow as one `CopyArea` moves it in the window;
 with its ink, and with the cells at its edges whose ink the copy cut or
 brought forgotten, so that they are drawn again. -}
-scrollBand : Band -> Int -> (taken sh : Shadow) -> { shadow : Shadow, list : Builder UInt8 }
+scrollBand : Band -> (cols : Int where 1 <= cols && cols <= 1000) -> (taken sh : Shadow) -> { shadow : Shadow, list : Builder UInt8 }
 scrollBand band cols sh =
     let
         edges =
@@ -1172,7 +1172,7 @@ before the copy: above the band, a cell whose ink went down into the band
 or that the band's old top row's ink went up into; the band's new top
 row, a cell whose own ink went up past it or below which the row above
 its source had ink going down; and the same at the bottom. -}
-bandEdges : Band -> Int -> Int -> Int -> Builder Int -> Array Int -> Array Int
+bandEdges : Band -> (cols : Int where 1 <= cols && cols <= 1000) -> Int -> Int -> Builder Int -> Array Int -> Array Int
 bandEdges band cols rows x ink acc =
     if x >= cols then
         acc
@@ -1189,13 +1189,13 @@ bandEdges band cols rows x ink acc =
                 band.k
 
             above =
-                (top - 1) * cols + x
+                cellIndex (top - 1) cols x
 
             newTop =
                 top * cols + x
 
             below =
-                (bottom + 1) * cols + x
+                cellIndex (bottom + 1) cols x
 
             newBottom =
                 bottom * cols + x
@@ -1208,7 +1208,7 @@ bandEdges band cols rows x ink acc =
                     acc
 
             acc2 =
-                if has 4 (inkAt ((top + k) * cols + x) ink) || (top + k > 0 && vInto 8 ink cols ((top + k - 1) * cols) x) then
+                if has 4 (inkAt (cellIndex (top + k) cols x) ink) || (top + k > 0 && vInto 8 ink cols ((top + k - 1) * cols) x) then
                     Array.pushLast newTop acc1
 
                 else
@@ -1222,13 +1222,22 @@ bandEdges band cols rows x ink acc =
                     acc2
 
             acc4 =
-                if has 8 (inkAt ((bottom + k) * cols + x) ink) || (bottom + k + 1 < rows && vInto 4 ink cols ((bottom + k + 1) * cols) x) then
+                if has 8 (inkAt (cellIndex (bottom + k) cols x) ink) || (bottom + k + 1 < rows && vInto 4 ink cols ((bottom + k + 1) * cols) x) then
                     Array.pushLast newBottom acc3
 
                 else
                     acc3
         in
         bandEdges band cols rows (x + 1) ink acc4
+
+
+{-| Cell `x` of row `y` in the shadow's cells, `y * cols + x`, for a row
+from -2000 to 2000, off the screen included: the product at most 2,000,000
+either way, which the clamp says to the compiler, so that the sum after it
+cannot wrap (as [`rowStart`](#rowStart), `docs/vt-core.md` §VC58). -}
+cellIndex : (y : Int where -2000 <= y && y <= 2000) -> (cols : Int where 1 <= cols && cols <= 1000) -> (x : Int where 0 <= x && x < cols) -> Int
+cellIndex y cols x =
+    clamp -2000000 2000000 (y * cols) + x
 
 
 {-| Whether ink from the row starting at `row` crosses its edge `vbit` (4

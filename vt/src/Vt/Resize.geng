@@ -676,7 +676,9 @@ reflowed old cols rows =
             joined =
                 joinLines old cols { rows = rows, hist = 0, cursor = none, saved = none, y0 = 0, more = False, short = False } 0 { lines = [], line = [], cursor = { line = -1, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = [] }
         in
-        Array.map2 (\line marks -> (splitLine cols line marks [] 0).rows) joined.lines joined.marks
+        -- `cols` is a screen's width, 1 to 1000, which the clamp says to
+        -- the compiler (`docs/vt-core.md` §VC58)
+        Array.map2 (\line marks -> (splitLine (clamp 1 1000 cols) line marks [] 0).rows) joined.lines joined.marks
             |> Array.flatten
 
 
@@ -912,7 +914,7 @@ reflowCols old cols prefix flow =
                             ]
 
                         cut =
-                            splitLine cols line (Maybe.withDefault (meant Reason.OutOfRange []) (Array.get li joined.marks)) marks (Array.length acc.rows)
+                            splitLine (clamp 1 1000 cols) line (Maybe.withDefault (meant Reason.OutOfRange []) (Array.get li joined.marks)) marks (Array.length acc.rows)
                     in
                     -- a line the cursor is not on finds it at row -1, and
                     -- leaves where an earlier line found it (§VC16)
@@ -1203,7 +1205,7 @@ trimmed cells n =
 
 {-| A line cut into rows of `cols`, and where each of `marks`, an offset in
 the line or -1, lands: its row, counted from `first`, and its column. -}
-splitLine : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitLine : (cols : Int where 1 <= cols && cols <= 1000) -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> { rows : Array Row, found : Array { row : Int, x : Int } }
 splitLine cols line starts marks first =
     splitAt cols line starts marks first 0 0 [] [] (Array.map (\_ -> { row = -1, x = 0 }) marks)
 
@@ -1252,9 +1254,15 @@ promptIn starts k lo hi =
                 0
 
 
-splitAt : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitAt : (cols : Int where 1 <= cols && cols <= 1000) -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
 splitAt cols line starts marks first j p row rows found =
-    if p == 0 && not (anyIn marks j (j + cols + 1) 0) && noWide line j (min (Array.length line) (j + cols)) then
+    let
+        -- `j + cols`, `j` clamped to 2,000,000,000, far past any line's
+        -- end, which says to the compiler that the sum cannot wrap
+        reach =
+            clamp 0 2000000000 j + cols
+    in
+    if p == 0 && not (anyIn marks j (reach + 1) 0) && noWide line j (min (Array.length line) reach) then
         -- a row with no wide character and no mark on it or at the cell
         -- after it is a slice of the line, as the cells pushed one at a
         -- time would make it (§VC35)
@@ -1281,7 +1289,7 @@ noWide line j to =
         noWide line (j + 1) to
 
 
-splitCell : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitCell : (cols : Int where 1 <= cols && cols <= 1000) -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
 splitCell cols line starts marks first j p row rows found =
     when Array.get j line is
         Nothing ->

@@ -494,7 +494,7 @@ plainPage page =
             Owned.length page.runs == 0 && plainHeads page 0 0
 
 
-plainHeads : Page -> Int -> Int -> Bool
+plainHeads : (page : Page) -> Int -> (at : Int where 0 <= at && at <= Owned.length page.text) -> Bool
 plainHeads page h at =
     if h >= Owned.length page.heads then
         at == Owned.length page.text
@@ -504,17 +504,24 @@ plainHeads page h at =
             header =
                 u16At page.heads h
 
-            next =
-                at + Bitwise.and 0x3FF header
+            extent =
+                Bitwise.and 0x3FF header
         in
-        if next > Owned.length page.text then
-            False
-
-        else if Bitwise.and 0x8000 header /= 0 && next > at && ownedAt page.text (next - 1) == 0xFF then
+        -- the text's end tested before the sum, so that `at + extent` stays
+        -- within it and cannot wrap
+        if extent > Owned.length page.text - at then
             False
 
         else
-            plainHeads page (h + 2) next
+            let
+                next =
+                    at + extent
+            in
+            if Bitwise.and 0x8000 header /= 0 && next > at && ownedAt page.text (next - 1) == 0xFF then
+                False
+
+            else
+                plainHeads page (h + 2) next
 
 
 {-| A row of a screen or its scrollback out of the ring or a page: its
