@@ -74,10 +74,12 @@ decode b =
         Nothing
 
     else
-        decodeFrom b 0 body (Builder.empty (body // 4 * 3 + 3))
+        -- a text past 2,000,000,000 bytes is read to there, which the `min`
+        -- says to the compiler, so that `i + 4` cannot wrap
+        decodeFrom b 0 (min body 2000000000) (Builder.empty (body // 4 * 3 + 3))
 
 
-decodeFrom : Bytes -> Int -> Int -> (taken out : Builder) -> Maybe Bytes
+decodeFrom : Bytes -> (i : Int where 0 <= i) -> (n : Int where n <= 2000000000) -> (taken out : Builder) -> Maybe Bytes
 decodeFrom b i n out =
     if i >= n then
         Just (Builder.toBytes out)
@@ -138,10 +140,12 @@ alphabet =
 {-| Bytes as base64 with its padding, for OSC 52's answer to a read. -}
 encode : Bytes -> Bytes
 encode b =
-    encodeFrom b 0 (Bytes.length b) (Builder.empty ((Bytes.length b + 2) // 3 * 4))
+    -- bytes past 2,000,000,000 are not encoded, which the `min` says to the
+    -- compiler, so that `i + 3` cannot wrap
+    encodeFrom b 0 (min (Bytes.length b) 2000000000) (Builder.empty ((Bytes.length b + 2) // 3 * 4))
 
 
-encodeFrom : Bytes -> Int -> Int -> (taken out : Builder) -> Bytes
+encodeFrom : Bytes -> (i : Int where 0 <= i) -> (n : Int where n <= 2000000000) -> (taken out : Builder) -> Bytes
 encodeFrom b i n out =
     if i >= n then
         Builder.toBytes out
@@ -151,15 +155,16 @@ encodeFrom b i n out =
             x =
                 byteAt i b
 
+            -- `n - i` rather than `i + 1 < n`, so that nothing can wrap
             y =
-                if i + 1 < n then
+                if n - i > 1 then
                     byteAt (i + 1) b
 
                 else
                     0
 
             z =
-                if i + 2 < n then
+                if n - i > 2 then
                     byteAt (i + 2) b
 
                 else

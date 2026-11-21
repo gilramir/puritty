@@ -674,7 +674,7 @@ reflowed old cols rows =
                 { row = -1, x = 0, wrap = False }
 
             joined =
-                joinLines old cols { rows = rows, hist = 0, cursor = none, saved = none, y0 = 0, more = False, short = False } 0 { lines = [], line = [], cursor = { line = -1, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = [] }
+                joinLines (clamp 1 1000 old) cols { rows = rows, hist = 0, cursor = none, saved = none, y0 = 0, more = False, short = False } 0 { lines = [], line = [], cursor = { line = -1, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = [] }
         in
         -- `cols` is a screen's width, 1 to 1000, which the clamp says to
         -- the compiler (`docs/vt-core.md` §VC58)
@@ -787,7 +787,7 @@ shiftPoint by p =
 {-| Every row cut to `cols` or left as it is, no line reflowed: a wide
 character the new edge cuts goes, and a wider row no longer wraps, as in
 Ghostty. -}
-cutCols : Int -> Int -> Flow -> Flow
+cutCols : (old : Int where 1 <= old && old <= 1000) -> Int -> Flow -> Flow
 cutCols old cols flow =
     if cols < old then
         { flow
@@ -853,7 +853,7 @@ empty cell. Blank lines at the end
 are dropped, and the screen is the last rows, as many blank rows added
 below as keep the rows that were below the cursor (Ghostty's
 `resizeCols`). -}
-reflowCols : Int -> Int -> Row -> Flow -> Flow
+reflowCols : (old : Int where 1 <= old && old <= 1000) -> Int -> Row -> Flow -> Flow
 reflowCols old cols prefix flow =
     let
         now =
@@ -1015,7 +1015,7 @@ cells, less a spacer head at its end; a row that ends a line is its cells
 up to the last that is not empty, less a spacer head there, and then up to
 the cursor, as Ghostty keeps the cells before the cursor. A saved cursor in those blanks is kept
 within a row of the new width. -}
-joinLines : Int -> Int -> Flow -> Int -> Joined -> Joined
+joinLines : (old : Int where 0 <= old && old <= 1000) -> Int -> Flow -> Int -> Joined -> Joined
 joinLines old cols flow i j =
     when Array.get i flow.rows is
         Nothing ->

@@ -142,8 +142,10 @@ image most data at screen =
         afterTable =
             at
                 + 10
+                -- a local colour table is at most 3 * 256 bytes, which the
+                -- `min` says to the compiler
                 + (if Bitwise.and 0x80 packed /= 0 then
-                    Bytes.length local
+                    min 768 (Bytes.length local)
 
                    else
                     0
@@ -274,7 +276,7 @@ type alias Lzw =
 
 {-| `count` colour indices from the LZW data, codes of `minSize + 1` bits
 to 12, least significant bit first. -}
-lzw : Bytes -> Int -> Int -> Array Int
+lzw : Bytes -> (minSize : Int where 2 <= minSize && minSize <= 8) -> Int -> Array Int
 lzw data minSize count =
     let
         clearCode =
@@ -327,7 +329,7 @@ lzw data minSize count =
         |> Builder.toArray
 
 
-codes : Bytes -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> (taken t : Lzw) -> Lzw
+codes : Bytes -> (clearCode : Int where 4 <= clearCode && clearCode <= 256) -> Int -> Int -> Int -> Int -> Int -> Int -> (taken t : Lzw) -> Lzw
 codes data clearCode pos width next prev at count t =
     if at >= count || pos + width > Bytes.length data * 8 || pos > 1000000000 then
         t

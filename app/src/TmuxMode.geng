@@ -6390,7 +6390,9 @@ completed lists version a =
         -- where the word at the caret begins: after the last space
         start =
             Array.findLast (\c -> c == ' ') soFar
-                |> Maybe.map (\found -> found.index + 1)
+                -- an index clamped to 2,000,000,000, far past any line typed,
+                -- which says to the compiler that the sum cannot wrap
+                |> Maybe.map (\found -> clamp 0 2000000000 found.index + 1)
                 -- no space before it: the first word
                 |> Maybe.withDefault (meant Reason.NoMore 0)
 
@@ -6473,7 +6475,9 @@ caretWord a =
 
         start =
             Array.findLast (\c -> c == ' ') soFar
-                |> Maybe.map (\found -> found.index + 1)
+                -- an index clamped to 2,000,000,000, far past any line typed,
+                -- which says to the compiler that the sum cannot wrap
+                |> Maybe.map (\found -> clamp 0 2000000000 found.index + 1)
                 -- no space before it: the first word
                 |> Maybe.withDefault (meant Reason.NoMore 0)
     in
@@ -7802,7 +7806,7 @@ linkAt p s =
                                     Vt.linkAt back place t
 
                                 Nothing ->
-                                    meant Reason.OutOfRange Nothing
+                                    Nothing
 
                         Nothing ->
                             meant Reason.Gone Nothing
@@ -9828,7 +9832,9 @@ tmuxBar cols row s =
         -- which part of the list shows, around the current window
         focus =
             Array.findFirst (\h -> h.window == s.window) windows.hits
-                |> Maybe.map (\f -> f.value.from + (f.value.to + 1 - f.value.from) // 2)
+                -- columns clamped to 1,000,000, far past any bar, which says
+                -- to the compiler that the midpoint's sums cannot wrap
+                |> Maybe.map (\f -> clamp 0 1000000 f.value.from + (clamp 0 1000000 f.value.to + 1 - clamp 0 1000000 f.value.from) // 2)
                 |> Maybe.withDefault (meant Reason.NotKnown 0)
 
         start0 =
@@ -10619,7 +10625,9 @@ drawMenu colors tmuxLook place m =
                    )
 
         body =
-            Array.range 0 (place.h - 3)
+            -- `max 2`: the same rows for every height, and no difference
+            -- that can wrap
+            Array.range 0 (max 2 place.h - 3)
                 |> Array.mapAndFlatten
                     (\i ->
                         when Array.get i place.rows is
@@ -10720,7 +10728,7 @@ menuKey k m s =
                         moveTo (Maybe.withDefault (meant Reason.NotYet 0) at - 1) s
 
                     else if name == "Down" || name == "j" || name == "Tab" then
-                        moveTo (Maybe.withDefault (meant Reason.NotYet -1) at + 1) s
+                        moveTo (min 2000000000 (Maybe.withDefault (meant Reason.NotYet -1) at) + 1) s
 
                     else if name == "Home" || name == "g" then
                         moveTo 0 s
@@ -11807,12 +11815,20 @@ drawListing colors tmuxLook version place l =
             else
                 1
 
+        -- the selection and the height clamped to what a screen can show,
+        -- which says to the compiler that the sums cannot wrap
+        selectedAt =
+            clamp 0 2000000000 l.selected
+
+        shownHeight =
+            clamp 0 1000000 listHeight
+
         top =
-            if l.selected < listHeight then
+            if selectedAt < shownHeight then
                 0
 
             else
-                l.selected - listHeight + 1
+                selectedAt - shownHeight + 1
 
         chosenName =
             Array.get l.selected rows |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "")

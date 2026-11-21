@@ -526,14 +526,20 @@ unescapeFrom bytes from slash pieces =
 
     else
         let
+            -- `slash` clamped to 2,000,000,000, far past any line tmux
+            -- sends, which says to the compiler that the sums after it
+            -- cannot wrap
+            at =
+                clamp 0 2000000000 slash
+
             d0 =
-                byteAt (slash + 1) bytes - 0x30
+                byteAt (at + 1) bytes - 0x30
 
             d1 =
-                byteAt (slash + 2) bytes - 0x30
+                byteAt (at + 2) bytes - 0x30
 
             d2 =
-                byteAt (slash + 3) bytes - 0x30
+                byteAt (at + 3) bytes - 0x30
 
             octal =
                 d0 >= 0 && d0 <= 3 && d1 >= 0 && d1 <= 7 && d2 >= 0 && d2 <= 7
@@ -543,13 +549,13 @@ unescapeFrom bytes from slash pieces =
         in
         if octal then
             unescapeFrom bytes
-                (slash + 4)
-                (indexOf 0x5C (slash + 4) bytes)
+                (at + 4)
+                (indexOf 0x5C (at + 4) bytes)
                 (Array.pushLast (Bytes.fromUInt8s [ UInt8.fromInt (d0 * 64 + d1 * 8 + d2) ]) before)
 
         else
             -- a `\` not followed by three octal digits stays as it is
-            unescapeFrom bytes slash (indexOf 0x5C (slash + 1) bytes) pieces
+            unescapeFrom bytes slash (indexOf 0x5C (at + 1) bytes) pieces
 
 
 {-| Whether bytes hold `ESC P 1000 p`, tmux control mode starting: as a

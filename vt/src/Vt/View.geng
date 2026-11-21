@@ -1201,28 +1201,28 @@ bandEdges band cols rows x ink acc =
                 bottom * cols + x
 
             acc1 =
-                if top > 0 && (has 8 (inkAt above ink) || vInto 4 ink cols (top * cols) x) then
+                if top > 0 && (has 8 (inkAt above ink) || vInto 4 ink cols top x) then
                     Array.pushLast above acc
 
                 else
                     acc
 
             acc2 =
-                if has 4 (inkAt (cellIndex (top + k) cols x) ink) || (top + k > 0 && vInto 8 ink cols ((top + k - 1) * cols) x) then
+                if has 4 (inkAt (cellIndex (top + k) cols x) ink) || (top + k > 0 && vInto 8 ink cols (top + k - 1) x) then
                     Array.pushLast newTop acc1
 
                 else
                     acc1
 
             acc3 =
-                if bottom + 1 < rows && (has 4 (inkAt below ink) || vInto 8 ink cols (bottom * cols) x) then
+                if bottom + 1 < rows && (has 4 (inkAt below ink) || vInto 8 ink cols bottom x) then
                     Array.pushLast below acc2
 
                 else
                     acc2
 
             acc4 =
-                if has 8 (inkAt (cellIndex (bottom + k) cols x) ink) || (bottom + k + 1 < rows && vInto 4 ink cols ((bottom + k + 1) * cols) x) then
+                if has 8 (inkAt (cellIndex (bottom + k) cols x) ink) || (bottom + k + 1 < rows && vInto 4 ink cols (bottom + k + 1) x) then
                     Array.pushLast newBottom acc3
 
                 else
@@ -1240,14 +1240,14 @@ cellIndex y cols x =
     clamp -2000000 2000000 (y * cols) + x
 
 
-{-| Whether ink from the row starting at `row` crosses its edge `vbit` (4
-up, 8 down) into column `x` of the next row: from the cell above or below
-it, or from one beside that whose ink also crosses toward `x`. -}
-vInto : Int -> Builder Int -> Int -> Int -> Int -> Bool
-vInto vbit ink cols row x =
-    has vbit (inkAt (row + x) ink)
-        || (x > 0 && hasAll (vbit + 2) (inkAt (row + x - 1) ink))
-        || (x < cols - 1 && hasAll (vbit + 1) (inkAt (row + x + 1) ink))
+{-| Whether ink from row `y` crosses its edge `vbit` (4 up, 8 down) into
+column `x` of the next row: from the cell above or below it, or from one
+beside that whose ink also crosses toward `x`. -}
+vInto : (vbit : Int where vbit == 4 || vbit == 8) -> Builder Int -> (cols : Int where 1 <= cols && cols <= 1000) -> (y : Int where -2000 <= y && y <= 2000) -> (x : Int where 0 <= x && x < cols) -> Bool
+vInto vbit ink cols y x =
+    has vbit (inkAt (cellIndex y cols x) ink)
+        || (x > 0 && hasAll (vbit + 2) (inkAt (cellIndex y cols (x - 1)) ink))
+        || (x < cols - 1 && hasAll (vbit + 1) (inkAt (cellIndex y cols (x + 1)) ink))
 
 
 {-| What this frame draws, beyond the cells that changed: each changed
