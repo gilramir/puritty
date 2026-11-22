@@ -63,6 +63,7 @@ read as the answer to the question before it, until the next attach.
 - What: `resize = [ sizeCommand next.caps ... ]` is appended with `commands = acc.commands ++ resize`; every other sender goes through `ask`/`sent`/`sendAsking`, which add an `Asked`. `refresh-client -C` answers with an empty block, flags 1 (TK10.10), so one more reply comes than is waited for.
 - Scenario: tmux's look with `status off`, `status 2` or a binding that toggles `status`: about a second after attach, or after the toggle, the notification arrives and the resize goes out. Whatever puritty sends before that resize's reply is read is answered one early until the queue empties: a pane's `recapture` line then rebuilds the pane from the saved-screen capture (usually empty: a blank pane), a `ForWindow` is lost. On a local tmux the window is tiny; over ssh it is the round trip.
 - Fix: `sent [ sizeCommand ... ] next` in both branches, as `resized` does.
+- Fixed: 2026-11-22. The size sent when the status line's rows change goes through `ask`, its reply waited for; and the state counts replies that came when no question waited (`unasked`), which the diagnosis shows, so a desync is seen. Test: "the size sent when the status line's rows change waits for its reply", on each tmux: one reply with no question before, none after.
 
 ### TA6 · Before tmux 3.4 a binding of several commands is sent on one line and waited for once; `source-file` in it has no fence
 - Where: app/src/TmuxMode.geng:5489-5493, 5544-5557 (`sent commands`), packages/tmux/src/Tmux/Command.geng:1403-1417 (`bindingLine`)
@@ -81,6 +82,7 @@ read as the answer to the question before it, until the next attach.
 - What: with `grab = Just g`, `target` is looked up among the layout's panes only; when `g` is not there the event falls to `{ state = s, ... }` unchanged. `grab` is cleared only inside the branches that need a target.
 - Scenario: a press in a pane whose program exits on that press (a "quit" button in a mouse program), or a selection held while the pane's program ends, or a window switch by a binding with a button down. The release finds no target, `grab` stays, and from then every press over a pane or a tab does nothing until the next attach. Menus and the drawn modes still take the mouse, which hides it for a while.
 - Fix: clear `grab` (and `drag`) when its pane is not in the layout: in `applyLayout`, and in `pointerHere` when `target` is `Nothing` and no button is held.
+- Fixed: 2026-11-22. `pointerHere` lets go of a grab or a drag whose pane is no longer in the layout before it reads the event. Test: "a pane that closes while a press in it holds the pointer lets go of it", on each tmux: before, the press in the other pane sent its program nothing, on all six.
 
 ### TA8 · Panes are never taken out of `ids`/`panes`/`info`: closed panes and a left session's panes keep their terminals
 - Where: app/src/TmuxMode.geng:94-98, 3957-3962, 4368, 4511 (the only writers add), 4151-4161 (`SessionChanged`), 16319-16327 (`forgetPane` clears five maps, not these)

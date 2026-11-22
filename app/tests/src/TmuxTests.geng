@@ -1404,6 +1404,69 @@ onVersion version =
                         }
                         { digit = chose "3", letter = chose "b" }
           }
+        , { name = "a pane that closes while a press in it holds the pointer lets go of it: a press in the other pane reaches its program (review TA7)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- two panes side by side, each program taking the mouse
+                        two =
+                            { made | panes = made.panes ++ Array.map (\p -> { p | id = 1 }) made.panes }
+
+                        mouse pane run =
+                            deliver (Bytes.fromString ("%output %" ++ String.fromInt pane ++ " \\033[?1000h\\033[?1006h\u{000D}\n")) run
+
+                        -- pane 0 pressed, then it closes, then pane 1 pressed
+                        pressed =
+                            attached two
+                                |> mouse 0
+                                |> mouse 1
+                                |> settle
+                                |> clickAt 1 { col = 5, row = 5 } 2000
+
+                        closed =
+                            let
+                                c =
+                                    FakeTmux.closePane 0 pressed.world
+                            in
+                            settle (deliver (Bytes.fromString (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") c.notices))) { pressed | world = c.world })
+
+                        after =
+                            clickAt 1 { col = 60, row = 5 } 3000 closed |> settle
+                    in
+                    Expect.equal True
+                        (Array.any (\l -> String.startsWith "send-keys -t '%1'" l) (Array.dropFirst (Array.length closed.world.heard) after.world.heard))
+          }
+        , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- status off, read from its subscription as tmux's look
+                        -- starts, which sends a new size
+                        off =
+                            { made
+                                | options =
+                                    Dict.set "status"
+                                        (if version == "2.7" then
+                                            "0"
+
+                                         else
+                                            "off"
+                                        )
+                                        made.options
+                            }
+
+                        run =
+                            settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.idle {}), world = off, held = [], ms = 1000 })
+                    in
+                    Expect.equal [ "  replies no question waited for: 0" ]
+                        (TmuxMode.diagnose run.tmux |> Array.keepIf (String.startsWith "  replies no question"))
+          }
         , { name = "status off leaves tmux's panes the whole window, as this tmux writes off (TM79)"
           , test =
                 \_ ->

@@ -157,6 +157,9 @@ type alias Picker =
     , cache : Dict String Listing
     , highlight : Int
     , top : Int
+    -- whether the view follows the highlight: set when the keys move it,
+    -- let go of when the wheel scrolls (the code review's PS11)
+    , follow : Bool
     , filter : String
     , typing : Maybe { edit : TextEdit.Edit, chosen : Int }
     , naming : Maybe TextEdit.Edit
@@ -191,6 +194,7 @@ open o =
             , cache = Dict.empty
             , highlight = -1
             , top = 0
+            , follow = True
             , filter = ""
             , typing = Nothing
             , naming = Nothing
@@ -825,12 +829,13 @@ layout size =
 shownRow : Int -> Picker -> Picker
 shownRow i p =
     -- the box's rows are known only when drawn; 12 is the fewest any
-    -- window shows, and `draw` keeps the highlight in view past that
+    -- window shows, and `draw` keeps the highlight in view past that while
+    -- the view follows it
     if i < p.top then
-        { p | top = max 0 i }
+        { p | top = max 0 i, follow = True }
 
     else
-        p
+        { p | follow = True }
 
 
 -- WHAT IS UNDER A POINT
@@ -1694,7 +1699,18 @@ pointer size with e p =
                 else
                     3
         in
-        { s0 | picker = { p1 | top = clamp 0 (max 0 (rowCount - l.shownRows)) (p1.top + step) } }
+        let
+            -- from where the view is: the frame moved it to the highlight
+            -- in its own copy, which the model's `top` was not told of
+            -- (PS11); then the view is the wheel's, not the highlight's
+            viewTop =
+                if p1.follow && p1.highlight >= p1.top + l.shownRows then
+                    p1.highlight - l.shownRows + 1
+
+                else
+                    p1.top
+        in
+        { s0 | picker = { p1 | top = clamp 0 (max 0 (rowCount - l.shownRows)) (viewTop + step), follow = False } }
 
     else if e.button /= 1 then
         s0
@@ -2132,7 +2148,7 @@ sceneWith size with timeText p0 =
             little l.shownRows
 
         p =
-            if bounded p0.highlight >= bounded p0.top + visibleRows then
+            if p0.follow && bounded p0.highlight >= bounded p0.top + visibleRows then
                 { p0 | top = bounded p0.highlight - visibleRows + 1 }
 
             else

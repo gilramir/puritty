@@ -118,6 +118,7 @@ Two facts used throughout, both checked:
 - What: `sceneWith` computes `p = { p0 | top = highlight - visibleRows + 1 }` when the highlight is below the view and throws it away; the model's `top` stays where it was. The wheel then changes the stale `top`, and the next frame overrides it again.
 - Scenario: in `/usr/lib` (2,000 rows) press End or hold Down: the list shows row 1,999 but the model's `top` is 0. Wheel up: `top` stays 0, the frame snaps back to the highlight. Wheel down: `top` becomes 3, 6, … with nothing moving until it catches up some 660 notches later. Likewise, click the last visible row and the wheel can no longer scroll up at all (the highlight is pinned to the bottom edge).
 - Fix: store the corrected `top` (do the correction in `key`/`listed` with the last known `shownRows`, kept in the model from the last frame or passed in), and let the wheel scroll freely without re-pinning to the highlight.
+- Fixed: 2026-11-22. The picker keeps `follow`: the keys moving the highlight set it, the wheel lets go of it, and the frame keeps the highlight in view only while it is set; the wheel starts from where the view is, not from the model's stale `top`. Test: `picker`'s "after End, the wheel scrolls up from the rows shown": before, `top` stayed 0 and the wheel did nothing.
 
 ### PS12 · Writing `config.toml`: one fixed temporary name, no lock, a symlink replaced, the mode not kept
 - Where: app/src/SettingsFile.geng:42-110 (`beside ".new"` at 60-61, 106-107; `.bak` at 99)

@@ -174,8 +174,10 @@ SUITES = [
         # 473 since TB1: the wheel over a pane in copy mode, on each tmux;
         # 474 since MAN1: a query typed on after a miss; 475 since MA13:
         # a time set ahead and read days later; 476 since VI11: a picture's
-        # file by a share's path
-        476,
+        # file by a share's path; 488 since TA5 and TA7: the size's reply
+        # waited for, a grab let go, on each tmux; 489 since PS11: the
+        # picker's wheel after the keys
+        489,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

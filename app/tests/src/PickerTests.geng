@@ -75,7 +75,32 @@ picker =
 
 cases : Array { name : String, test : {} -> Expectation }
 cases =
-    [ { name = "it opens by listing the folder it starts at"
+    [ { name = "after End, the wheel scrolls up from the rows shown, and the view stays where the wheel put it (review PS11)"
+      , test =
+            \_ ->
+                let
+                    size =
+                        { cols = 100, rows = 40, cellWidth = 9, cellHeight = 17 }
+
+                    many =
+                        (Picker.answer (Listed { id = 1, path = Bytes.fromString "/x", entries = Array.map (\k -> folderNamed ("f" ++ String.padLeft 4 '0' (String.fromInt k))) (Array.range 0 1999), more = False }) opened.picker).picker
+
+                    ended =
+                        (press 0xFF57 0xFF57 0 many).picker
+
+                    wheel p =
+                        (Picker.pointer size with { action = 0, button = 4, x = 300, y = 300, ms = 0 } p).picker
+
+                    once =
+                        wheel ended
+
+                    twice =
+                        wheel once
+                in
+                Expect.equal { scrolled = True, again = 3 }
+                    { scrolled = once.top > 1900 && once.top < 1999, again = once.top - twice.top }
+      }
+    , { name = "it opens by listing the folder it starts at"
       , test = \_ -> Expect.equal [ "list /x" ] (asks opened.requests)
       }
     , { name = "Enter with nothing highlighted goes nowhere, after a listing's second part (Array.get reads -1 from the end)"

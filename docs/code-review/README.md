@@ -191,29 +191,30 @@ Stale comments are gathered in X29, W18 and TB20.
 
 ## For the owner to decide, not to fix
 
+Decided by Gilbert on 2026-11-22, each the recommended choice; to build.
+
+- **TA3**: control mode is entered on bytes in the stream, as tmux's
+  protocol has it. *Decided:* enter at once only when this tab started it
+  (its own command, or a line just typed in it, was `tmux -CC`); otherwise
+  ask "Enter tmux control mode?" first, the bytes shown as output until
+  answered. TA15's Enter sent to a pane on the sequence goes too: a note,
+  no keys sent.
 - **SC6**: under `accept-new` or `no`, a key of a new type is accepted for a
-  host known by another type. OpenSSH does the same.
-- **TA3**: control mode is entered on bytes in the stream, as tmux's protocol
-  has it. Whether to ask first, or to hold back what a session's bindings may
-  send, is a choice.
+  host known by another type. OpenSSH does the same, the review says.
+  *Decided:* under `accept-new`, ask, with the question `ask` shows; under
+  `no`, accept as now.
 - **ST3**: whether a remembered password is offered after "trust once".
+  *Decided:* sent by itself only when the host's key matched
+  `known_hosts`; otherwise the password box says the key is not the known
+  one, the saved password ready but sent only by the user's Enter.
 - **SC7**: `ssh_config` keywords that are read and not acted on are dropped
-  without a word; which of them should be refused instead.
-
-## Found while fixing
-
-Problems seen while fixing the findings above, not in the review itself.
-Each is to be made to fail and fixed as a finding is; ids continue the
-slice's letters with an `N` (new).
-
-| id | where | what was seen |
-|---|---|---|
-| VPN1 | `vt/src/Vt/Parse.geng` (`ground`, `printAscii`) | One `Vt.feed` of about 30 KB of ordinary text (3,000 rows of `row-NNNNN`, CR LF between) overflows node's stack: `RangeError: Maximum call stack size exceeded`, `ground` and `printAscii` calling each other once a row. Reproduced in the vt suite on node; the same test passes natively (12 ms), where puritty runs. The cause is geng-lang's, by design: `Core.Pass.Mutual` (D479, `pre-m3-tail.md` §MT5) makes a loop of a *local* group of tail calls only, and a top-level group such as this parser's (`ground`, `printAscii`, `printUnicode`, `escape` and the rest, back through `resume`) stays bounded by the stack on JavaScript, as D331 accepts. The pre-M3 survey found one top-level all-tail group in 679 modules, at depth 1; this is one that goes deep. Only the unit suites and harnesses run the core on node, so they feed large inputs in pieces. **Decided** (Gilbert, 2026-11-22): left as it is, the parser's measured shape kept; registered in geng-lang's `open-items.md` beside D479 and D480 for whoever extends the pass to top-level groups. |
-| PSN1 | `harness/pointer.py`, `corpus/pointer/` | 34 of the pointer gate's 55 cases failed, the same 34 with the build before the review's fixes and after: reports a column or a row off, selections a cell short. **Fixed** (2026-11-22): not the machine. The cases place the pointer in pixels from the window's corner, and their pins (2026-11-03 to 11-11) were made before R20's gap between the text and the window's edges (2026-11-17), which moved every cell; the gate now runs with `padding = 0` and `padding_vertical = 0`, since what it holds is the mouse's path, and 51 pass. The four left were pinned before decisions since and are pinned again, each read first: three pastes whose line ends go as CR inside the brackets too (`docs/tmux.md` TM95, 2026-11-16), and a wheel after a zoom one row up, where R21 (2026-11-19) shares the window's spare pixels above and below the cells. 55 of 55. |
-| VPN2 | `vt/src/Vt.geng` (`linkAt`, `viewPages`) | What VP2 names beyond the search: `linkAt` still reads a whole page per call, and `viewPages` walks the pages from the oldest for every read. **Measured and left** (2026-11-22): `linkAt` is called only on a Ctrl+left press (`Main.geng`, `linkPress`), and costs 1.7 ms a call natively on a paged row (1,000 calls over 10,000 rows of links, the feeding taken off). |
-| MAN1 | `app/src/Search.geng` | The search reads a page at a time now (MA3), but still runs within one turn of the loop, and a longer query does not use a shorter one's failure. **Fixed in part** (2026-11-22): pages are read as text alone (`Vt.Pages.pageTexts`), and a query typed on after a miss reads only the rows the miss did not cover (`Search.findTyped`): natively, one miss over 100,000 rows 1,830 ms to 270 ms, `nowhere` typed a letter at a time about 11 s to 255 ms (`docs/phase3-select.md` §23). Left: one search within one turn, about 27 s at the setting's most. |
-| MAN2 | `app/src/Main.geng`, `TmuxMode.geng`, `PickerDemo.geng` | The rest of MA1 and MA13's kind: a due time compared with `Clock.reached` after a wait with no bound reads as to come once it is 6.2 days old. Not yet looked at one by one: the paced frame's sync time (`syncSince`), the settings reload (`s.at`), the tmux due time, the cursor's blink (`blinkAt`), the note bar's (`n.until`), the closed tabs' ten minutes, and in `TmuxMode` a note's, the stray line's and the status poll's. Each is either refreshed on every turn (then it is right) or wants `Clock.passed` with its span. |
-| VPN3 | `harness/view.py`, `corpus/view/` | The display-list gate fails 46 of its 377 cases, the same 46 at the commit before this work (2026-11-22, compared case by case): 27 are Kitty cases whose frames hold a record of kind 10 the gate's decoder does not know (an image's), 5 cases have no pin, and the rest differ in a cursor's background (`#200030` where the pin has `#220033`) or a frame's size after a resize. The gate has not been kept with the image records and later decisions; each pin wants reading before it is written again, as PSN1's were. |
+  without a word. *Decided:* each one not acted on is named once per
+  connection; the authentication restrictions (`PasswordAuthentication`,
+  `KbdInteractiveAuthentication`, `PreferredAuthentications`) and the
+  algorithm lists (`HostKeyAlgorithms`, `KexAlgorithms`, `Ciphers`,
+  `MACs`) are honoured; a connection is refused, naming `client =
+  "openssh"` as the way, when `ProxyCommand`, `RevokedHostKeys` or
+  `CertificateFile` applies; and `/etc/ssh/ssh_config` is read.
 
 ## What was not covered
 
@@ -324,9 +325,9 @@ covered" sections. The larger gaps:
 | [MB6](10-app-main-b.md) | security | confirmed | OSC 52 writes of a tab not shown queue without bound, and are applied when it is next shown |
 | [MB19](10-app-main-b.md) | design | confirmed | The dialogs are listed in six places, and four groups of this half are modules in waiting |
 | [TA4](11-tmuxmode-a.md) | bug | confirmed | After the active pane or window changes, named keys go to the old pane and text to the new one |
-| [TA5](11-tmuxmode-a.md) | bug | confirmed | A change in the status line's row count sends a resize that nothing waits for |
+| [TA5](11-tmuxmode-a.md) | bug | confirmed | **fixed** A change in the status line's row count sends a resize that nothing waits for |
 | [TA6](11-tmuxmode-a.md) | bug | confirmed | Before tmux 3.4 a binding of several commands is sent on one line and waited for once; `source-file` in it has no fence |
-| [TA7](11-tmuxmode-a.md) | bug | confirmed | A pane that closes while it holds the pointer leaves `grab` set: clicks, selection and tabs stop working |
+| [TA7](11-tmuxmode-a.md) | bug | confirmed | **fixed** A pane that closes while it holds the pointer leaves `grab` set: clicks, selection and tabs stop working |
 | [TA8](11-tmuxmode-a.md) | bug | confirmed | Panes are never taken out of `ids`/`panes`/`info`: closed panes and a left session's panes keep their terminals |
 | [TA9](11-tmuxmode-a.md) | efficiency | confirmed | Every attach asks the window, tabs, panes and modes twice, so every pane is captured twice |
 | [TA10](11-tmuxmode-a.md) | efficiency | confirmed | A pane's whole history is captured on attach and on every `%pause`, into a terminal that keeps about 1000 rows |
@@ -336,7 +337,7 @@ covered" sections. The larger gaps:
 | [TA21](11-tmuxmode-a.md) | design | confirmed | A 17,377-line module: where it would split |
 | [TA22](11-tmuxmode-a.md) | test-gap | confirmed | What the explorer does not reach |
 | [TB2](12-tmuxmode-b.md) | bug | confirmed | The wheel and Shift+PgUp scroll puritty's view of a pane in copy mode, which tmux's copy mode does not follow |
-| [TB3](12-tmuxmode-b.md) | bug | confirmed | A size sent after a status-line change is not put in the reply queue, so the replies after it go to the wrong questions |
+| [TB3](12-tmuxmode-b.md) | bug | confirmed | **fixed** A size sent after a status-line change is not put in the reply queue, so the replies after it go to the wrong questions |
 | [TB4](12-tmuxmode-b.md) | security | plausible | A popup's title is expanded twice, the second time as `pane-border-format` |
 | [TB5](12-tmuxmode-b.md) | bug | plausible | customize-mode's filter is sent through `display-message` without `%` doubled, and is longer than strftime's buffer |
 | [TB6](12-tmuxmode-b.md) | security | plausible | Text from tmux is written into the canvas terminal with its control characters |
@@ -352,7 +353,7 @@ covered" sections. The larger gaps:
 | [PS8](13-app-picker-settings.md) | speed | confirmed | `middle` cuts a long label one character at a time, measuring the whole string each time |
 | [PS9](13-app-picker-settings.md) | speed | confirmed | Each part of a listing re-sorts everything received so far |
 | [PS10](13-app-picker-settings.md) | bug | confirmed | Undo of a host removed or renamed rewrites its table: bookmarks, comments and unknown keys are lost, and hosts added since are deleted |
-| [PS11](13-app-picker-settings.md) | bug | confirmed | After the keyboard moves the highlight down, the wheel does nothing |
+| [PS11](13-app-picker-settings.md) | bug | confirmed | **fixed** After the keyboard moves the highlight down, the wheel does nothing |
 | [PS12](13-app-picker-settings.md) | bug | plausible | Writing `config.toml`: one fixed temporary name, no lock, a symlink replaced, the mode not kept |
 | [PS13](13-app-picker-settings.md) | design | confirmed | The one-line text field exists five times and they have drifted: an invisible selection, a cut that loses text, no paste |
 | [OS1](14-dep-os.md) | bug | plausible | `Os.Net.connect` looks names up with `AI_ADDRCONFIG`, so loopback and literal addresses fail on a machine with no routable address of that family |

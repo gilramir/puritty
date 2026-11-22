@@ -39,6 +39,7 @@ finding rests on it.
 - What: every other command goes through `sent`/`ask`/`sendAsking`/`expectedLine`, which push an `Asked` on `s.expecting`; `ours` pops the head for each reply block. Here `resize = [ sizeCommand … ]` is appended with `commands = acc.commands ++ resize` and nothing is pushed. tmux answers `refresh-client -C` with a `%begin`/`%end` block like any other command.
 - Scenario: `set -g status 2` (or `status off`) while anything is in flight (a copy-mode question, the 1 s polls before 3.2, a key's `send-keys`). The empty reply to the size pops the next expectation, and every reply after it is read as the answer to the question before its own until the queue happens to run empty: a `ForWindow` gets no lines, a capture's text is read as a layout, and so on.
 - Fix: send it with `ask [ { command = …, expect = ForNothing } ]`. Worth an assertion in the tests' fake tmux that every line written has an `Asked`.
+- Fixed: 2026-11-22: TA5's fix.
 
 ### TB4 · A popup's title is expanded twice, the second time as `pane-border-format`
 - Where: app/src/TmuxMode.geng:11323-11339 (`openPopup`), packages/tmux/src/Tmux/Command.geng:776-778 (`setPaneFormat`, `set-option -p -F`)

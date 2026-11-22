@@ -107,6 +107,10 @@ type alias State =
     -- a client's commands in turn (docs/tmux.md TM5.2), and ends a line at
     -- its first that fails (docs/tmux-checks.md TK10); and the lines sent
     , expecting : Array Asked
+    -- this client's replies that came when no question waited: each one a
+    -- question answered by the reply to another, so none should come
+    -- (the code review's TA5, TB3), and the diagnosis says how many
+    , unasked : Int
     , linesSent : Int
     -- what puritty showed of tmux when last read (`viewLine`)
     , shownView : String
@@ -804,6 +808,7 @@ idle _ =
     , modal = False
     , canvas = blank 1 1
     , expecting = []
+    , unasked = 0
     , linesSent = 0
     , shownView = ""
     , info = Dict.empty
@@ -1758,6 +1763,7 @@ diagnose s =
                 else
                     ", keys as bytes (tmux before 3.4)"
                )
+        , "  replies no question waited for: " ++ String.fromInt s.unasked
         , "  waiting for "
             ++ String.fromInt (Array.length s.expecting)
             ++ " replies"
@@ -2697,7 +2703,15 @@ ours r acc =
         expect =
             Maybe.map .expect head |> Maybe.withDefault (meant Reason.FromOutside ForNothing)
     in
-    if expect == ForFence && Array.map Bytes.toStringLossy r.lines /= [ fenceWord ] then
+    if not (Maybe.isJust head) then
+        -- a reply no question waited for: counted, and read as nothing
+        let
+            st =
+                acc.state
+        in
+        { acc | state = { st | unasked = st.unasked + 1 } }
+
+    else if expect == ForFence && Array.map Bytes.toStringLossy r.lines /= [ fenceWord ] then
         -- a block of the commands a command ran, before the fence after
         -- it (TK10): shown as the command's own
         replied ForRan r.ok r.lines acc
@@ -2725,7 +2739,7 @@ ours r acc =
             -- it there are not run, and answered as failed with nothing
             -- said (TK10)
             line =
-                Maybe.map .line head |> Maybe.withDefault (meant Reason.FromOutside -1)
+                Maybe.map .line head |> Maybe.withDefault -1
 
             dropped =
                 if r.ok then
@@ -2740,7 +2754,7 @@ ours r acc =
             -- the line that would detach this client failed: nothing
             -- detached it, and what is sent goes again (review TA2)
             ending =
-                if not r.ok && st.ending >= 1 && (Maybe.map (\h -> endsClient st.clientName h.command) head |> Maybe.withDefault (meant Reason.FromOutside False)) then
+                if not r.ok && st.ending >= 1 && (Maybe.map (\h -> endsClient st.clientName h.command) head |> Maybe.withDefault False) then
                     0
 
                 else
@@ -4334,14 +4348,20 @@ notice n acc =
 
                         else
                             []
+
+                    -- sent as every command is, its reply waited for: sent
+                    -- bare, its empty reply took the next question's place
+                    -- (the code review's TA5, TB3)
+                    asked =
+                        Array.map (\c -> { command = c, expect = ForNothing }) resize
                 in
                 if windowBorderStatus next /= was || barNow.on /= barWas.on || barNow.width /= barWas.width || barNow.left /= barWas.left then
                     -- the panes' sizes change with their titles' rows, and
                     -- tmux sends no layout for it
-                    { acc | state = refit next, commands = acc.commands ++ resize }
+                    ask asked { acc | state = refit next }
 
                 else
-                    { acc | state = next, commands = acc.commands ++ resize }
+                    ask asked { acc | state = next }
 
         WindowRenamed r ->
             let
@@ -7949,7 +7969,49 @@ linkAt p s =
 
 {-| `pointer`'s press, release or motion. -}
 pointerHere : { ms : Int, held : Int, select : Bool, boundaries : Array Int, pasteButton : Int } -> Window.PointerEvent -> (taken s : State) -> { state : State, commands : Array String, own : Maybe String, paste : Bool }
-pointerHere how p s =
+pointerHere how p s0 =
+    let
+        -- a grab, or a drag, whose pane has left the layout (it closed while
+        -- a button was down) let go: kept, every press over a pane or a tab
+        -- found nothing until the next attach (the code review's TA7)
+        s =
+            when s0.layout is
+                Just cell ->
+                    let
+                        ids =
+                            Array.map .id (Layout.floating cell ++ Layout.tiled cell)
+
+                        grabGone =
+                            when s0.grab is
+                                Just g ->
+                                    not (Array.member g ids)
+
+                                Nothing ->
+                                    meant Reason.NotOpen False
+
+                        dragGone =
+                            when s0.drag is
+                                Just d ->
+                                    d.pane >= 0 && not (Array.member d.pane ids)
+
+                                Nothing ->
+                                    meant Reason.NotOpen False
+                    in
+                    if grabGone && dragGone then
+                        { s0 | grab = Nothing, drag = Nothing }
+
+                    else if grabGone then
+                        { s0 | grab = Nothing }
+
+                    else if dragGone then
+                        { s0 | drag = Nothing }
+
+                    else
+                        s0
+
+                Nothing ->
+                    meant Reason.NotYet s0
+    in
     when s.layout is
         Nothing ->
             meant Reason.NotYet { state = s, commands = [], own = Nothing, paste = False }
