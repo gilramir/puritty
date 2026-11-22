@@ -71,6 +71,25 @@ clock =
                         )
           }
         , { name = "after starts over past the period", test = \_ -> Expect.equal 6 (Clock.after late 16) }
+        , { name = "a time set 3 s ahead is passed seven days later, though reached says it is to come; one still ahead is not (review MA13)"
+          , test =
+                \_ ->
+                    let
+                        now =
+                            1000
+
+                        -- set seven days ago, 3 s ahead of then
+                        stale =
+                            Clock.after now (0 - 7 * 86400000 + 3000)
+                    in
+                    Expect.equal
+                        { reached = False, passed = True, ahead = False, came = True }
+                        { reached = Clock.reached stale now
+                        , passed = Clock.passed 3000 stale now
+                        , ahead = Clock.passed 3000 (Clock.after now 1000) now
+                        , came = Clock.passed 3000 (Clock.after now -1) now
+                        }
+          }
         , { name = "a frame paced from a time seven days old is due once the time is kept recent (review MA1)"
           , test =
                 \_ ->

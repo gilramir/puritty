@@ -1916,7 +1916,9 @@ startSaving m =
                         (\made ->
                             when made is
                                 Ok w ->
-                                    Task.succeed { m | saving = { dir = Just dir, window = Just w, written = "", at = 0 } }
+                                    -- due at once: the clock's 0 is a time like any
+                                    -- other, as far as 12.4 days ahead (review MA13)
+                                    Task.succeed { m | saving = { dir = Just dir, window = Just w, written = "", at = m.turnMs } }
 
                                 Err e ->
                                     meant Reason.Refused Console.writeErr ("puritty: the tabs cannot be saved to restore them: " ++ Os.Error.toString e ++ "\n") |> Task.map (\_ -> m)
@@ -1950,7 +1952,7 @@ look, and only when they changed (docs/tabs.md TB10): the shown tab's
 directory and the others' are read each time, so a `cd` is kept too. -}
 saveIfDue : Int -> (taken m : Model) -> Task Error Model
 saveIfDue ms m =
-    if m.saving.at < 0 || not (Clock.reached m.saving.at ms) then
+    if m.saving.at < 0 || not (Clock.passed 5000 m.saving.at ms) then
         Task.succeed m
 
     else
@@ -2266,7 +2268,7 @@ noticesShown m0 =
                 -- `[notifications] desktop = false`: taken, not shown
                 Task.succeed (logLine "notice" (String.fromInt (Array.length all) ++ " not shown: desktop notifications are off") m)
 
-            else if m.noticeAt < 0 || Clock.reached m.noticeAt m.turnMs then
+            else if m.noticeAt < 0 || Clock.passed 3000 m.noticeAt m.turnMs then
                 Notify.show (Maybe.map .cp m.settingsWindow) newest
                     |> Task.map
                         (\shown ->
@@ -9710,7 +9712,7 @@ marked ms m =
         info =
             m.tab
     in
-    { m | tab = { info | activity = info.activity || m.quietUntil < 0 || Clock.reached m.quietUntil ms, bell = info.bell || m.term.bells /= info.bells, bells = m.term.bells } }
+    { m | tab = { info | activity = info.activity || m.quietUntil < 0 || Clock.passed 3000 m.quietUntil ms, bell = info.bell || m.term.bells /= info.bells, bells = m.term.bells } }
 
 
 {-| A tab not shown gone: its program killed (`kill`) or ended, and waited

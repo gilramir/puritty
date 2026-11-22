@@ -165,8 +165,9 @@ SUITES = [
         # the paged scrollback, and a typed line that makes no command, on
         # each tmux; 467 since W1: a file link shown before it is opened;
         # 473 since TB1: the wheel over a pane in copy mode, on each tmux;
-        # 474 since MAN1: a query typed on after a miss
-        474,
+        # 474 since MAN1: a query typed on after a miss; 475 since MA13:
+        # a time set ahead and read days later
+        475,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

@@ -309,7 +309,13 @@ nothing until the clock came round. `Clock.recent` keeps it: each turn of
 the loop takes a last frame older than a frame's pacing as just that old
 (an app test with a gap of seven days). The quiet time of a restored
 window, the notifications' 3 s and the first save's time (MA13) are the
-same kind of gap, and still to do.
+same kind of gap. *Fixed 2026-11-22:* `Clock.passed span due now` is
+`reached`, or a due that reads as more than `span` to come, which one set
+at most `span` ahead can only once it is half the period old; the three
+use it (3 s, 3 s and the saves' 5 s), and the first save is due at the
+turn it is asked for, not at the clock's 0, which can be 12.4 days ahead.
+The other times compared with `reached` after a wait with no bound are
+listed in the code review's MAN2.
 
 **Checked:** app tests 193 (ten for the clock: a reading from a machine up
 30 days, `after`, `since` both ways, `reached` before and after, `soonest`,

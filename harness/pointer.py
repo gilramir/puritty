@@ -169,10 +169,18 @@ def own(env, which, name):
     return p
 
 
+# No gap between the text and the window's edges: the cases place the
+# pointer in pixels from the window's corner, and their pins were made
+# before the gap (docs/renderer.md R20, 2026-11-17), which moved every cell
+# by it; what they hold is the mouse's path, not the gap (the code review's
+# PSN1).
+NO_GAP = "[window]\npadding = 0\npadding_vertical = 0\n"
+
+
 def run(xdo, env, modes, actions, before="", config=""):
     conf = Path(env["XDG_CONFIG_HOME"]) / "puritty" / "config.toml"
     conf.parent.mkdir(parents=True, exist_ok=True)
-    conf.write_text(config)
+    conf.write_text(NO_GAP + config)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "received"
         read = []
