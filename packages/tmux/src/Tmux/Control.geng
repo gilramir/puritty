@@ -260,8 +260,11 @@ inside data at r events =
         -- ST, or a line that starts with an escape: the next read says
         { reader = { r | held = Bytes.slice at n data }, events = events }
 
-    else if byteAt at data == 0x1B && byteAt (at + 1) data == 0x5C then
-        -- lines in doubt before it go to the terminal it leaves
+    else if byteAt at data == 0x1B && byteAt (at + 1) data == 0x5C && r.block == Nothing then
+        -- lines in doubt before it go to the terminal it leaves. Not inside
+        -- a reply: tmux writes `ESC \` only after `%exit`, outside one, and
+        -- a reply's line is a pane's text, a folder's name too, which a
+        -- program can begin with it (the code review's TP2)
         let
             left =
                 when r.stray is

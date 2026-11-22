@@ -274,7 +274,7 @@ covered" sections. The larger gaps:
 | [VI10](03-vt-images.md) | speed | confirmed | **fixed** Sixel painting allocates about eight arrays per data byte, and a repeat is an unbudgeted fill |
 | [VI11](03-vt-images.md) | security | plausible | With `read_files` on under Windows, a remote program can make puritty open a UNC path |
 | [VI20](03-vt-images.md) | test-gap | confirmed | **fixed** No malformed-input tests for the JPEG, GIF, TIFF and Sixel decoders |
-| [SC1](04-ssh-core.md) | bug | confirmed | A side channel closed while it is still opening is not closed, and then runs |
+| [SC1](04-ssh-core.md) | bug | confirmed | **fixed** A side channel closed while it is still opening is not closed, and then runs |
 | [SC2](04-ssh-core.md) | security | plausible | The channel window is given back on receipt, so the server is never slowed and output queues without bound |
 | [SC3](04-ssh-core.md) | security | confirmed | No warning or fallback when the server has no strict KEX and ChaCha20-Poly1305 is chosen (Terrapin), though the design promises one |
 | [SC4](04-ssh-core.md) | security | confirmed | An unencrypted key file's text, the private key itself, is held in Geng memory for the whole session |
@@ -292,7 +292,7 @@ covered" sections. The larger gaps:
 | [TP1](06-tmux-package.md) | bug | plausible | **fixed** A paste whose text (or any 1024-byte piece of it) begins with `~` is tilde-expanded by tmux 3.x |
 | [TP2](06-tmux-package.md) | security | plausible | `ESC \` at the start of a line ends control mode even inside a reply, and a reply's lines are split on newlines the pane's program can put there |
 | [TP3](06-tmux-package.md) | security | confirmed | A line that has not ended yet is copied and rescanned on every read, and nothing bounds it, a reply's lines or the lines in doubt |
-| [TP4](06-tmux-package.md) | speed | confirmed | `%output` is unescaped with two allocations per escaped byte, and each short line is decoded to a String twice before that |
+| [TP4](06-tmux-package.md) | speed | confirmed | **fixed** `%output` is unescaped with two allocations per escaped byte, and each short line is decoded to a String twice before that |
 | [TP5](06-tmux-package.md) | bug | confirmed | **fixed** `Bindings.held` matches a word anywhere in the command: arguments named `menu` or `popup` hold a binding back, and a prompt inside a quoted argument is not held |
 | [X2](07-x11-text.md) | bug | confirmed | An INCR transfer whose requestor never finishes holds its slot and its copy of the text for ever; eight of them refuse every large copy |
 | [X3](07-x11-text.md) | speed | confirmed | The fallback cache is a fixed 4,096-slot table with no full case: past that, every uncovered cluster costs a fontconfig match on every draw |
@@ -410,7 +410,7 @@ covered" sections. The larger gaps:
 | [SC25](04-ssh-core.md) | design | confirmed | `Transport.start` takes a seed of any length, an empty one included |
 | [SC26](04-ssh-core.md) | bug | confirmed | `IdentitiesOnly true` is read as `no`, and a `known_hosts` that cannot be read is read as empty |
 | [SC27](04-ssh-core.md) | design | confirmed | The glob matcher is written twice and backtracks exponentially |
-| [ST8](05-ssh-session-transfer.md) | bug | confirmed | A side channel closed while it is still opening is never closed: quick Esc in the folder chooser leaks a server session each time |
+| [ST8](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A side channel closed while it is still opening is never closed: quick Esc in the folder chooser leaks a server session each time |
 | [ST9](05-ssh-session-transfer.md) | bug | confirmed | `Sending.owns` claims every later side channel while a shell transfer runs |
 | [ST10](05-ssh-session-transfer.md) | inaccuracy | confirmed | `ConnectTimeout` is read and ignored, and nothing is read from the window while connecting |
 | [ST11](05-ssh-session-transfer.md) | security | plausible | Nothing holds the server back when the window reads slower than the network: output queues without bound |

@@ -217,6 +217,37 @@ connectionSuite =
         , ends "data that does not read" (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, short ])
         , ends "extended data that does not read" (Bytes.flatten [ Wire.writeByte 95, Wire.writeUint32 0, Wire.writeUint32 1, short ])
         , ends "a window adjustment that does not read" (Bytes.flatten [ Wire.writeByte 93, Wire.writeUint32 0, Wire.writeByte 1 ])
+        , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
+            (\_ ->
+                let
+                    side =
+                        Connection.openExec (Bytes.fromString "true") opened.connection
+
+                    -- closed, then written to, before the server answers
+                    closed =
+                        Connection.closeSide 1 side.step.connection
+
+                    written =
+                        Connection.writeSide 1 (Bytes.fromString "late") closed.connection
+
+                    confirmed =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) written.connection
+
+                    kinds =
+                        Array.map (\b -> Bytes.get 0 b |> Maybe.map UInt8.toInt |> Maybe.withDefault -1) confirmed.send
+
+                    over =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 97, Wire.writeUint32 1 ]) confirmed.connection
+                in
+                if kinds /= [ 97 ] then
+                    Just ("sent after the confirmation: " ++ String.join "," (Array.map String.fromInt kinds))
+
+                else if not (Array.member Connection.Ended (Array.map .event over.side)) then
+                    Just "the server's close did not end it"
+
+                else
+                    Nothing
+            )
         , caseTest "a side channel's bad data closes only it"
             (\_ ->
                 let

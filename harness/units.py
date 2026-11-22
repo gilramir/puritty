@@ -113,8 +113,8 @@ SUITES = [
     # a line not tmux's, once it has begun, ends control mode; 136 since
     # TK14: such a line is in doubt until tmux speaks (wall) or not; 139
     # since TP1, TP3 and TP5: ~ in a paste, a line held to 1 MiB, what is
-    # held by commands' names
-    Suite("tmux", 139, runs_of("packages/tmux/tests")),
+    # held by commands' names; 140 since TP2: ESC \\ inside a reply
+    Suite("tmux", 140, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
@@ -250,7 +250,8 @@ SUITES = [
         # its data waits for a pump; 8 since FT17: writes kept in pieces go in
         # order, each pump saying what waits
         "ssh-connection",
-        8,
+        # 9 since SC1: a side channel closed while it opens
+        9,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "connection"], cwd="packages/ssh/tests"),
             Run(

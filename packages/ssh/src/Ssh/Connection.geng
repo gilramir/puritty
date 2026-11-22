@@ -112,6 +112,9 @@ type Connection
 
 type Phase
     = Opening
+    -- opening, and closed by this side before the server confirmed it:
+    -- closed as soon as it does (the code review's SC1)
+    | Cancelled
     | Requesting (Array String)
     | Running
     | Closing
@@ -551,7 +554,12 @@ onChannel n afterChannel id ch st =
                     )
         is
             Ok opened ->
-                if ch.phase /= Opening then
+                if ch.phase == Cancelled then
+                    -- closed while it was opening: closed now, nothing asked
+                    -- of it and nothing queued sent
+                    closing id { ch | remote = opened.remote, pending = [], pendingLength = 0 } st
+
+                else if ch.phase /= Opening then
                     st
 
                 else
@@ -615,7 +623,12 @@ onChannel n afterChannel id ch st =
                     _ ->
                         "the server would not open another session"
         in
-        ended id ch (emitOn id (Refused (what ++ ": " ++ why)) st)
+        if ch.phase == Cancelled then
+            -- closed while it was opening, and never opened: over
+            ended id ch st
+
+        else
+            ended id ch (emitOn id (Refused (what ++ ": " ++ why)) st)
 
     else if n == msgWindowAdjust then
         when afterChannel |> Result.andThen (\c -> Wire.uint32Clamped c.next) is
@@ -921,7 +934,7 @@ writeOn : Int -> Bytes -> Connection -> Step
 writeOn id bytes (Connection st) =
     when channelOf id st is
         Just ch ->
-            if ch.sentEof || ch.eofPending || ch.phase == Closed || ch.phase == Closing then
+            if ch.sentEof || ch.eofPending || ch.phase == Closed || ch.phase == Closing || ch.phase == Cancelled then
                 finish st
 
             else
@@ -969,7 +982,7 @@ resize size (Connection st) =
     in
     when channelOf mainChannel st is
         Just ch ->
-            if ch.phase == Closed || ch.phase == Opening || terminal == Nothing then
+            if ch.phase == Closed || ch.phase == Opening || ch.phase == Cancelled || terminal == Nothing then
                 finish resized
 
             else
@@ -1017,7 +1030,11 @@ closeOn : Int -> Connection -> Step
 closeOn id (Connection st) =
     when channelOf id st is
         Just ch ->
-            if ch.phase == Closed || ch.phase == Closing || ch.phase == Opening then
+            if ch.phase == Opening then
+                -- remembered: closed once the server confirms it (SC1)
+                finish (setChannel id { ch | phase = Cancelled, pending = [], pendingLength = 0 } st)
+
+            else if ch.phase == Closed || ch.phase == Closing || ch.phase == Cancelled then
                 finish st
 
             else

@@ -90,6 +90,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: `closeOn` returns the state unchanged when `ch.phase == Opening`, and nothing remembers that a close was asked. The window forgets the channel at once (`choosing = Nothing`). When the server's confirmation comes the channel goes on to `Requesting`, the subsystem starts, its queued `INIT` is pumped, and the channel stays open until the session ends; `Session.sides`/`refs` keep its entry. `ShellTransfer` works around this itself (`closing` until `Started`, ShellTransfer.geng:470-471, 574-583); the chooser does not.
 - Scenario: on a slow link, drop files, the chooser opens, Esc before the server has confirmed the channel (one round trip). An `sftp-server` is left running on the host. sshd's default `MaxSessions` is 10: after a few of these, further drops and picture pastes fail with "the server would not open another session", which `Sending` reports as "SFTP is turned off on this host".
 - Fix: in `Connection`, record a close asked for while opening (a flag on the channel) and send `CHANNEL_CLOSE` as soon as the confirmation arrives (emit `Ended` on an open failure as now), so every caller gets `closeSide` right without its own state.
+- Fixed: 2026-11-22: SC1's fix, in `Ssh.Connection` (`Cancelled`).
 
 ### ST9 · `Sending.owns` claims every later side channel while a shell transfer runs
 - Where: app/src/Sending.geng:187-189; app/src/Main.geng:4775-4782 (a block of 100000 refs kept), 5050-5051 (chooser's ref), 4464-4510 (picture paste's ref), 5241-5249

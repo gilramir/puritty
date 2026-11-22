@@ -271,6 +271,17 @@ control =
                     Expect.equal [ Notice (Unknown "%frobnicate @1"), Notice SessionsChanged ]
                         (events (Bytes.fromString "\u{001B}P1000p%frobnicate @1\r\n%sessions-changed\r\n") |> Array.dropFirst 1)
           }
+        , { name = "ESC \\ at a reply's line start is the reply's, a folder's name as a pane's program made it; outside a reply it ends control mode (review TP2)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { inReply = [ Entered, Reply { number = 1, flags = 1, ok = True, lines = [ Bytes.fromString "\u{001B}\\x" ] }, Notice SessionsChanged ]
+                        , outside = [ Entered, Exited, Outside (Bytes.fromString "after") ]
+                        }
+                        { inReply = events (Bytes.fromString "\u{001B}P1000p%begin 1 1 1\n\u{001B}\\x\n%end 1 1 1\n%sessions-changed\n")
+                        , outside = merged (events (Bytes.fromString "\u{001B}P1000p\u{001B}\\after"))
+                        }
+          }
         , { name = "a line that does not end is held to 1 MiB, past which control mode is left and its bytes are the terminal's (review TP3)"
           , test =
                 \_ ->
