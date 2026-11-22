@@ -45,6 +45,14 @@ much; `writable` waits until it can take more, and the loop races it beside
 status, negative for none. `answer` and `reconnect` are the ssh session's:
 the user's answer to its question, and a new connection after one ended,
 at the window's size then.
+`hangUp` lets the remote end go when its tab does: a pseudo terminal is
+closed, which hangs it up (`SIGHUP` to what runs on it, as a terminal
+emulator's closing does), its program is sent `SIGTERM` too, and it is
+waited for beside the window, so that nothing of it is kept; an ssh
+session is hung up as `kill` does. A tab's `kill` alone sent one `SIGTERM`
+to the program started, which an interactive shell ignores, and kept the
+terminal's descriptor for the window's life (the code review's MB1;
+`docs/tabs.md` Dnene51).
 `busy` names what runs in front of the program started, as a shell's
 command line does, for asking before a tab is closed (docs/tabs.md TB4);
 an ssh session answers `Nothing`, and `Main` asks from its own state.
@@ -60,6 +68,7 @@ type alias Backend =
     , writable : Task Error {}
     , resize : Size -> Task Error {}
     , kill : Task String {}
+    , hangUp : Task String {}
     , waitForExit : Task String Int
     , answer : Session.Answer -> Task Error {}
     , reconnect : Size -> Task Error {}
@@ -85,6 +94,14 @@ pty child =
                 , writable = File.writable fd
                 , resize = \size -> Process.resize terminal size
                 , kill = Process.kill child
+                , hangUp =
+                    -- a second close fails, and is let go: the tab is
+                    -- gone either way
+                    File.close fd
+                        |> Task.onError (\_ -> Task.succeed {})
+                        |> Task.andThen (\_ -> Process.kill child)
+                        |> Task.andThen (\_ -> Light.spawn (Process.waitForExit child))
+                        |> Task.map (\_ -> {})
                 , waitForExit = Process.waitForExit child
                 , answer = \_ -> Task.succeed {}
                 , reconnect = \_ -> Task.succeed {}
@@ -125,6 +142,7 @@ ssh permissions options =
                             , writable = Task.succeed {}
                             , resize = \size -> Source.emit sources.inputs (Session.Resize size)
                             , kill = Source.emit sources.inputs Session.Hangup
+                            , hangUp = Source.emit sources.inputs Session.Hangup
                             , waitForExit = Task.succeed -1
                             , answer = \a -> Source.emit sources.inputs (Session.Answered a)
                             , reconnect =

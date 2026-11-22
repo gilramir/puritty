@@ -900,11 +900,14 @@ afterSent s =
         s
 
 
-{-| Whether a command line ends this client: `detach-client` (`detach`)
-without `-a`, which detaches the others, or `kill-server`, whose `%exit`
-follows (TM92). -}
-endsClient : String -> Bool
-endsClient line =
+{-| Whether a command line ends this client, named `client` (empty while
+it is not known): `detach-client` (`detach`) without `-a`, which detaches
+the others, and with no `-t` naming another client; or `kill-server`, whose
+`%exit` follows (TM92). A `-s` is taken as this client's session, which it
+may not be; a detach that does not end this client is let go of when its
+line fails (`replies`), and one that succeeds leaves `%exit` to come. -}
+endsClient : String -> String -> Bool
+endsClient client line =
     Syntax.commands (Syntax.tokens line)
         |> Array.any
             (\words ->
@@ -914,12 +917,77 @@ endsClient line =
                 in
                 when Array.first values is
                     Just name ->
-                        ((name == "detach-client" || name == "detach") && not (Array.any (\w -> String.startsWith "-" w && String.contains "a" w) (Array.dropFirst 1 values)))
-                            || name == "kill-server"
+                        if name == "detach-client" || name == "detach" then
+                            let
+                                flags =
+                                    detachFlags (Array.dropFirst 1 values) { all = False, target = Nothing }
+                            in
+                            not flags.all
+                                && (when flags.target is
+                                        Just target ->
+                                            client == "" || target == client
+
+                                        Nothing ->
+                                            -- no client named: this one
+                                            meant Reason.NotSet True
+                                   )
+
+                        else
+                            name == "kill-server"
 
                     Nothing ->
                         meant Reason.NoMore False
             )
+
+
+{-| `detach-client`'s flags as tmux's getopt reads them (`-aP`, `-E
+command`, `-s session`, `-t client`): letters run together, and a flag
+that takes a value takes the rest of its word or else the next word.
+(review TA2) -}
+detachFlags : Array String -> { all : Bool, target : Maybe String } -> { all : Bool, target : Maybe String }
+detachFlags words acc =
+    when Array.popFirst words is
+        Just { first = word, rest = rest } ->
+            if word == "--" || not (String.startsWith "-" word) || word == "-" then
+                acc
+
+            else
+                detachLetters (String.dropFirst 1 word) rest acc
+
+        Nothing ->
+            meant Reason.NoMore acc
+
+
+detachLetters : String -> Array String -> { all : Bool, target : Maybe String } -> { all : Bool, target : Maybe String }
+detachLetters letters rest acc =
+    when String.popFirst letters is
+        Just { first = c, rest = more } ->
+            if c == 'a' then
+                detachLetters more rest { acc | all = True }
+
+            else if c == 't' || c == 's' || c == 'E' then
+                let
+                    value =
+                        if more /= "" then
+                            { value = more, after = rest }
+
+                        else
+                            { value = Maybe.withDefault (meant Reason.NoMore "") (Array.first rest), after = Array.dropFirst 1 rest }
+
+                    taken =
+                        if c == 't' then
+                            { acc | target = Just value.value }
+
+                        else
+                            acc
+                in
+                detachFlags value.after taken
+
+            else
+                detachLetters more rest acc
+
+        Nothing ->
+            meant Reason.NoMore detachFlags rest acc
 
 
 title : State -> String
@@ -2634,6 +2702,17 @@ ours r acc =
         -- it (TK10): shown as the command's own
         replied ForRan r.ok r.lines acc
 
+    else if expect == ForRan && Array.map Bytes.toStringLossy r.lines == [ fenceWord ] && Maybe.map .expect (Array.get 1 acc.state.expecting) == Just ForFence then
+        -- the fence's reply where a typed line's was waited for: the line
+        -- made no command (an assignment, a comment, a `%` line), and
+        -- tmux sent no block for it; it is answered with nothing, and the
+        -- fence then takes its own (review TA1)
+        let
+            st =
+                acc.state
+        in
+        ours r (replied ForRan True [] { acc | state = { st | expecting = Array.dropFirst 1 st.expecting } })
+
     else
         let
             st =
@@ -2655,8 +2734,20 @@ ours r acc =
                 else
                     Array.takeFirst (Array.findFirst (\a -> a.line /= line) rest |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore (Array.length rest))) rest
 
+            after =
+                Array.dropFirst (Array.length dropped) rest
+
+            -- the line that would detach this client failed: nothing
+            -- detached it, and what is sent goes again (review TA2)
+            ending =
+                if not r.ok && st.ending >= 1 && (Maybe.map (\h -> endsClient st.clientName h.command) head |> Maybe.withDefault (meant Reason.FromOutside False)) then
+                    0
+
+                else
+                    st.ending
+
             popped =
-                { acc | state = { st | expecting = Array.dropFirst (Array.length dropped) rest } }
+                { acc | state = { st | expecting = after, ending = ending } }
         in
         Array.foldl (\a acc2 -> replied a.expect False [] acc2) (replied expect r.ok r.lines popped) dropped
 
@@ -5556,7 +5647,7 @@ keyByTable k bytes ms s =
                         , modes = modes
                     }
         in
-        if endsClient way.ran then
+        if endsClient s.clientName way.ran then
             -- the key detaches this client: its own commands go, nothing
             -- after them (TM92)
             let
@@ -7189,7 +7280,7 @@ closePrompt run a s =
                     if runsHere line then
                         runLine { pane = acc.state.active, mouse = Nothing } line acc.state
 
-                    else if endsClient line then
+                    else if endsClient acc.state.clientName line then
                         -- a typed line that detaches this client: nothing
                         -- after it goes (TM92)
                         let
@@ -7198,8 +7289,14 @@ closePrompt run a s =
                         in
                         sendAsking [ { command = line, expect = ForRan } ] { st | ending = 1 }
 
-                    else
+                    else if runsCommands line then
                         sendAsking [ { command = line, expect = ForRan } ] acc.state
+
+                    else
+                        -- a fence after every line typed, so that one tmux
+                        -- makes no command of, and answers with no block,
+                        -- does not leave the replies one behind (review TA1)
+                        sendAsking [ { command = line, expect = ForRan }, { command = Command.display fenceWord, expect = ForFence } ] acc.state
             in
             { state = r.state, commands = acc.commands ++ r.commands }
         )
@@ -10178,7 +10275,7 @@ plainLines ctx fixed s0 =
     let
         -- a line that detaches this client sends nothing after it (TM92)
         s =
-            if endsClient fixed then
+            if endsClient s0.clientName fixed then
                 { s0 | ending = 1 }
 
             else

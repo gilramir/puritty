@@ -71,6 +71,24 @@ clock =
                         )
           }
         , { name = "after starts over past the period", test = \_ -> Expect.equal 6 (Clock.after late 16) }
+        , { name = "a frame paced from a time seven days old is due once the time is kept recent (review MA1)"
+          , test =
+                \_ ->
+                    let
+                        now =
+                            1000
+
+                        -- seven days before now, on the clock
+                        old =
+                            Clock.after now (0 - 7 * 86400000)
+                    in
+                    Expect.equal
+                        { raw = False, kept = True, recentKept = Clock.after now -5 }
+                        { raw = Clock.reached (Clock.after old 16) now
+                        , kept = Clock.reached (Clock.after (Clock.recent 16 old now) 16) now
+                        , recentKept = Clock.recent 16 (Clock.after now -5) now
+                        }
+          }
         , { name = "since across the start", test = \_ -> Expect.equal 16 (Clock.since late 6) }
         , { name = "since backwards across the start", test = \_ -> Expect.equal -16 (Clock.since 6 late) }
         , { name = "a frame due past the start is not reached before it", test = \_ -> Expect.equal False (Clock.reached (Clock.after late 16) (late + 5)) }
@@ -293,7 +311,7 @@ remembered =
           , test =
                 \_ ->
                     Expect.equal [ True, True, True, True, True, False, False, False ]
-                        (Array.map Links.openable
+                        (Array.map (Links.openable { remote = False })
                             [ "https://example.com/a?b=c"
                             , "HTTP://example.com"
                             , "mailto:me@example.com"
@@ -304,6 +322,43 @@ remembered =
                             , "vscode://open?file=/x"
                             ]
                         )
+          }
+        , { name = "a file link is shown first and opened by a second Ctrl+click on it within the note's time; a web link at once (review W1)"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "file:///home/me/notes.txt"
+
+                        asked =
+                            Just { uri = file, until = 7000 }
+                    in
+                    Expect.equal
+                        { web = Links.Open, first = Links.ShowFirst, again = Links.Open, late = Links.ShowFirst, another = Links.ShowFirst }
+                        { web = Links.click { now = 1000, asked = Nothing } "https://example.com"
+                        , first = Links.click { now = 1000, asked = Nothing } file
+                        , again = Links.click { now = 3000, asked = asked } file
+                        , late = Links.click { now = 7000, asked = asked } file
+                        , another = Links.click { now = 3000, asked = asked } "file:///home/me/other.txt"
+                        }
+          }
+        , { name = "a file link to another machine's share, in any spelling, and any file link from a host's tab, is not opened (review MA2, W1)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { local = [ False, False, False, False, False, False, True ], remote = [ True, False ] }
+                        { local =
+                            Array.map (Links.openable { remote = False })
+                                [ "file:////attacker/share/tool.exe"
+                                , "file://localhost//attacker/share"
+                                , "file:///%2F%2Fattacker/share"
+                                , "file:///%5c%5cattacker/share"
+                                , "file:///\\\\attacker\\share"
+                                , "file:///C:\\Users\\me\\x.txt"
+                                , "file:///C:/Users/me/notes.txt"
+                                ]
+                        , remote = Array.map (Links.openable { remote = True }) [ "https://example.com", "file:///home/me/notes.txt" ]
+                        }
           }
         , { name = "Kitty's pictures from files are not read by default, and are with [images] read_files = true (KG9, Dnene64)"
           , test =
@@ -1328,6 +1383,15 @@ window =
         , { name = "a font is written when it is chosen, not as it is typed"
           , test = \_ -> Expect.equal [ "font.family = Fira Mono" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira" ++ [ k.down, k.down, k.enter ])).said
           }
+        , { name = "a font's name typed with fonts offered and none chosen is taken as typed, not the list's last (review PS1)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { typed = [ "font.family = fira" ], untouched = [] }
+                        { typed = (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira" ++ [ k.enter ])).said
+                        , untouched = (after [ k.enter, k.enter ]).said
+                        }
+          }
         , { name = "a font's name typed with nothing chosen is taken as typed"
           , test = \_ -> Expect.equal [ "font.family = Some Font" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "Some Font" ++ [ k.enter ])).said
           }
@@ -1504,6 +1568,16 @@ window =
           }
         , { name = "quick connect connects to what is typed"
           , test = \_ -> Expect.equal [ "connect to me@h.example.com:22" ] (onHostsPage False ([ k.enter ] ++ typeIn "me@h.example.com:22" ++ [ k.enter ])).said
+          }
+        , { name = "a click away from quick connect or New host lets what is typed go, and connects to or makes nothing (review PS2)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { quick = [], newHost = [], search = [] }
+                        { quick = (onHostsPage False ([ k.enter ] ++ typeIn "me@bui:22" ++ [ click (SettingsWindow.OnRow 3) 1 ])).said
+                        , newHost = (onHostsPage False ([ k.down, k.enter ] ++ typeIn "la" ++ [ click (SettingsWindow.OnRow 3) 1 ])).said
+                        , search = (onHostsPage False ([ k.enter ] ++ typeIn "me@bui:22" ++ [ click SettingsWindow.OnSearchField 1 ])).said
+                        }
           }
         , { name = "quick connect refuses what is not user@host:port"
           , test =
@@ -1973,5 +2047,76 @@ searching =
           }
         , { name = "an empty query finds nothing"
           , test = \_ -> Expect.equal [] (found "" "abc")
+          }
+        , { name = "a query is found in the paged scrollback, older and newer, and its row's matches read there (review MA3)"
+          , test =
+                \_ ->
+                    let
+                        -- 3,000 numbered rows: the oldest in the pages, read a
+                        -- block at a time
+                        paged {} =
+                            Vt.new { cols = 20, rows = 4, scrollbackBytes = Vt.scrollbackBytesFor { cols = 20, rows = 5000 }, pageRows = Vt.defaultPageRows, checksums = False, cellWidth = 9, cellHeight = 17 }
+                                |> (\t0 ->
+                                        Array.foldl
+                                            (\i acc ->
+                                                Vt.feed
+                                                    (Bytes.fromString
+                                                        ((if i == 1 then
+                                                            ""
+
+                                                          else
+                                                            "\r\n"
+                                                         )
+                                                            ++ "row-"
+                                                            ++ String.padLeft 5 '0' (String.fromInt i)
+                                                        )
+                                                    )
+                                                    acc
+                                            )
+                                            t0
+                                            (Array.range 1 3000)
+                                   )
+
+                        -- what a search from the newest row (older) or the
+                        -- oldest (newer) finds, read back
+                        textAt query older =
+                            let
+                                t =
+                                    paged {}
+
+                                from =
+                                    if older then
+                                        Vt.rowsPushed t + 3
+
+                                    else
+                                        Vt.rowsPushed t - Vt.scrollbackRows t
+
+                                match =
+                                    Search.find query older from t
+                            in
+                            when match is
+                                Just m ->
+                                    Vt.selectionText m.start m.end t
+
+                                Nothing ->
+                                    "none"
+
+                        marked {} =
+                            let
+                                t =
+                                    paged {}
+
+                                oldest =
+                                    Vt.rowsPushed t - Vt.scrollbackRows t
+                            in
+                            Array.length (Search.matchesIn "row-00007" oldest (oldest + 20) t)
+                    in
+                    Expect.equal
+                        { older = "row-00007", newer = "row-02990", none = "none", marked = 1 }
+                        { older = textAt "ROW-00007" True
+                        , newer = textAt "row-02990" False
+                        , none = textAt "nowhere" True
+                        , marked = marked {}
+                        }
           }
         ]

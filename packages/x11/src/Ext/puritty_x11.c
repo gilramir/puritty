@@ -1592,8 +1592,13 @@ static void selection_request(xcb_selection_request_event_t *q) {
             notify_requestor(q, XCB_ATOM_NONE); /* eight transfers at once already */
             free(data);
         } else {
-            uint32_t mask = XCB_EVENT_MASK_PROPERTY_CHANGE;
-            xcb_change_window_attributes(conn, q->requestor, XCB_CW_EVENT_MASK, &mask);
+            /* another client's window is watched for its deletes; this
+             * window, pasting its own selection, already is, and its own
+             * mask must not be replaced (code review X1) */
+            if (q->requestor != window) {
+                uint32_t mask = XCB_EVENT_MASK_PROPERTY_CHANGE;
+                xcb_change_window_attributes(conn, q->requestor, XCB_CW_EVENT_MASK, &mask);
+            }
             uint32_t hint = (uint32_t) len;
             xcb_change_property(conn, XCB_PROP_MODE_REPLACE, q->requestor, prop, a_incr, 32, 1, &hint);
             notify_requestor(q, prop);
@@ -1638,7 +1643,9 @@ static void transfer_step(xcb_property_notify_event_t *p) {
             if (pst.incr && !pst.waiting) paste_read();
             else pst.pending = 1;
         }
-        return;
+        /* no return: a delete on this window may be its own paste taking
+         * a piece of its own selection, and the owner's side below writes
+         * the next (code review X1) */
     }
     if (p->state != XCB_PROPERTY_DELETE) return;
     for (int i = 0; i < 8; i++) {
@@ -1647,7 +1654,7 @@ static void transfer_step(xcb_property_notify_event_t *p) {
         xcb_change_property(conn, XCB_PROP_MODE_REPLACE, p->window, p->atom, xfer[i].type, 8, (uint32_t) n, xfer[i].data + xfer[i].at);
         if (n == 0) {
             uint32_t none = 0;
-            xcb_change_window_attributes(conn, p->window, XCB_CW_EVENT_MASK, &none);
+            if (p->window != window) xcb_change_window_attributes(conn, p->window, XCB_CW_EVENT_MASK, &none);
             free(xfer[i].data);
             xfer[i].live = 0;
         }

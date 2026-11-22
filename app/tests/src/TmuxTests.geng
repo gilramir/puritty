@@ -852,6 +852,65 @@ onVersion version =
                         , others = endedBy (line "detach-client -a")
                         }
           }
+        , { name = "a typed line tmux makes no command of leaves the replies in step: no other reply is taken for its (review TA1)"
+          , test =
+                \_ ->
+                    let
+                        line text run =
+                            run |> prefixThen ":" |> typeText text |> named enterKey |> settle
+
+                        -- whether a reply was taken as the line's output and
+                        -- shown in a view, as the window's question's was
+                        viewOpen text =
+                            TmuxMode.diagnose (line text (attached (start version))).tmux
+                                |> Array.any (String.contains "a view")
+                    in
+                    Expect.equal
+                        { assignment = False, comment = False, hidden = False }
+                        { assignment = viewOpen "FOO=bar"
+                        , comment = viewOpen "# a note"
+                        , hidden = viewOpen "%hidden X=1"
+                        }
+          }
+        , { name = "a detach naming another client does not end this one, and one whose line fails is let go of (review TA2)"
+          , test =
+                \_ ->
+                    let
+                        endedBy steps =
+                            TmuxMode.isEnding (TmuxMode.afterSent (steps (attached (start version))).tmux)
+
+                        line text run =
+                            run |> prefixThen ":" |> typeText text |> named enterKey
+
+                        -- what is held answered as the fake tmux answers,
+                        -- but a detach refused, as tmux refuses one naming
+                        -- no client
+                        refused run =
+                            when Array.popFirst run.held is
+                                Just { first, rest } ->
+                                    if String.startsWith "detach" first then
+                                        refused (deliver (Bytes.fromString "%begin 1700000000 900 1\u{000D}\n%error 1700000000 900 1\u{000D}\n") { run | held = rest })
+
+                                    else
+                                        let
+                                            answered =
+                                                FakeTmux.answer first run.world
+                                        in
+                                        refused (deliver answered.bytes { run | world = answered.world, held = rest })
+
+                                Nothing ->
+                                    run
+                    in
+                    -- the fake tmux's client is `client-0`
+                    Expect.equal
+                        { another = False, joined = False, own = True, session = True, failed = False }
+                        { another = endedBy (line "detach-client -t client-9")
+                        , joined = endedBy (line "detach-client -Pt client-9")
+                        , own = endedBy (line "detach-client -t client-0")
+                        , session = endedBy (line "detach-client -s 0")
+                        , failed = endedBy (\r -> r |> line "detach-client -t client-0" |> refused)
+                        }
+          }
         , { name = "Tab at the prompt completes what each tmux completes, 3.8 listing what it cannot choose between (TM96)"
           , test =
                 \_ ->

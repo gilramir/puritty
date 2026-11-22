@@ -195,7 +195,12 @@ answer line w0 =
             else
                 Array.mapAndKeepJust (refused heard) commands |> Array.first
     in
-    if String.trim line == "" then
+    if not r.blankFails && makesNoCommand line then
+        -- from 3.0 a comment, an assignment or a `%hidden` line makes no
+        -- command, and no block comes (measured on 3.8, code review TA1)
+        { world = heard, bytes = Bytes.empty, told = [] }
+
+    else if String.trim line == "" then
         -- 2.x reads a blank line as a command and refuses it; 3.0 skips it
         if r.blankFails then
             { world = { heard | number = heard.number + 1 }, bytes = Bytes.fromString (block heard.number 1 False [ "parse error: (null)" ]), told = [ { command = "", flags = 1, ok = False } ] }
@@ -581,6 +586,25 @@ unclosed line =
         { quote = ' ', escaped = False }
         line
         |> (\st -> st.quote /= ' ')
+
+
+{-| A line tmux's parser (3.0 on) makes no command of: a comment, an
+assignment `NAME=value`, or a `%hidden` one. -}
+makesNoCommand : String -> Bool
+makesNoCommand line =
+    let
+        t =
+            String.trimLeft line
+
+        first =
+            String.split " " t |> Array.first |> Maybe.withDefault ""
+    in
+    String.startsWith "#" t
+        || String.startsWith "%hidden " t
+        || (String.contains "=" first
+                && not (String.startsWith "=" first)
+                && String.all (\c -> Char.isAlphaNum c || c == '_') (String.takeFirst (Maybe.withDefault 0 (String.firstIndexOf "=" first)) first)
+           )
 
 
 block : Int -> Int -> Bool -> Array String -> String

@@ -108,6 +108,9 @@ CASES = [
     ("paste-latin1", "", "own-clipboard:latin1 key:ctrl+shift+v"),
     ("paste-large", "\\e[?2004h", "own-clipboard:large key:ctrl+shift+v sleep:2"),
     ("paste-own-selection", "", "move:4,8 down:1 move:40,8 up:1 click:2", TEXT),
+    # its own selection over an INCR piece pasted back, then a key: the
+    # paste stalled and the window took no more keys (code review X1)
+    ("paste-own-large", "", "key:shift+Home sleep:0.5 move:0,0 down:1 key:shift+End sleep:0.5 move:715,400 up:1 sleep:0.5 click:2 sleep:2 key:x sleep:0.5", LARGE),
     ("paste-middle-reported", SGR, "own-primary:korean move:50,30 click:2"),
     ("paste-shift-middle-reported", SGR, "own-primary:korean move:50,30 key-down:shift click:2 key-up:shift"),
     ("paste-right-button", "", "own-primary:korean move:50,30 click:2 click:3", "", '[mouse]\npaste_button = "right"\n'),

@@ -1,4 +1,4 @@
-module Clock exposing (after, earlier, fromSystem, latest, period, reached, since, soonest)
+module Clock exposing (after, earlier, fromSystem, latest, period, reached, recent, since, soonest)
 
 {-| The window's clock (`docs/rhel8-etx.md` RE11): milliseconds that start
 over every `period`, about 12.4 days, and are never negative, so that -1
@@ -44,6 +44,25 @@ since from to =
 after : Int -> Int -> Int
 after t ms =
     modBy period (t + ms)
+
+
+{-| `t` while it is no more than `limit` before `now`; any other time is
+taken as `limit` before `now`. For a time kept across a wait with no bound,
+as the last frame's is while a window draws nothing: once it is half the
+period old, `since` answers it as to come, and a frame paced from it would
+wait up to 6.2 days (the code review's MA1). Moved up so, it stays as long
+ago as anything compared with it needs. -}
+recent : Int -> Int -> Int -> Int
+recent limit t now =
+    let
+        d =
+            since t now
+    in
+    if d >= 0 && d <= limit then
+        t
+
+    else
+        after now (0 - limit)
 
 
 {-| Whether the time `due` has come at `now`. -}

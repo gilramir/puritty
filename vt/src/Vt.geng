@@ -32,6 +32,7 @@ module Vt exposing
     , recutHolds
     , resize
     , restarted
+    , rowTexts
     , rowsHash
     , rowsPushed
     , scrollbackBytesFor
@@ -828,6 +829,42 @@ selectionText p q t =
                     t.cols - 1
         in
         textOfRows read.rows read.clusters lo hi t.cols 0 ""
+
+
+{-| The text of each row from absolute row `first` (a `Point`'s row) on,
+`count` of them, each as `selectionText` reads the whole row alone: its
+blanks at the end dropped, a cluster read whole. Rows outside the
+scrollback and the screen are left out, so fewer may be answered, and
+`from` is the absolute row of the first answered. Each page
+of the scrollback the rows lie in is read once for them all, where reading
+them a row at a time read the row's whole page for each (the code review's
+VP2, VS1, MA3: scrollback search). -}
+rowTexts : Int -> Int -> Term -> { from : Int, texts : Array String }
+rowTexts firstRow count t =
+    let
+        pushed =
+            rowsPushed t
+
+        -- below the screen's end, and at most 2^30 rows, so the sum
+        -- cannot wrap
+        start =
+            min (fromAbsolute firstRow pushed) t.rows
+
+        first =
+            max start (0 - scrollbackRows t)
+
+        last =
+            min (start + clamp 0 1073741824 count - 1) (t.rows - 1)
+    in
+    if last < first then
+        { from = firstRow, texts = [] }
+
+    else
+        let
+            read =
+                rowsBetween first (last - first + 1) t
+        in
+        { from = first + pushed, texts = Array.map (\row -> String.trimRight (cellsText row.cells read.clusters 0 (t.cols - 1) "")) read.rows }
 
 
 textOfRows : Array Row -> Clusters -> Int -> Int -> Int -> Int -> String -> String

@@ -310,6 +310,29 @@ the Windows build compiles.
 their links themselves; Ghostty underlines one under the pointer), and
 the pointer does not change over one.
 
+*Changed 2026-11-21* (the code review's MA2 and W1): `file:////host/share`
+begins `file:///` and was opened as this machine's file; on Windows
+`ShellExecuteW` opens such a path from the host. A file link whose path
+begins with a second `/` or a `\`, spelled plainly or as `%2F` or `%5C`,
+or has a `\` anywhere, is now refused, and so is every file link from a
+host's tab (puritty's ssh, or OpenSSH started from the settings), whose
+program names its host's files. A local shell's own `ssh` cannot be told
+from a local program, so its file links are still opened as this
+machine's.
+
+A file link that is opened is handed to the desktop's "open", which on
+Windows runs an executable, and a link's text need not say where it goes.
+So (Gilbert's choice of four, W1) a file link is shown first: the first
+Ctrl+click puts `Ctrl+click again to open URI` in the note bar, the URI as
+the program sent it, and a second Ctrl+click on the same link within the
+note's 6 s opens it (`Links.click`). Web and mail links still open at the
+first, since a browser or mail program shows where it goes. The log says
+only that a link was shown, by its length, as it says one was opened.
+**Checked** on Xvfb with an `xdg-open` that records what it is given and a
+program printing an OSC 8 link to `file:///tmp/x.txt`: the build before
+opened it at each Ctrl+click; this one opened nothing at the first and the
+file at the second.
+
 ## CL10 · Measured with Gilbert's own Claude Code (2026-11-18)
 
 Gilbert let these run with his login (his `~/.claude`), in puritty on

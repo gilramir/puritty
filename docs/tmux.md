@@ -4150,3 +4150,45 @@ after; side by side on real 3.8, 3.2a and 2.7
 `aX--b c`, `a bX--`, `new-window -n `, `ab Xc` on 3.8; `a--bX c`,
 `a Xb--`, `new-window -n `, `ab Xc` on 3.2a; and on 2.7 `my_` kept by
 C-w and Ctrl+Left doing nothing.
+
+## TM105 · Which detach ends this client (2026-11-21)
+
+The code review's TA2: TM92's `endsClient` took any `detach-client`
+without `-a` for this client leaving, so choose-client's Enter on another
+client (`detach-client -t 'NAME'`), or `:detach-client -t /dev/pts/N`,
+detached that one and left this one sending nothing, every key and resize
+dropped until tmux was detached from somewhere else; and a detach tmux
+refused left it so for good.
+
+**Changed.** The flags are read as tmux's getopt reads them (letters run
+together, `-t`, `-s` and `-E` taking the rest of the word or the next
+word): a `-t` naming another client than this one (`#{client_name}`, asked
+on attach) does not end it. A `-s` is still taken as this client's
+session, since puritty does not hold the session's name to compare. And
+when the reply to the line that would detach this client is `%error`,
+nothing detached it: the state leaves `ending`, and commands go again.
+
+**Checked:** an app test on each tmux: `-t` another client, `-Pt` another
+client run together, `-t` this one, `-s`, and a refused detach.
+
+## TM106 · A typed line tmux makes no command of (2026-11-21)
+
+The code review's TA1. A line typed at the prompt was sent waiting for one
+reply. tmux's parser (3.0 on) makes no command of a comment, an assignment
+or a `%hidden` line, and sends no block for it; measured on 3.8 in control
+mode: `FOO=bar`, `# a comment` and `%hidden X=1` each had no `%begin`, the
+`display-message -p` after each its own. The line's wait then took the
+reply to the window's question after it (shown in a view as the line's
+output), and every later reply went to the question before its own, for
+the rest of the session.
+
+**Changed.** Every typed line is followed by the fence TK10 puts after a
+line that runs commands (`display-message -p puritty-fence`), and the
+fence's reply where the typed line's was waited for answers the line with
+nothing. This does not depend on puritty's tokens agreeing with tmux's
+parser. The fake tmux answers those three kinds of line with nothing from
+3.0, as the blank line; what 2.x does with them was not run here.
+
+**Checked:** an app test on each tmux (3.0 on: no view opened by a reply
+not the line's), which on the build before opened one on each.
+

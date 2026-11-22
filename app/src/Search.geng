@@ -45,6 +45,14 @@ find query older from t =
         findFrom q older (clamp oldest newest from) oldest newest t
 
 
+{-| The rows read at a time: a page's worth, so that each page of the
+scrollback is read once for its rows, not once a row (the code review's
+MA3). -}
+block : Int
+block =
+    1024
+
+
 findFrom : String -> Bool -> Int -> Int -> Int -> Vt.Term -> Maybe { start : Vt.Point, end : Vt.Point }
 findFrom q older row oldest newest t =
     if row < oldest || row > newest then
@@ -52,29 +60,66 @@ findFrom q older row oldest newest t =
 
     else
         let
-            text =
-                Vt.selectionText { row = row, col = 0 } { row = row, col = t.cols - 1 } t
-        in
-        when String.firstIndexOf q (String.toLower text) is
-            Just i ->
-                let
-                    before =
-                        cells (String.takeFirst i text)
+            lo =
+                if older then
+                    max oldest (row - block + 1)
 
-                    within =
-                        cells (String.slice i (i + String.count q) text)
+                else
+                    row
+
+            hi =
+                if older then
+                    row
+
+                else
+                    min newest (row + block - 1)
+
+            read =
+                Vt.rowTexts lo (hi - lo + 1) t
+
+            n =
+                Array.length read.texts
+
+            -- the block's rows in the order they are searched
+            order =
+                if older then
+                    Array.range 0 (n - 1) |> Array.reverse
+
+                else
+                    Array.range 0 (n - 1)
+        in
+        when Array.findFirst (\k -> String.contains q (String.toLower (Maybe.withDefault "" (Array.get k read.texts)))) order is
+            Just found ->
+                let
+                    text =
+                        Maybe.withDefault "" (Array.get found.value read.texts)
                 in
-                Just { start = { row = row, col = before }, end = { row = row, col = before + max 1 within - 1 } }
+                when String.firstIndexOf q (String.toLower text) is
+                    Just i ->
+                        let
+                            before =
+                                cells (String.takeFirst i text)
+
+                            within =
+                                cells (String.slice i (i + String.count q) text)
+
+                            at =
+                                read.from + found.value
+                        in
+                        Just { start = { row = at, col = before }, end = { row = at, col = before + max 1 within - 1 } }
+
+                    Nothing ->
+                        meant Reason.NoMore Nothing
 
             Nothing ->
                 meant Reason.NoMore
                     findFrom q
                         older
                         (if older then
-                            row - 1
+                            lo - 1
 
                          else
-                            row + 1
+                            hi + 1
                         )
                         oldest
                         newest
@@ -135,15 +180,18 @@ matchesIn query first last t =
             n =
                 String.count query
         in
-        Array.mapAndFlatten (\row -> rowMatches query caseless n row t) (Array.range first last)
+        let
+            -- the rows' text read at once, each page once (review MA3)
+            read =
+                Vt.rowTexts first (last - first + 1) t
+        in
+        Array.indexedMap (\k text -> rowMatches query caseless n (read.from + k) text) read.texts
+            |> Array.flatten
 
 
-rowMatches : String -> Bool -> Int -> Int -> Vt.Term -> Array { start : Vt.Point, end : Vt.Point }
-rowMatches query caseless n row t =
+rowMatches : String -> Bool -> Int -> Int -> String -> Array { start : Vt.Point, end : Vt.Point }
+rowMatches query caseless n row text =
     let
-        text =
-            Vt.selectionText { row = row, col = 0 } { row = row, col = t.cols - 1 } t
-
         hay =
             if caseless then
                 String.toLower text

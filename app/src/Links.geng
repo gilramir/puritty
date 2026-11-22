@@ -1,16 +1,20 @@
-module Links exposing (openable)
+module Links exposing (Click(..), click, openable)
 
 {-| Which OSC 8 links puritty opens when one is Ctrl+clicked (puritty
 `docs/claude-code.md` CL9): a web page (`http`, `https`) or a mail
 (`mailto`), and a file only on this machine (`file://` with no host, or
-`localhost`), since a program on another host names its own files. Any
+`localhost`, and not from a host's tab), since a program on another host
+names its own files. Any
 other scheme (`javascript:`, a program's own handler) is not opened: a
 link is a program's text, and opening runs what the desktop maps it to.
 -}
 
+import Clock
+import Reason
 
-openable : String -> Bool
-openable uri =
+
+openable : { remote : Bool } -> String -> Bool
+openable tab uri =
     let
         lower =
             String.toLower uri
@@ -18,5 +22,71 @@ openable uri =
     String.startsWith "http://" lower
         || String.startsWith "https://" lower
         || String.startsWith "mailto:" lower
-        || String.startsWith "file:///" lower
-        || String.startsWith "file://localhost/" lower
+        || (not tab.remote && localFile lower)
+
+
+{-| A `file:` link to a path on this machine: `file:///` or
+`file://localhost/` and a path that is not another machine's. The code
+review's MA2 and W1: `file:////host/share/x` begins `file:///`, and
+Windows opens it from the host, which may be sent the user's credentials; so a path
+that begins with a second `/` or a `\`, in any spelling (`%2F`, `%5C`),
+or that has a `\` anywhere, is not opened. A link from a host's tab is not
+opened either: a program on another host names its own files, not this
+machine's. -}
+localFile : String -> Bool
+localFile lower =
+    let
+        path =
+            if String.startsWith "file:///" lower then
+                Just (String.dropFirst 7 lower)
+
+            else if String.startsWith "file://localhost/" lower then
+                Just (String.dropFirst 16 lower)
+
+            else
+                Nothing
+    in
+    when path is
+        Just p ->
+            let
+                -- the path's separators as the opener will read them
+                plain =
+                    p
+                        |> String.replace "%2f" "/"
+                        |> String.replace "%5c" "\\"
+            in
+            not (String.startsWith "//" plain)
+                && not (String.contains "\\" plain)
+
+        Nothing ->
+            -- another scheme, which only the web's and mail's are
+            meant Reason.NotKnown False
+
+
+{-| What a Ctrl+click on an openable link does: a web or mail link is
+opened, as its browser or mail program shows where it goes; a file link is
+first shown (`ShowFirst`), its URI as the program sent it, and opened by a
+second Ctrl+click on the same link before `asked.until` (the code review's
+W1: a link's text is the program's, and the desktop's "open" of a file runs
+what it is, an executable too). -}
+type Click
+    = Open
+    | ShowFirst
+
+
+click : { now : Int, asked : Maybe { uri : String, until : Int } } -> String -> Click
+click how uri =
+    if not (String.startsWith "file:" (String.toLower uri)) then
+        Open
+
+    else
+        when how.asked is
+            Just a ->
+                if a.uri == uri && not (Clock.reached a.until how.now) then
+                    Open
+
+                else
+                    ShowFirst
+
+            Nothing ->
+                meant Reason.NotSet ShowFirst

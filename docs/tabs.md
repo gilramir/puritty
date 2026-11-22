@@ -549,6 +549,19 @@ name and color, and, for a local tab, the directory its shell was in,
 read before the kill. Reopening starts a new program there (a host's tab:
 a new session to the host) under the old screen.
 
+*Made so, 2026-11-21* (the code review's MB1): "ends the program at once"
+had been one `SIGTERM` to the program started, which an interactive shell
+ignores and which never reached the job in front of it, and the
+terminal's descriptor was kept for the window's life, so no hangup came
+either. A tab that goes, closed or ended, now has its terminal closed
+(`Backend.hangUp`): the hangup goes to what runs on it, as a terminal
+emulator's closing sends it, then `SIGTERM` to the program, and the
+program is waited for beside the window. **Checked** on Xvfb, the shell an
+interactive bash (`bash --norc -i`): a second tab opened and closed by
+Ctrl+Shift+W left two shells and two pseudo terminals open in the build
+before, one and one after; a tab ended by `exit` left two pseudo
+terminals before, one after.
+
 **Kept: the last five, for ten minutes each.** A tab's scrollback is up
 to `[scrollback] lines` of it, so the kept tabs are bounded in number
 (`closedSlots`, the oldest giving way to a sixth) and in time

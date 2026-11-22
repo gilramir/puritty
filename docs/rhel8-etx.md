@@ -302,6 +302,15 @@ the clock just before it starts over.
 6.2 days would carry its time of day forward wrongly; a tmux clock is
 carried at least every minute while it shows.
 
+*Found 2026-11-21* (the code review's MA1): the last frame's time is a gap
+that is not seconds. It is written only when a frame is drawn, so a window
+that drew nothing for 6.2 to 12.4 days read it as to come, and drew
+nothing until the clock came round. `Clock.recent` keeps it: each turn of
+the loop takes a last frame older than a frame's pacing as just that old
+(an app test with a gap of seven days). The quiet time of a restored
+window, the notifications' 3 s and the first save's time (MA13) are the
+same kind of gap, and still to do.
+
 **Checked:** app tests 193 (ten for the clock: a reading from a machine up
 30 days, `after`, `since` both ways, `reached` before and after, `soonest`,
 `latest`, and a log line's time across the start); under Xvfb with the

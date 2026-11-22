@@ -156,8 +156,14 @@ SUITES = [
         # nine; 446 since FT33: the folder picker's keys, its memory's
         # file and a tmux pane's drop label, nine; 448 since FT33's
         # TOML state files: the folders' file written, the recent
-        # connections' read back, the old recent.txt imported
-        449,
+        # connections' read back, the old recent.txt imported; 457 since
+        # the code review's PS1, MA1 and TA2: no font picked, a stale
+        # frame time, and which detach ends this client (on each tmux);
+        # 459 since MA2 and PS2: file links to a share or from a host, and
+        # a click away from quick connect; 466 since MA3 and TA1: search in
+        # the paged scrollback, and a typed line that makes no command, on
+        # each tmux; 467 since W1: a file link shown before it is opened
+        467,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

@@ -501,6 +501,18 @@ inList m =
     onHosts m && m.form == Nothing
 
 
+{-| The font suggested at `pick`, or none while nothing is picked (-1):
+`Array.get` would count a negative place from the end, and give the last
+font in the list (review PS1). -}
+picked : Int -> Array String -> Maybe String
+picked pick offered =
+    if pick < 0 then
+        Nothing
+
+    else
+        Array.get pick offered
+
+
 {-| The host on a row of the list (quick connect, New connection and the
 local shell come first). -}
 hostAt : Model -> Int -> Maybe HostRow
@@ -1524,7 +1536,7 @@ typingKey k t m =
             Just s ->
                 let
                     name =
-                        Maybe.withDefault (meant Reason.OutOfRange String.trim (String.fromArray t.chars)) (Array.get t.pick (suggestions m t))
+                        Maybe.withDefault (meant Reason.NotSet String.trim (String.fromArray t.chars)) (picked t.pick (suggestions m t))
                 in
                 if name == "" then
                     done { m | message = Just (Words.message "problem.noFont") }
@@ -1871,7 +1883,8 @@ typedSetting t m =
 
 {-| A click on a drawn target, through the paths the keys take. What is
 being typed is kept, as Enter keeps it, unless the click is on the row
-being typed or on a font offered for it. -}
+being typed or on a font offered for it; in the host list, where Enter
+connects or makes a host, it is let go, as Esc lets it go. -}
 hit : { target : Target, count : Int } -> Model -> { model : Model, effects : Array Effect }
 hit h m =
     let
@@ -1902,20 +1915,27 @@ hit h m =
                     finished =
                         when m.typing is
                             Just t ->
-                                let
-                                    kept =
-                                        typingKey { sym = sym.enter, mods = 0, text = "" } t m
-                                in
-                                when kept.model.typing is
-                                    Just t2 ->
-                                        let
-                                            back =
-                                                typingKey { sym = sym.escape, mods = 0, text = "" } t2 kept.model
-                                        in
-                                        { model = back.model, effects = kept.effects ++ back.effects }
+                                if inList m then
+                                    -- quick connect or New host: their Enter
+                                    -- connects or makes the host, which a
+                                    -- click away must not (review PS2)
+                                    typingKey { sym = sym.escape, mods = 0, text = "" } t m
 
-                                    Nothing ->
-                                        meant Reason.NotOpen kept
+                                else
+                                    let
+                                        kept =
+                                            typingKey { sym = sym.enter, mods = 0, text = "" } t m
+                                    in
+                                    when kept.model.typing is
+                                        Just t2 ->
+                                            let
+                                                back =
+                                                    typingKey { sym = sym.escape, mods = 0, text = "" } t2 kept.model
+                                            in
+                                            { model = back.model, effects = kept.effects ++ back.effects }
+
+                                        Nothing ->
+                                            meant Reason.NotOpen kept
 
                             Nothing ->
                                 meant Reason.NotOpen done m

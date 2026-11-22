@@ -155,8 +155,11 @@ type alias Model =
     -- when the next desktop notification may be shown (CL8): at most one
     -- every 3 s; -1 any time
     , noticeAt : Int
-    -- an OSC 8 link Ctrl+clicked, to open in the turn's end (CL9)
+    -- an OSC 8 link Ctrl+clicked, to open in the turn's end (CL9); and a
+    -- file link shown in the note bar, which a second Ctrl+click on it
+    -- before `until` opens (review W1)
     , toOpen : Maybe String
+    , linkAsked : Maybe { uri : String, until : Int }
     -- the pointer shown (the arrow while the program takes the mouse, a
     -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
     -- last place over the window, and whether Shift is held, which takes
@@ -1494,6 +1497,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , attentionAsked = False
                      , noticeAt = -1
                      , toOpen = Nothing
+                     , linkAsked = Nothing
                      , pointerShown = Window.TextPointer
                      , hover = Nothing
                      , shiftHeld = False
@@ -2519,6 +2523,7 @@ race remote m0 =
                                                     -- closes, and the window with the last
                                                     if tabCount m > 1 then
                                                         remote.waitForExit
+                                                            |> Task.andThen (\_ -> remote.hangUp)
                                                             |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "wait", path = Nothing, detail = why })
                                                             |> Task.andThen (\_ -> dropShown m)
                                                             |> Task.andThen (\next -> step next.remote ms next)
@@ -2569,7 +2574,13 @@ race remote m0 =
 
 {-| A frame if one is due, then the loop again, unless the window is gone. -}
 step : Backend -> Int -> (taken m : Model) -> Task Error Model
-step remote ms m0 =
+step remote ms mIn =
+    let
+        -- the last frame's time kept recent: a window that drew nothing
+        -- for 6.2 days would otherwise wait as long again (review MA1)
+        m0 =
+            { mIn | last = Clock.recent mIn.config.frameMs mIn.last ms }
+    in
     if m0.closed || m0.lost then
         Task.succeed m0
 
@@ -7236,16 +7247,29 @@ linkOpened m =
                 cleared =
                     { m | toOpen = Nothing }
             in
-            if Links.openable uri then
+            if Links.openable { remote = isRemoteTab cleared } uri && Links.click { now = cleared.turnMs, asked = cleared.linkAsked } uri == Links.ShowFirst then
+                -- shown first, not written to the log: the URI is a
+                -- program's text (review W1)
+                Task.succeed
+                    (logLine "link"
+                        ("shown before it is opened, " ++ String.fromInt (String.count uri) ++ " characters")
+                        { cleared
+                            | linkAsked = Just { uri = uri, until = Clock.after cleared.turnMs noteMs }
+                            , note = Just { text = "Ctrl+click again to open " ++ uri, failed = False, until = Clock.after cleared.turnMs noteMs }
+                            , urgent = True
+                        }
+                    )
+
+            else if Links.openable { remote = isRemoteTab cleared } uri then
                 Open.link (Maybe.map .cp m.settingsWindow) uri
                     |> Task.map
                         (\opened ->
                             when opened is
                                 Ok _ ->
-                                    logLine "link" ("opened, " ++ String.fromInt (String.count uri) ++ " characters") cleared
+                                    logLine "link" ("opened, " ++ String.fromInt (String.count uri) ++ " characters") { cleared | linkAsked = Nothing }
 
                                 Err why ->
-                                    meant Reason.Refused (logLine "link" ("not opened: " ++ why) cleared)
+                                    meant Reason.Refused (logLine "link" ("not opened: " ++ why) { cleared | linkAsked = Nothing })
                         )
 
             else
@@ -9116,7 +9140,9 @@ closeShown m =
         )
             |> Task.andThen
                 (\dir ->
-                    m.remote.kill
+                    -- hung up, not only sent SIGTERM, which a shell ignores
+                    -- (review MB1)
+                    m.remote.hangUp
                         |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "kill", path = Nothing, detail = why })
                         |> Task.andThen (\_ -> dropShownFrom dir m)
                 )
@@ -9702,12 +9728,14 @@ endTab id kill m =
                     { m | tabs = out.tabs, order = left.order, shown = left.shown }
             in
             let
+                -- its terminal closed either way, and its program hung
+                -- up when it is the tab that goes (review MB1)
                 ending =
                     if kill then
-                        t.remote.kill
+                        t.remote.hangUp
 
                     else
-                        t.remote.waitForExit |> Task.map (\_ -> {})
+                        t.remote.waitForExit |> Task.andThen (\_ -> t.remote.hangUp)
             in
             ending
                 |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "end", path = Nothing, detail = why })

@@ -762,6 +762,17 @@ paste 100,000, keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of
 36, pointer 43 of 43, IME 14 of 14, perf within its record and budgets,
 the differential fuzzer clean (coverage 6,175, no findings).
 
+*Found 2026-11-21* (the code review's X1): pasting puritty's own selection
+when it is over a piece (256 KB) went through INCR to its own window, and
+the owner's side set that window's event mask to PropertyChange alone and
+never wrote the next piece, since a property event on puritty's own
+window was taken only as the paste's. The paste stalled and the window
+took no more keys, clicks or exposes. Now the window's own mask is left
+alone and a delete on it reaches the owner's side. The pointer gate's
+`paste-own-large` pastes 5,000 selected lines (320,000 bytes) back and
+types a key: in the build before, neither the paste nor the key arrived;
+now both do.
+
 ---
 
 ## 16. OSC 52 built (2026-11-03)
@@ -1118,3 +1129,13 @@ last of them goes in draws every cell too.
 typed, Enter, Ctrl+Shift+C: the clipboard holds `needle`, and the program
 was sent no byte); `bench/search/show.py` shows the match as typed and then
 the older one, the bar's note, and a drag of the thumb.
+
+*Changed 2026-11-21* (the code review's VP2, VS1, MA3): the search read a
+row at a time through `Vt.selectionText`, and each row read its whole page
+of the scrollback (1,024 rows) after walking the pages from the oldest. It
+now reads 1,024 rows at a time through `Vt.rowTexts`, each page read once
+for them, and so do the matches marked under tmux (`Search.matchesIn`).
+**Measured** (an app test on node, 80 by 24, 20,000 rows of scrollback, a
+query found nowhere, the 20,000 rows' feeding included): 140.2 s before,
+0.59 s after. Still not done: the search runs in the loop's turn, so a
+far larger scrollback still holds the window for its length.

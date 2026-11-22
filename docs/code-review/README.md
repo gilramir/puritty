@@ -200,6 +200,19 @@ Stale comments are gathered in X29, W18 and TB20.
 - **SC7**: `ssh_config` keywords that are read and not acted on are dropped
   without a word; which of them should be refused instead.
 
+## Found while fixing
+
+Problems seen while fixing the findings above, not in the review itself.
+Each is to be made to fail and fixed as a finding is; ids continue the
+slice's letters with an `N` (new).
+
+| id | where | what was seen |
+|---|---|---|
+| VPN1 | `vt/src/Vt/Parse.geng` (`ground`, `printAscii`) | One `Vt.feed` of about 30 KB of ordinary text (3,000 rows of `row-NNNNN`, CR LF between) overflows node's stack: `RangeError: Maximum call stack size exceeded`, `ground` and `printAscii` calling each other per byte (seen in the app tests, built with the core's passes, `mutual` among them). Native builds have not been tried with it. Whether the cause is the parser's shape or the compiler's `mutual` pass not making a loop of the pair is not known yet; if the compiler's, it goes to geng-lang. |
+| PSN1 | `harness/pointer.py`, `corpus/pointer/` | On gmktec7, 34 of the pointer gate's 55 cases fail, the same 34 with the build before the review's fixes and after: reports a column or a row off (`\e[<64;9;3M` where the pin has `\e[<64;11;4M`), and selections a cell short (`hell` for `hello`). The pins look to have been made where the default font's cell is another size; the gate's cases place the pointer in pixels. Not looked into: whether the pins or the gate should change, or the machine's fonts. |
+| VPN2 | `vt/src/Vt.geng` (`linkAt`, `viewPages`) | What VP2 names beyond the search: `linkAt` still reads a whole page per call, and `viewPages` walks the pages from the oldest for every read. |
+| MAN1 | `app/src/Search.geng` | The search reads a page at a time now (MA3), but still runs within one turn of the loop: a far larger scrollback holds the window for its length; and a longer query does not use a shorter one's failure. |
+
 ## What was not covered
 
 Each slice file ends with its own "Looked at and found sound" and "Not
@@ -221,22 +234,22 @@ covered" sections. The larger gaps:
 |---|---|---|---|
 | [VP1](01-vt-parser-screen.md) | security | confirmed | **fixed** SD, IL and DL loop the raw count (up to 65,535) instead of the region's height |
 | [VP2](01-vt-parser-screen.md) | speed | confirmed | Searching or reading one scrollback row decodes its whole page (1,024 rows), and walks the pages from the oldest |
-| [VS1](02-vt-scrollback-view-input.md) | speed | confirmed | Scrollback search decodes a whole 1,024-row page for every row it looks at |
+| [VS1](02-vt-scrollback-view-input.md) | speed | confirmed | **fixed** Scrollback search decodes a whole 1,024-row page for every row it looks at |
 | [VI1](03-vt-images.md) | security | confirmed | **fixed** TIFF: overlapping strips make a decompression bomb, and the decoder ignores the image limit |
 | [VI2](03-vt-images.md) | security | confirmed | **fixed** Sixel: a 30-byte string allocates gigabytes; the size is never held to the image limit |
 | [VI3](03-vt-images.md) | security | confirmed | **fixed** JPEG: nothing bounds the number of scans or a scan's components, so a small file hangs the terminal |
-| [X1](07-x11-text.md) | bug | confirmed | Pasting puritty's own selection when it is over 256 KB stalls the paste and strips the window's event mask |
-| [W1](08-win32.md) | security | confirmed | A `file:` link from a program's output is run by the shell: local executables and UNC paths |
-| [MA1](09-app-main-a.md) | bug | confirmed | A window that draws no frame for 6.2 days stops drawing at all, for up to 6.2 more |
-| [MA2](09-app-main-a.md) | security | confirmed | Ctrl+click opens any `file://` link, including executables and UNC paths, with the target never shown |
-| [MA3](09-app-main-a.md) | speed | confirmed | Scrollback search unpacks a whole 1,024-row page for every row it looks at |
-| [MB1](10-app-main-b.md) | bug | confirmed | Closing a tab never closes its pty: the shell gets SIGTERM only, and the descriptor is kept for the window's life |
-| [TA1](11-tmuxmode-a.md) | bug | plausible | A typed line that tmux parses to no command leaves the reply queue one behind for good |
-| [TA2](11-tmuxmode-a.md) | bug | confirmed | `endsClient` takes `detach-client -t another-client` for this client leaving: nothing is sent again |
+| [X1](07-x11-text.md) | bug | confirmed | **fixed** Pasting puritty's own selection when it is over 256 KB stalls the paste and strips the window's event mask |
+| [W1](08-win32.md) | security | confirmed | **fixed** A `file:` link from a program's output is run by the shell: local executables and UNC paths |
+| [MA1](09-app-main-a.md) | bug | confirmed | **fixed** A window that draws no frame for 6.2 days stops drawing at all, for up to 6.2 more |
+| [MA2](09-app-main-a.md) | security | confirmed | **fixed** Ctrl+click opens any `file://` link, including executables and UNC paths, with the target never shown |
+| [MA3](09-app-main-a.md) | speed | confirmed | **fixed** Scrollback search unpacks a whole 1,024-row page for every row it looks at |
+| [MB1](10-app-main-b.md) | bug | confirmed | **fixed** Closing a tab never closes its pty: the shell gets SIGTERM only, and the descriptor is kept for the window's life |
+| [TA1](11-tmuxmode-a.md) | bug | plausible | **fixed** A typed line that tmux parses to no command leaves the reply queue one behind for good |
+| [TA2](11-tmuxmode-a.md) | bug | confirmed | **fixed** `endsClient` takes `detach-client -t another-client` for this client leaving: nothing is sent again |
 | [TA3](11-tmuxmode-a.md) | security | plausible | Control mode is entered from in-band bytes with no check, and text read from that stream is later written back as command lines |
 | [TB1](12-tmuxmode-b.md) | bug | plausible | A click or the wheel over a pane in copy mode sends mouse bytes and arrow keys into copy mode's key table |
-| [PS1](13-app-picker-settings.md) | bug | confirmed | Enter on the font box with nothing picked sets the last font in the list |
-| [PS2](13-app-picker-settings.md) | bug | confirmed | A click away from quick connect connects to what is typed (and from "New host" makes the host) |
+| [PS1](13-app-picker-settings.md) | bug | confirmed | **fixed** Enter on the font box with nothing picked sets the last font in the list |
+| [PS2](13-app-picker-settings.md) | bug | confirmed | **fixed** A click away from quick connect connects to what is typed (and from "New host" makes the host) |
 
 ### Medium (105)
 
