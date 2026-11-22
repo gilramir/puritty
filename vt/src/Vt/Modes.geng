@@ -142,6 +142,7 @@ fresh config =
     , phase = 0
     , str = Builder.empty 0
     , dcsKnown = 0
+    , tables = { generation = 0, styleAt = styleMax // 4 * 3, clusterAt = clusterIdMax // 4 * 3, linkAt = 3072, waitGone = 0 }
     , utf = 0
     , need = 0
     , low = 0x80
@@ -154,6 +155,7 @@ fresh config =
     , notices = []
     , kittyNotices = []
     , links = []
+    , linkIndex = Dict.empty
     }
 
 
@@ -699,8 +701,13 @@ reset t =
 
         osc52 =
             blank.osc52
+
+        tablesFresh =
+            blank.tables
     in
-    withScroll { blank | replies = replies, osc52 = { osc52 | requests = t.osc52.requests }, notices = t.notices, heard = t.heard, colors = Dict.keepIf (\k _ -> k > 255) t.colors, named = t.named, embedder = t.embedder, back = { back | peak = peak, dropped = dropped }, images = { noImages | limit = t.images.limit } }
+    -- the tables' generation counts on: ids are handed out again from 0,
+    -- and a frame's shadow must not take an old id as the same style (VS4)
+    withScroll { blank | tables = { tablesFresh | generation = t.tables.generation + 1 }, replies = replies, osc52 = { osc52 | requests = t.osc52.requests }, notices = t.notices, heard = t.heard, colors = Dict.keepIf (\k _ -> k > 255) t.colors, named = t.named, embedder = t.embedder, back = { back | peak = peak, dropped = dropped }, images = { noImages | limit = t.images.limit } }
 
 
 {-| The terminal for a new session in the same tab (puritty `docs/tabs.md`
@@ -733,6 +740,11 @@ restarted t =
                 , styles = main.styles
                 , styleCache = main.styleCache
                 , clusters = main.clusters
+                -- the links the kept styles name, and the thresholds
+                -- the kept tables were held to
+                , links = main.links
+                , linkIndex = main.linkIndex
+                , tables = { generation = blank.tables.generation, styleAt = main.tables.styleAt, clusterAt = main.tables.clusterAt, linkAt = main.tables.linkAt, waitGone = main.tables.waitGone }
                 , bells = main.bells
                 , x = main.x
                 , y = main.y

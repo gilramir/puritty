@@ -1,0 +1,411 @@
+module Vt.Compact exposing (compactIfDue, compacted)
+
+{-| The style, cluster and link tables given back what nothing uses (the
+code review's VP5 and VP6, `docs/vt-core.md` VC72). Each table only grew:
+past 32,760 styles a new one was drawn as the default, past 4,096 links a
+new one was no link, and the tmux view's canvas, one terminal for the whole
+session, took the union of every pane's styles. When a table reaches its
+threshold (`tables`), the ids in use are found in the screens' cells, the
+scrollback's pages, the pen and the erase cells, the rest are dropped,
+those kept are numbered again from the lowest, and everything that names
+one is written again. The links kept are those a kept style names. The
+next threshold is halfway from what is kept to the most, so a terminal
+that uses nearly all of a table is not compacted at every read.
+
+A compaction bumps `tables.generation`, which `Vt.View` mixes into its
+color key, so the frame after is drawn whole: its shadow compared cells by
+their ids, and an id may now name another style.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes.Owned as Owned exposing (Owned)
+import Dict exposing (Dict)
+import Int64
+import UInt8
+import Vt.Cell exposing (..)
+import Vt.Reason as Reason
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+
+
+{-| The terminal, compacted when a table has reached its threshold, and
+the scrollback has turned over since a compaction that freed little. -}
+compactIfDue : (taken t : Term) -> Term
+compactIfDue t =
+    if (Array.length t.styles.table >= t.tables.styleAt || Array.length t.clusters.table >= t.tables.clusterAt || Array.length t.links >= t.tables.linkAt) && t.back.gone >= t.tables.waitGone then
+        compacted t
+
+    else
+        t
+
+
+{-| A table's next threshold after a compaction that kept `kept` of
+`count`: halfway from what is kept to the most, at least three quarters
+of it; or, when it freed less than an eighth of the most, the most, and
+`little` says so. A table that is nearly all in use (rows in their own
+colors filling the scrollback) frees little, and would be compacted again
+at every read, at its cost each time: measured, 40,000 rows each in its
+own color took 724 ms against 27 before. Its ids come free only as rows
+leave the scrollback, so the next waits for that (`waitGone`). -}
+nextAt : Int -> Int -> Int -> { at : Int, little : Bool }
+nextAt count kept most =
+    if count >= most // 4 * 3 && count - kept < most // 8 then
+        { at = most, little = True }
+
+    else
+        { at = max (most // 4 * 3) (kept + (most - kept) // 2), little = False }
+
+
+compacted : (taken t : Term) -> Term
+compacted t =
+    let
+        styleCount =
+            Array.length t.styles.table
+
+        clusterCount =
+            Array.length t.clusters.table
+
+        -- what is used: the screens' cells, the pages' runs, the pen and the
+        -- erase cells; style 0 always
+        usedCells =
+            markScreen t.screen styleCount clusterCount { styles = Builder.set 0 True (Builder.repeat styleCount False), clusters = Builder.repeat clusterCount False }
+                |> (\u ->
+                        when t.other is
+                            Just o ->
+                                markScreen o styleCount clusterCount u
+
+                            Nothing ->
+                                meant Reason.NotSet u
+                   )
+
+        usedStyles =
+            markPages t.back.pages t.back.head usedCells.styles
+                |> markStyle (cellStyle t.pen)
+                |> markStyle (cellStyle t.erase)
+                |> markStyle (cellStyle t.otherErase)
+                |> Builder.toArray
+
+        styleMap =
+            renumbered usedStyles
+
+        usedClusters =
+            Builder.toArray usedCells.clusters
+
+        clusterMap =
+            renumbered usedClusters
+
+        keptStyles =
+            Array.keepIf (\k -> Maybe.withDefault (meant Reason.OutOfRange False) (Array.get k usedStyles)) (Array.range 0 (styleCount - 1))
+                |> Array.map (\k -> Maybe.withDefault plainAttrs (Array.get k t.styles.table))
+
+        -- the links the kept styles name, and the pen's and the saved
+        -- cursors', numbered again
+        linkUsed =
+            Array.foldl (\a acc -> markLink a.link acc) (Builder.repeat (Array.length t.links) False) keptStyles
+                |> markLink t.attrs.link
+                |> markLink t.screen.saved.attrs.link
+                |> (\u ->
+                        when t.other is
+                            Just o ->
+                                markLink o.saved.attrs.link u
+
+                            Nothing ->
+                                meant Reason.NotSet u
+                   )
+                |> Builder.toArray
+
+        linkMap =
+            renumbered linkUsed
+
+        relink a =
+            if a.link > 0 then
+                { a | link = Maybe.withDefault (meant Reason.NotKnown -1) (Array.get (a.link - 1) linkMap) + 1 }
+
+            else
+                a
+
+        styles =
+            Array.map relink keptStyles
+                |> Array.indexedFoldl (\id a acc -> { acc | ids = Dict.update (styleKey a) (\had -> Just (Array.pushLast id (Maybe.withDefault (meant Reason.NotSet []) had))) acc.ids, table = Array.pushLast a acc.table }) { ids = Dict.empty, table = [] }
+
+        keptClusters =
+            Array.keepIf (\k -> Maybe.withDefault (meant Reason.OutOfRange False) (Array.get k usedClusters)) (Array.range 0 (clusterCount - 1))
+                |> Array.map (\k -> Maybe.withDefault [] (Array.get k t.clusters.table))
+
+        clusters =
+            Array.indexedFoldl
+                (\id points acc ->
+                    if Array.length points == 2 then
+                        { acc | pairs = Dict.set (Bitwise.or (Bitwise.shiftLeftBy 21 (Int64.fromInt (Maybe.withDefault 0 (Array.get 0 points)))) (Int64.fromInt (Maybe.withDefault 0 (Array.get 1 points)))) id acc.pairs, table = Array.pushLast points acc.table }
+
+                    else
+                        { acc | ids = Dict.set (clusterKey points) id acc.ids, table = Array.pushLast points acc.table }
+                )
+                noClusters
+                keptClusters
+
+        links =
+            Array.keepIf (\k -> Maybe.withDefault (meant Reason.OutOfRange False) (Array.get k linkUsed)) (Array.range 0 (Array.length t.links - 1))
+                |> Array.mapAndKeepJust (\k -> Array.get k t.links)
+
+        cell c =
+            remapCell styleMap clusterMap c
+
+        screen =
+            t.screen
+
+        back =
+            t.back
+
+        attrs =
+            relink t.attrs
+
+        saved s =
+            { s | attrs = relink s.attrs }
+
+        tables =
+            t.tables
+
+        styleNext =
+            nextAt styleCount (Array.length styles.table) styleMax
+
+        clusterNext =
+            nextAt clusterCount (Array.length clusters.table) clusterIdMax
+
+        linkNext =
+            nextAt (Array.length t.links) (Array.length links) linkMost
+    in
+    { t
+        | screen = { screen | cells = remapCells cell screen.cols (screen.cols + 1) 0 screen.cells, saved = saved screen.saved }
+        , other = Maybe.map (\o -> { o | cells = remapCells cell o.cols (o.cols + 1) 0 o.cells, saved = saved o.saved }) t.other
+        , back = { back | pages = remapPages styleMap back.head back.pages }
+        , pen = cell t.pen
+        , erase = cell t.erase
+        , otherErase = cell t.otherErase
+        , attrs = attrs
+        , styles = styles
+        , clusters = clusters
+        , links = links
+        , linkIndex = Array.indexedFoldl (\i l d -> Dict.set (linkKey l.id l.uri) i d) Dict.empty links
+        , styleCache = Builder.fill 0 (Builder.length t.styleCache) (Int64.fromInt -1) t.styleCache
+        , tables =
+            { generation = tables.generation + 1
+            , styleAt = styleNext.at
+            , clusterAt = clusterNext.at
+            , linkAt = linkNext.at
+            , waitGone =
+                if styleNext.little || clusterNext.little || linkNext.little then
+                    -- until as many rows as the scrollback holds now have
+                    -- left it
+                    clamp 0 536870912 (back.gone + back.rows + screen.hist)
+
+                else
+                    0
+            }
+    }
+
+
+linkMost : Int
+linkMost =
+    4096
+
+
+{-| For each old id, its new one: the used ones numbered in order from 0;
+-1 for one not used. -}
+renumbered : Array Bool -> Array Int
+renumbered used =
+    Array.foldl
+        (\u acc ->
+            if u then
+                { next = acc.next + 1, map = Array.pushLast acc.next acc.map }
+
+            else
+                { next = acc.next, map = Array.pushLast -1 acc.map }
+        )
+        { next = 0, map = [] }
+        used
+        |> .map
+
+
+markStyle : Int -> (taken used : Builder Bool) -> Builder Bool
+markStyle id used =
+    if id >= 0 && id < Builder.length used then
+        Builder.set id True used
+
+    else
+        -- a preedit's style, past the table, or none
+        used
+
+
+markLink : Int -> (taken used : Builder Bool) -> Builder Bool
+markLink link used =
+    if link > 0 && link - 1 < Builder.length used then
+        Builder.set (link - 1) True used
+
+    else
+        used
+
+
+{-| A screen's cells' styles and clusters marked used; each row's meta
+slot (at `cols` in its stride) skipped. -}
+markScreen : Screen -> Int -> Int -> (taken used : { styles : Builder Bool, clusters : Builder Bool }) -> { styles : Builder Bool, clusters : Builder Bool }
+markScreen s styleCount clusterCount used =
+    markCells s.cells s.cols (s.cols + 1) 0 used
+
+
+markCells : Builder Int64 -> Int -> Int -> Int -> (taken used : { styles : Builder Bool, clusters : Builder Bool }) -> { styles : Builder Bool, clusters : Builder Bool }
+markCells cells cols stride i used =
+    when Builder.get i cells is
+        Just c ->
+            if modBy stride i == cols then
+                markCells cells cols stride (i + 1) used
+
+            else
+                markCells cells
+                    cols
+                    stride
+                    (i + 1)
+                    { styles = markStyle (cellStyle c) used.styles
+                    , clusters =
+                        if cellIsCluster c then
+                            markStyle (cellPoint c) used.clusters
+
+                        else
+                            used.clusters
+                    }
+
+        Nothing ->
+            meant Reason.NoMore used
+
+
+{-| The styles the pages' runs name, from slot `i` (the oldest kept) on. -}
+markPages : Builder Page -> Int -> (taken used : Builder Bool) -> Builder Bool
+markPages pages i used =
+    when Builder.get i pages is
+        Just page ->
+            markPages pages (i + 1) (markRuns page.runs 0 used)
+
+        Nothing ->
+            meant Reason.NoMore used
+
+
+{-| A page's runs: little-endian 16-bit values, each a style with the top
+bit set and a count after it, or a style for the rest of its row
+(`Vt.Pages.unpackRuns`). -}
+markRuns : Owned -> Int -> (taken used : Builder Bool) -> Builder Bool
+markRuns runs r used =
+    if r >= Owned.length runs - 1 then
+        used
+
+    else
+        let
+            v =
+                u16 runs r
+        in
+        if Bitwise.and 0x8000 v /= 0 && r <= Owned.length runs - 4 then
+            markRuns runs (r + 4) (markStyle (Bitwise.and 0x7FFF v) used)
+
+        else if Bitwise.and 0x8000 v /= 0 then
+            -- a style and its count cut short: none is
+            used
+
+        else
+            markRuns runs (r + 2) (markStyle v used)
+
+
+u16 : Owned -> Int -> Int
+u16 bytes i =
+    byteOf bytes i + 256 * byteOf bytes (i + 1)
+
+
+byteOf : Owned -> Int -> Int
+byteOf bytes i =
+    Maybe.withDefault (meant Reason.OutOfRange 0) (Maybe.map UInt8.toInt (Owned.get i bytes))
+
+
+{-| A cell with its style and cluster numbered again; a style past the
+table (a preedit's) as it was. -}
+remapCell : Array Int -> Array Int -> Int64 -> Int64
+remapCell styleMap clusterMap c =
+    let
+        style =
+            cellStyle c
+
+        styled =
+            when Array.get style styleMap is
+                Just n ->
+                    if n >= 0 then
+                        Bitwise.or (styleBits n) (Bitwise.and (Bitwise.complement (Bitwise.shiftLeftBy 32 (Int64.fromInt -1))) c)
+
+                    else
+                        -- not marked: nothing should hold it
+                        Bitwise.and (Bitwise.complement (Bitwise.shiftLeftBy 32 (Int64.fromInt -1))) c
+
+                Nothing ->
+                    meant Reason.OutOfRange c
+    in
+    if cellIsCluster c then
+        when Array.get (cellPoint c) clusterMap is
+            Just n ->
+                if n >= 0 then
+                    Bitwise.or (Int64.fromInt n) (Bitwise.and (Bitwise.complement 0x1FFFFF) styled)
+
+                else
+                    styled
+
+            Nothing ->
+                meant Reason.OutOfRange styled
+
+    else
+        styled
+
+
+remapCells : (Int64 -> Int64) -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
+remapCells cell cols stride i cells =
+    when Builder.get i cells is
+        Just c ->
+            if modBy stride i == cols then
+                remapCells cell cols stride (i + 1) cells
+
+            else
+                remapCells cell cols stride (i + 1) (Builder.set i (cell c) cells)
+
+        Nothing ->
+            meant Reason.NoMore cells
+
+
+remapPages : Array Int -> Int -> (taken pages : Builder Page) -> (r : Builder Page where Builder.length r == Builder.length pages)
+remapPages styleMap i pages =
+    when Builder.get i pages is
+        Just page ->
+            remapPages styleMap (i + 1) (Builder.set i { page | runs = Owned.fromBuilder (remapRuns styleMap page.runs 0 (Builder.empty (Owned.length page.runs))) } pages)
+
+        Nothing ->
+            meant Reason.NoMore pages
+
+
+remapRuns : Array Int -> Owned -> Int -> (taken out : Builder UInt8) -> Builder UInt8
+remapRuns styleMap runs r out =
+    if r >= Owned.length runs - 1 then
+        out
+
+    else
+        let
+            v =
+                u16 runs r
+
+            new style =
+                Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get style styleMap) |> max 0
+
+            push w o =
+                Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 8 w)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF w)) o)
+        in
+        if Bitwise.and 0x8000 v /= 0 && r <= Owned.length runs - 4 then
+            remapRuns styleMap runs (r + 4) (push (u16 runs (r + 2)) (push (Bitwise.or 0x8000 (new (Bitwise.and 0x7FFF v))) out))
+
+        else if Bitwise.and 0x8000 v /= 0 then
+            out
+
+        else
+            remapRuns styleMap runs (r + 2) (push (new v) out)

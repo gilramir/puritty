@@ -95,6 +95,7 @@ import Math
 import UInt8
 import Vt.Base64 as Base64
 import Vt.Cell exposing (..)
+import Vt.Compact as Compact
 import Vt.Dump exposing (..)
 import Vt.Edit as Edit
 import Vt.Keys as Keys
@@ -420,7 +421,10 @@ composeStyled panes places t =
                 im.composed
                 places
     in
-    { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters, images = { im | composed = composed } }
+    -- the canvas's tables compacted when one has reached its threshold:
+    -- cleared every frame, it uses little, and took the union of every
+    -- pane's styles for the whole session before (the code review's VP6)
+    Compact.compactIfDue { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters, images = { im | composed = composed } }
 
 
 {-| Whether two rectangles of cells share a cell. -}
@@ -1757,7 +1761,8 @@ parsed, and what comes is held, until the embedder gives the file
 (`fileWanted`, `fileGiven`). -}
 feed : Bytes -> (taken t : Term) -> Term
 feed bytes t =
-    Parse.feed bytes t
+    -- the tables compacted when one has reached its threshold (VP5, VP6)
+    Compact.compactIfDue (Parse.feed bytes t)
 
 
 {-| The file a Kitty command waits for (KG9): its path, whether it is a

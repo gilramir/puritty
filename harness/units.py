@@ -101,8 +101,9 @@ SUITES = [
     # since VP3 and VP7: ED 3's count of rows, and what RIS keeps; 220
     # since VS2 and VS3: OSC 99's parts held, a selection from a wide tail;
     # 224 since VI5 to VI8: images over images, refusals, eviction, pruning;
-    # 226 since VI10 and VI20: Sixel's painting held, broken files taken
-    Suite("vt", 226, runs_of("vt/tests")),
+    # 226 since VI10 and VI20: Sixel's painting held, broken files taken;
+    # 230 since VP5 and VP6: the tables compacted, four
+    Suite("vt", 230, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

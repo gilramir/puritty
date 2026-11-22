@@ -49,6 +49,7 @@ and its callers.
 - What: the shadow keeps each drawn cell as the core's `Int64`, whose high bits are a style id and whose low bits may be a cluster id, and a cell equal to the shadow's is not drawn. RIS builds the term with `fresh`, so ids start from 0 again and the same id can name another style or cluster. `colorKey` covers mode 5, the look and `t.colors` only, and no caller makes a new shadow at RIS (`View.shadowIn` is called at size, font and tab changes), so the shadow is not forgotten.
 - Scenario: `printf '\033c\033[31mA'; sleep 1; printf '\033c\033[34mA'`. After the first, cell (0,0) is `A` in style 1 (red). The second resets and writes `A` in style 1 again, now blue, in one read. `drawnAs` equals the shadow's cell, no run and no style record is sent, and the `A` stays red until something else redraws it. The same with two different clusters that both get cluster id 0 in the same cell.
 - Fix: carry a generation in the term that `reset` bumps (or fold `Array.length t.styles.table` going down into the test), and have `frameOn` make a fresh shadow when it changes, as it does for `colorKey`.
+- Fixed: 2026-11-22: `tables.generation` is bumped by RIS and by a compaction, and `View.colorKey` mixes it in, so the frame after either is drawn whole (VC72).
 
 ### VS5 · An unbracketed paste of CRLF text sends CR CR, and a CRLF split across two pieces does too
 - Where: app/src/Main.geng:7354-7380 (`lineEnds`), :7416 (`lineEnds (Paste.piece bracketed text)`); vt/src/Vt/Paste.geng:69-74

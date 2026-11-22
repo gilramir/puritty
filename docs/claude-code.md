@@ -310,6 +310,11 @@ the Windows build compiles.
 their links themselves; Ghostty underlines one under the pointer), and
 the pointer does not change over one.
 
+*Changed 2026-11-22* (the code review's VP5): past the 4,096th link a new
+one is still no link, but the table is compacted before then, the links no
+kept style names given back (`docs/vt-core.md` VC72), and a link is found
+by a `Dict` rather than a scan.
+
 *Changed 2026-11-21* (the code review's MA2 and W1): `file:////host/share`
 begins `file:///` and was opened as this machine's file; on Windows
 `ShellExecuteW` opens such a path from the host. A file link whose path

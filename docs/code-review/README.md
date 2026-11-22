@@ -259,8 +259,8 @@ covered" sections. The larger gaps:
 |---|---|---|---|
 | [VP3](01-vt-parser-screen.md) | bug | confirmed | **fixed** ED 3 lowers `rowsPushed`, so absolute rows (image anchors, selection points) no longer name their rows |
 | [VP4](01-vt-parser-screen.md) | security | confirmed | **fixed** With Sixel/iTerm2 images on, every `:` or `=` in an OSC rebuilds the kept string; a DCS has the same shape per `q` and per C1 byte |
-| [VP5](01-vt-parser-screen.md) | design | confirmed | The hyperlink table never forgets a link: after 4,096 distinct links OSC 8 stops working for the session |
-| [VP6](01-vt-parser-screen.md) | design | confirmed | Style and cluster ids are never given back; the tmux canvas is one long-lived terminal that takes the union of every pane's |
+| [VP5](01-vt-parser-screen.md) | design | confirmed | **fixed** The hyperlink table never forgets a link: after 4,096 distinct links OSC 8 stops working for the session |
+| [VP6](01-vt-parser-screen.md) | design | confirmed | **fixed** Style and cluster ids are never given back; the tmux canvas is one long-lived terminal that takes the union of every pane's |
 | [VP7](01-vt-parser-screen.md) | bug | confirmed | **fixed** RIS in the same read drops clipboard requests, notifications and diagnostic lines not yet taken |
 | [VP8](01-vt-parser-screen.md) | speed | confirmed | **fixed** `composeStyled` interns a style for every pane cell on every frame |
 | [VS2](02-vt-scrollback-view-input.md) | security | confirmed | **fixed** OSC 99 parts with `d=0` grow a pending notification without bound, each part copied onto the last |
@@ -376,7 +376,7 @@ covered" sections. The larger gaps:
 | [VP15](01-vt-parser-screen.md) | inaccuracy | confirmed | Unknown private modes are stored for a DECRQM that never reads them |
 | [VP16](01-vt-parser-screen.md) | speed | plausible | Copying a long selection concatenates a string per cell and per row |
 | [VP17](01-vt-parser-screen.md) | speed | confirmed | Jump-to-prompt with no prompt in the scrollback walks every row, and each row walks the pages from the oldest |
-| [VS4](02-vt-scrollback-view-input.md) | bug | confirmed | The frame's diff trusts style and cluster ids across RIS, which hands the same ids out again |
+| [VS4](02-vt-scrollback-view-input.md) | bug | confirmed | **fixed** The frame's diff trusts style and cluster ids across RIS, which hands the same ids out again |
 | [VS5](02-vt-scrollback-view-input.md) | bug | confirmed | An unbracketed paste of CRLF text sends CR CR, and a CRLF split across two pieces does too |
 | [VS6](02-vt-scrollback-view-input.md) | security | plausible | The diagnostic log gets a DECRQSS or XTGETTCAP body as the program wrote it, control bytes included |
 | [VS7](02-vt-scrollback-view-input.md) | inaccuracy | confirmed | `Base64.decode` is documented as strict but takes non-canonical final characters |

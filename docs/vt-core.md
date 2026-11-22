@@ -491,7 +491,9 @@ the budget. What is below is what is left beside them.
   for each new SGR combination and kept; at 32,768 a new style is the
   default (`styleMax`), which bounds memory but draws wrong. Ghostty counts
   each page's styles and frees them. The same holds for clusters at 2²¹.
-  To be decided with the renderer, which reads them.
+  To be decided with the renderer, which reads them. *Done 2026-11-22,
+  VC72: compacted when full. The renderer's V35 had settled it already: C
+  keeps no table between frames.*
 - **Refinement types for every index** (plan §7): not tried; the core reads
   with `Builder.get` and a default.
 
@@ -4933,3 +4935,56 @@ fuzzer finds it at once, as it found the reports. That is the column
 and index operations' 16 tests and the rectangles' 24 at twice the work,
 for VT420 sequences that ncurses, vim and tmux do not send. Not started;
 held for a decision.
+
+## VC72 · The style, cluster and link tables compacted (2026-11-22)
+
+The code review's VP5 and VP6, and the open item above. Each table only
+grew: past 32,760 styles a new one was drawn as the default, past 4,096
+OSC 8 links a new one was no link (CL9), clusters went to 2²¹ (several
+hundred MB from a file of random marks), and the tmux view's canvas, one
+terminal for the whole session, took the union of every pane's styles
+(`composeStyled` interns each pane cell's style into it every frame).
+Links could not be freed alone: a link is named by the styles of its
+cells, and the styles were never freed. "To be decided with the renderer"
+was written before the renderer was; V35 decided that C keeps no table
+between frames, so the ids are the core's own, and only two things read
+them across time: `Vt.View`'s shadow, which compares cells by id, and the
+app's selection row hashes.
+
+**Built** (Gilbert's choice, 2026-11-22), `Vt.Compact`:
+
+- **When.** After every `feed` and `composeStyled`, a table that has
+  reached its threshold (three quarters of its most at first) is
+  compacted. The next threshold is halfway from what was kept to the most.
+  A compaction that frees less than an eighth of a table (rows in their
+  own colors filling the scrollback) waits for the scrollback to turn
+  over (`waitGone`: as many rows gone as it held), since its ids come free
+  only as rows leave it; without that rule the table compacted at every
+  read: 40,000 rows each in its own color, 724 ms against 27.
+- **What.** The ids in use are found in the main and alternate screens'
+  cells (each row's meta slot skipped), the scrollback pages' style runs
+  (pages keep a cluster's code points, not its id), the pen and the erase
+  cells; the links kept are those a kept style, the pen or a saved cursor
+  names. The rest are dropped, those kept numbered again from 0 in order,
+  and the cells, the pages' runs, the pen, the erase cells and every
+  attributes' link written again; the style cache is emptied.
+- **The frame after.** `tables.generation` counts compactions and RIS,
+  and `View.colorKey` mixes it in, so the frame after one is drawn whole:
+  an id may now name another style. RIS bumps it too, which the review's
+  VS4 asked for: ids are handed out from 0 again after it.
+- **Clusters** are held to 65,536, of the 21 bits a cell has for them.
+- **A link is found by a `Dict`** (`linkIndex`, keyed by its id and URI),
+  rebuilt by a compaction, where the table was scanned at each OSC 8.
+- **`restarted`** keeps the links with the styles it keeps.
+
+**Measured** natively: 40,000 rows each in its own color through a
+40,000-row scrollback, 33 ms (27 before, a compaction that freed little
+then waiting); 200,000 such rows through a 10,000-row scrollback, which
+turns over, 108 ms. **Tested** (vt suite, 230): 40,000 colors on one cell,
+the last drawn in its own and an older cell's kept (failed before: the
+default); 5,000 links on one cell, the last opens (failed before); 70,000
+clusters, the last read whole, past the new cap; the canvas composed 2,000
+times from a pane in new colors, the last colors drawn (failed before).
+**Not done:** the app's selection is dropped once by a compaction under it
+(its row hashes change).
+

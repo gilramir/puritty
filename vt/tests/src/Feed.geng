@@ -8,6 +8,7 @@ The replay corpus holds the core to Ghostty on 325 cases (`docs/vt-core.md`
 its own. Every expectation is the dump's form (§VC3).
 -}
 
+import Array.Builder as Builder
 import Expect
 import Support exposing (feed, lines, term)
 import Test.Runner.UnitNode as U
@@ -287,5 +288,71 @@ suite =
                     Expect.equal
                         { from = oldest, texts = Array.map (\row -> Vt.selectionText { row = row, col = 0 } { row = row, col = 11 } t) (Array.range oldest (oldest + count - 1)) }
                         read
+          }
+        , { name = "40,000 colors one after another: the last is drawn in its own, and a cell's older color is kept (review VP6)"
+          , test =
+                \_ ->
+                    let
+                        hex v =
+                            String.fromChar (Maybe.withDefault '0' (Array.get (v // 16) (String.toArray "0123456789abcdef"))) ++ String.fromChar (Maybe.withDefault '0' (Array.get (modBy 16 v) (String.toArray "0123456789abcdef")))
+
+                        color k =
+                            "\u{001B}[38;2;" ++ String.fromInt (k // 256) ++ ";" ++ String.fromInt (modBy 256 k) ++ ";7mX\u{001B}[H"
+
+                        -- a cell in its own color first, then 40,000 colors on
+                        -- the top left cell, a hundred a read
+                        t =
+                            Array.foldl
+                                (\n acc -> feed (String.join "" (Array.map color (Array.range (n * 100) (n * 100 + 99)))) acc)
+                                (feed "\u{001B}[2;1H\u{001B}[38;2;1;2;3mY\u{001B}[H" (term 10 2))
+                                (Array.range 0 399)
+                    in
+                    Expect.equal [ "0 |X|", "  0-0 fg=#" ++ hex (39999 // 256) ++ hex (modBy 256 39999) ++ "07", "1 |Y|", "  0-0 fg=#010203" ]
+                        (lines t |> Array.dropFirst 3)
+          }
+        , { name = "5,000 links one after another: the last still opens (review VP5)"
+          , test =
+                \_ ->
+                    let
+                        link k =
+                            "\u{001B}]8;;https://example.com/" ++ String.fromInt k ++ "\u{001B}\\X\u{001B}]8;;\u{001B}\\\u{001B}[H"
+
+                        t =
+                            Array.foldl (\n acc -> feed (String.join "" (Array.map link (Array.range (n * 50) (n * 50 + 49)))) acc) (term 10 2) (Array.range 0 99)
+                    in
+                    Expect.equal (Just "https://example.com/4999") (Vt.linkAt 0 { row = 0, col = 0 } t)
+          }
+        , { name = "70,000 clusters one after another, past the 65,536 a terminal hands out: the last is read whole (review VP6)"
+          , test =
+                \_ ->
+                    let
+                        mark k =
+                            String.fromChar (Maybe.withDefault 'x' (Char.fromCode (0x300 + modBy 112 k)))
+
+                        cluster k =
+                            "a" ++ mark k ++ mark (k // 112) ++ mark (k // 12544) ++ "\u{001B}[H"
+
+                        t =
+                            Array.foldl (\n acc -> feed (String.join "" (Array.map cluster (Array.range (n * 20) (n * 20 + 19)))) acc) (term 10 2) (Array.range 0 3499)
+                    in
+                    Expect.equal ("a" ++ mark 69999 ++ mark (69999 // 112) ++ mark (69999 // 12544))
+                        (Vt.selectionText { row = Vt.rowsPushed t, col = 0 } { row = Vt.rowsPushed t, col = 0 } t)
+          }
+        , { name = "the tmux view's canvas, composed 2,000 times from a pane in 20 new colors each time, draws the last colors (review VP6, its canvas)"
+          , test =
+                \_ ->
+                    let
+                        -- a pane of 20 by 2 whose 20 cells take 20 new colors
+                        -- each frame: 40,000 colors in all
+                        paneAt k =
+                            feed ("\u{001B}[H" ++ String.join "" (Array.map (\c -> "\u{001B}[38;2;" ++ String.fromInt (modBy 256 k) ++ ";" ++ String.fromInt c ++ ";" ++ String.fromInt (k // 256) ++ "mZ") (Array.range 0 19))) (term 20 2)
+
+                        frame k drawn =
+                            Vt.composeStyled (Builder.fromArray [ paneAt k ]) [ { index = 0, x = 0, y = 0, back = 0, fg = 0, bg = 0 } ] (feed "\u{001B}[0m\u{001B}[H\u{001B}[2J" drawn)
+
+                        canvas =
+                            Array.foldl frame (term 20 2) (Array.range 0 1999)
+                    in
+                    Expect.equal True (Array.any (\l -> String.contains "fg=#cf13" l) (lines canvas))
           }
         ]
