@@ -1,7 +1,10 @@
 # Code review of puritty, 2026-11-21
 
 A review of puritty's own source and of the libraries it is built on, for
-problems, inaccuracies, speed, efficiency and design. **Nothing here is fixed.**
+problems, inaccuracies, speed, efficiency and design. It was written with
+nothing fixed; a finding fixed since says so in its slice file, in a
+`Fixed:` line under it, and its row under "Every finding" begins
+**fixed**.
 This directory is the list of things to fix; each finding is written to be
 picked up on its own.
 
@@ -216,12 +219,12 @@ covered" sections. The larger gaps:
 
 | id | kind | confidence | finding |
 |---|---|---|---|
-| [VP1](01-vt-parser-screen.md) | security | confirmed | SD, IL and DL loop the raw count (up to 65,535) instead of the region's height |
+| [VP1](01-vt-parser-screen.md) | security | confirmed | **fixed** SD, IL and DL loop the raw count (up to 65,535) instead of the region's height |
 | [VP2](01-vt-parser-screen.md) | speed | confirmed | Searching or reading one scrollback row decodes its whole page (1,024 rows), and walks the pages from the oldest |
 | [VS1](02-vt-scrollback-view-input.md) | speed | confirmed | Scrollback search decodes a whole 1,024-row page for every row it looks at |
-| [VI1](03-vt-images.md) | security | confirmed | TIFF: overlapping strips make a decompression bomb, and the decoder ignores the image limit |
-| [VI2](03-vt-images.md) | security | confirmed | Sixel: a 30-byte string allocates gigabytes; the size is never held to the image limit |
-| [VI3](03-vt-images.md) | security | confirmed | JPEG: nothing bounds the number of scans or a scan's components, so a small file hangs the terminal |
+| [VI1](03-vt-images.md) | security | confirmed | **fixed** TIFF: overlapping strips make a decompression bomb, and the decoder ignores the image limit |
+| [VI2](03-vt-images.md) | security | confirmed | **fixed** Sixel: a 30-byte string allocates gigabytes; the size is never held to the image limit |
+| [VI3](03-vt-images.md) | security | confirmed | **fixed** JPEG: nothing bounds the number of scans or a scan's components, so a small file hangs the terminal |
 | [X1](07-x11-text.md) | bug | confirmed | Pasting puritty's own selection when it is over 256 KB stalls the paste and strips the window's event mask |
 | [W1](08-win32.md) | security | confirmed | A `file:` link from a program's output is run by the shell: local executables and UNC paths |
 | [MA1](09-app-main-a.md) | bug | confirmed | A window that draws no frame for 6.2 days stops drawing at all, for up to 6.2 more |

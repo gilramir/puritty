@@ -69,7 +69,11 @@ Where the references differ, xterm's semantics as WT emulates them:
 6. Raster Ph×Pv sets the fill's size and the least image size; data may
    go past it.
 7. Clipped at 10000 by 10000 pixels (as Kitty's KG5), not dropped; a 0
-   by 0 image drawn as nothing.
+   by 0 image drawn as nothing. One whose RGBA is over the terminal's
+   image limit is refused after the first pass, before its canvas is
+   made (IM5); until the code review's VI2 (2026-11-21) it was made
+   first and refused afterwards, so 30 bytes of raster attributes asked
+   for gigabytes.
 8. Kept as an image and a placement in the core's store (the Kitty
    store: an implicit id, the screen's own placements), so scrolling,
    erasing, the alternate screen and the panes of `tmux -CC` (IM14, IM18)

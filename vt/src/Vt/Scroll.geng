@@ -493,24 +493,32 @@ scrollUpBy keep count top bottom t =
                 , back = room.back
             }
 
+    else if not keep then
+        -- one move of the rows that stay and one clear, not `count` shifts
+        -- of the whole region (review VP1)
+        let
+            n =
+                min count (bottom - top + 1)
+        in
+        { t | screen = moveRows (top + n) top (bottom - top + 1 - n) t.screen |> blankRows (bottom + 1 - n) (bottom + 1) t.erase }
+
     else
         scrollUpBy keep (count - 1) top bottom { t | screen = screenUp keep top bottom t.erase t.screen }
 
 
-regionDown : Int -> (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < t0.rows) -> (taken t0 : Term) -> (r : Term where r.rows == t0.rows)
-regionDown count top bottom t0 =
+regionDown : Int -> (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < t.rows) -> (taken t : Term) -> (r : Term where r.rows == t.rows)
+regionDown count top bottom t =
+    -- one move of the rows that stay and one clear, not `count` shifts of
+    -- the whole region (review VP1)
     let
-        t =
-            { t0 | screen = settle t0.screen }
+        n =
+            min count (bottom - top + 1)
     in
-    if count <= 0 then
+    if n <= 0 then
         t
 
-    else if phys t.screen top <= phys t.screen bottom then
-        regionDown (count - 1) top bottom { t | screen = turnRegion top bottom -1 t.screen |> clearRow top t.erase }
-
     else
-        regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> clearRow top t.erase }
+        { t | screen = moveRows top (top + n) (bottom - top + 1 - n) t.screen |> blankRows top (top + n) t.erase }
 
 
 {-| `resize` without mode 2048's report, as DECCOLM resizes. -}

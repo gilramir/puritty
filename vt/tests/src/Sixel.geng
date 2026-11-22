@@ -127,6 +127,25 @@ suite =
                 \_ ->
                     Expect.equal [] (images (feed "\u{001B}Pq\"1;1;2;6~~\u{001B}\\" (Vt.withImageLimit 0 (sixel {}))))
           }
+        , { name = "a Sixel string's size is held to the image limit before its canvas is made (IM5, review VI2)"
+          , test =
+                \_ ->
+                    let
+                        small {} =
+                            Vt.withImageLimit 960 (sixel {})
+                    in
+                    -- 30 bytes naming 10,000 by 10,000 pixels: 400 MB, over the
+                    -- 10 MB limit, and before the bound it was allocated first
+                    Expect.equal
+                        { huge = []
+                        , fits = [ "20x12 rgba 0 at 0,0 cells 2x1 src 0,0,20,12 off 0,0 z -1" ]
+                        , over = []
+                        }
+                        { huge = images (feed "\u{001B}Pq\"1;1;10000;10000\u{001B}\\" (sixel {}))
+                        , fits = images (feed "\u{001B}Pq\"1;1;20;12\u{001B}\\" (small {})) |> Array.map (\l -> String.split " " l |> Array.set 2 "0" |> String.join " ")
+                        , over = images (feed "\u{001B}Pq\"1;1;20;13\u{001B}\\" (small {}))
+                        }
+          }
         , { name = "XTSMGRAPHICS answers the colour registers and the geometry"
           , test =
                 \_ ->

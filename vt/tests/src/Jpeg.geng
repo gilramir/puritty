@@ -66,5 +66,54 @@ suite =
                         Expect.equal (Err "a JPEG process not decoded (lossless, hierarchical or arithmetic)")
                             (Jpeg.decode 100000000 (Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0xFF, 0xD8, 0xFF, 0xC3, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xD9 ])) |> Result.map .width)
                  }
+               , { name = "a scan's components are bounded and named once, and a file's scans are bounded (review VI3)"
+                 , test =
+                    \_ ->
+                        let
+                            -- SOS naming component 1 alone, for the whole band, with
+                            -- no entropy data after it
+                            again =
+                                [ 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00 ]
+
+                            -- SOS naming component 1 five times
+                            five =
+                                [ 0xFF, 0xDA, 0x00, 0x10, 0x05, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x3F, 0x00 ]
+
+                            -- a progressive DC refinement of component 1, with
+                            -- no entropy data after it
+                            refine =
+                                [ 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x00, 0x10 ]
+
+                            withScans name extra =
+                                when Array.findFirst (\c -> c.name == name) JpegCases.cases is
+                                    Just found ->
+                                        when Base64.decode (Bytes.fromString found.value.jpeg) is
+                                            Just jpeg ->
+                                                Jpeg.decode 100000000
+                                                    (Bytes.flatten
+                                                        [ Bytes.slice 0 (Bytes.length jpeg - 2) jpeg
+                                                        , Bytes.fromUInt8s (Array.map UInt8.fromInt (extra ++ [ 0xFF, 0xD9 ]))
+                                                        ]
+                                                    )
+                                                    |> Result.map .width
+
+                                            Nothing ->
+                                                Err "no fixture"
+
+                                    Nothing ->
+                                        Err "no fixture"
+                        in
+                        Expect.equal
+                            { again = Err "a component scanned twice"
+                            , five = Err "a scan's count of components"
+                            , fewRefinements = Ok 24
+                            , manyRefinements = Err "too many scans"
+                            }
+                            { again = withScans "rgb 4:4:4, quality 95" again
+                            , five = withScans "rgb 4:4:4, quality 95" five
+                            , fewRefinements = withScans "progressive 4:4:4" (Array.flatten (Array.repeat 10 refine))
+                            , manyRefinements = withScans "progressive 4:4:4" (Array.flatten (Array.repeat 100 refine))
+                            }
+                 }
                ]
         )

@@ -537,7 +537,9 @@ dispatchRare final params t =
                 marginDown (param 0 1 params) t.top t.bottom t
 
              else
-                unwrapRegion t.top t.bottom (regionDown (param 0 1 params) t.top t.bottom t)
+                -- the clamped count: a region shifted its height is blank,
+                -- and 65,535 shifts of it are a hang (review VP1)
+                unwrapRegion t.top t.bottom (regionDown count t.top t.bottom t)
             )
 
     else if final == 0x4C then
@@ -557,7 +559,7 @@ dispatchRare final params t =
                     t
 
             else
-                unwrapRegion t.y t.bottom (regionDown (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False })
+                unwrapRegion t.y t.bottom (regionDown (min (param 0 1 params) (t.bottom - t.y + 1)) t.y t.bottom { t | x = 0, wrapNext = False })
 
     else if final == 0x4D then
         let
@@ -576,7 +578,7 @@ dispatchRare final params t =
                     t
 
             else
-                unwrapRegion t.y t.bottom (scrollUpBy False (count0 params) t.y t.bottom { t | x = 0, wrapNext = False })
+                unwrapRegion t.y t.bottom (scrollUpBy False (min (count0 params) (t.bottom - t.y + 1)) t.y t.bottom { t | x = 0, wrapNext = False })
 
     else if final == 0x62 then
         repeatLast (min 65535 (param 0 1 params)) t

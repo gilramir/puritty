@@ -135,6 +135,24 @@ suite =
                 \_ ->
                     Expect.equal [] (shown (feed (file "inline=1" tiff) (Vt.withCellSize { width = 10, height = 20 } (term 10 5))))
           }
+        , { name = "a TIFF's strips are read only up to its pixels, and its size is held to the image limit (review VI1)"
+          , test =
+                \_ ->
+                    let
+                        -- 10 by 10 RGB whose 99,999 strips all start at 0 and
+                        -- are 65,535 bytes long: before the bound they were
+                        -- joined first, 6.5 GB from a 400 KB file
+                        overlapping =
+                            "SUkqAAgAAAAHAAABBAABAAAACgAAAAEBBAABAAAACgAAAAMBAwABAAAAAQAAAAYBAwABAAAAAgAAABEBAwCfhgEAbwAAABUBAwABAAAAAwAAABcBAwCfhgEArQ0DAAAAAAAAAAAAAAAAAAAAAAAA"
+                                ++ String.repeat 66666 "AAAA"
+                                ++ String.repeat 66666 "////"
+                    in
+                    Expect.equal
+                        { shown = [ "10x10 rgba - at 0,0 cells 1x1 src 0,0,10,10 off 0,0 z -1" ], over = [] }
+                        { shown = sizes (feed (file "inline=1" overlapping) (images {}))
+                        , over = sizes (feed (file "inline=1" overlapping) (Vt.withImageLimit 399 (images {})))
+                        }
+          }
         , { name = "with an image limit of 0 nothing is shown (IM16)"
           , test =
                 \_ ->

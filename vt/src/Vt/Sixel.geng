@@ -11,7 +11,9 @@ before any `#`; `!` repeating (0 or none is 1), `$` back to the first
 column, `-` down a band; a byte it does not know ignored. Two passes: the
 first finds the size (the furthest column reached, the bands holding
 data, the raster's size at least), the second paints. At most 10,000 by
-10,000 pixels, what is past it cut off.
+10,000 pixels, what is past it cut off, and none whose RGBA is over the
+terminal's image limit: refused after the first pass, before the canvas
+is allocated (`docs/images.md` IM5; review VI2).
 -}
 
 import Array.Builder as Builder exposing (Builder)
@@ -81,9 +83,9 @@ start aspect =
 
 
 {-| The image of a Sixel string's parameters and its data (what follows
-`q`), or none when it draws nothing. -}
-decode : Array Int -> Bytes -> Maybe Decoded
-decode params data =
+`q`), or none when it draws nothing or its RGBA is over `most` bytes. -}
+decode : Int -> Array Int -> Bytes -> Maybe Decoded
+decode most params data =
     let
         p1 =
             Maybe.withDefault (meant Reason.NotSet 0) (Array.get 0 params)
@@ -103,7 +105,7 @@ decode params data =
         height =
             clamp 0 limit (max ((measured.maxBand + 1) * 6 * aspect) measured.rasterH)
     in
-    if width == 0 || height == 0 then
+    if width == 0 || height == 0 || width * height > most // 4 then
         Nothing
 
     else
@@ -116,7 +118,7 @@ decode params data =
                     rgbaOf (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get 0 vt340))
 
             canvas =
-                Builder.fromArray (Array.repeat (width * height) fill |> Array.flatten |> Array.map UInt8.fromInt)
+                filled (width * height * 4) fill
 
             painted =
                 run data (Bytes.length data) 0 (start (aspectOf p1)) (Just { width = width, height = height, out = canvas })
@@ -127,6 +129,30 @@ decode params data =
 
             Nothing ->
                 meant Reason.NotKnown Nothing
+
+
+{-| `size` bytes of the four of `pixel` over and over: the first pixel
+set, then what is set copied after itself, so the canvas is the one
+buffer it ends as, with no array of pixels before it. -}
+filled : Int -> Array Int -> Builder UInt8
+filled size pixel =
+    let
+        first =
+            Array.foldl
+                (\v acc -> { at = acc.at + 1, out = Builder.set acc.at (UInt8.fromInt v) acc.out })
+                { at = 0, out = Builder.repeat size (UInt8.fromInt 0) }
+                (Array.takeFirst 4 pixel)
+    in
+    doubled 4 size first.out
+
+
+doubled : Int -> Int -> (taken out : Builder UInt8) -> Builder UInt8
+doubled done size out =
+    if done <= 0 || done >= size then
+        out
+
+    else
+        doubled (done * 2) size (Builder.copyWithin done 0 (min done (size - done)) out)
 
 
 rgbaOf : Int -> Array Int

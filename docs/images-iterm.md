@@ -67,9 +67,10 @@ terminal ignores the sequence as Ghostty does.
 - **The first run of timg drew nothing:** `Vt.Png.decode`'s first
   argument is the most bytes of pixels, and 10,000 had been passed as if
   it were a side; it is the terminal's image limit now.
-- **The tests:** eleven in `vt/tests/src/Iterm.geng` (TIFF, PNG, a
+- **The tests:** twelve in `vt/tests/src/Iterm.geng` (TIFF, PNG, a
   download, cells, the aspect fitted, pixels resampled, `doNotMoveCursor`,
-  the multipart form, a split read, off, a limit of 0), and the pixel
+  the multipart form, a split read, off, a limit of 0, overlapping
+  strips), and the pixel
   case `image-iterm-basic` (a PNG at its own size and the TIFF in 3 by 1
   cells, each with text after it).
 - **Not yet** (then): JPEG and GIF, done in IT4; an animated GIF's frames
@@ -101,6 +102,15 @@ data: no C decoder, so no buffer overrun), both in the core:
 Both are chosen by their first bytes (`FF D8`, `GIF`) in
 `Vt.Iterm.decoded`, beside PNG and TIFF, and held to the terminal's image
 limit. `Vt.Jpeg` and `Vt.Gif` are exposed by the package, for their tests.
+
+**Bounded before the work** (the code review's VI1 and VI3, 2026-11-21).
+The TIFF decoder is held to the image limit too, before it reads a strip,
+and reads the strips only up to the pixels' bytes: 99,999 strips each
+naming the same 64 KB had been joined first, 6.5 GB from a 400 KB file. A
+JPEG scan names one to four components, each once and each in the frame;
+a sequential file scans each component once; a progressive one has at
+most 100 scans. Each scan is a pass over the frame's blocks, so a few KB
+of empty scans on a large frame had been hours of work.
 
 **Measured** (2026-11-17):
 

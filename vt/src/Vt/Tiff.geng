@@ -4,7 +4,10 @@ module Vt.Tiff exposing (Decoded, decode)
 IT2): chafa's form of iTerm2's images. Either byte order; the first image
 of the file; no compression, 8 bits a sample, RGB with or without an extra
 sample (taken as its alpha), or a grey level; the strips in order, chunky.
-Anything else is not decoded, and says why.
+Anything else is not decoded, and says why, as is an image whose RGBA is
+over `most` bytes. The size is held to `most` before any strip is read,
+and the strips are read only up to the pixels' bytes, so strips that
+overlap or name the whole file again cannot make more (review VI1).
 -}
 
 import Array.Builder as Builder exposing (Builder)
@@ -26,8 +29,8 @@ type alias Entry =
     { tag : Int, kind : Int, count : Int, at : Int }
 
 
-decode : Bytes -> Result String Decoded
-decode data =
+decode : Int -> Bytes -> Result String Decoded
+decode most data =
     let
         b0 =
             byteAt data 0
@@ -128,15 +131,12 @@ decode data =
 
             photometric =
                 first 262 -1
-
-            strips =
-                Array.map2 (\o c -> Bytes.slice o (o + c) data) (field 273 []) (field 279 [])
-
-            raw =
-                Bytes.flatten strips
         in
         if width < 1 || height < 1 || width > 10000 || height > 10000 then
             Err "dimensions"
+
+        else if width * height > most // 4 then
+            Err "over the image limit"
 
         else if first 259 1 /= 1 then
             Err "compressed"
@@ -150,11 +150,42 @@ decode data =
         else if not ((photometric == 2 && samples >= 3 && samples <= 4) || (photometric <= 1 && photometric >= 0 && samples == 1)) then
             Err "colors"
 
-        else if Bytes.length raw < width * height * samples then
-            Err "short"
-
         else
-            Ok { width = width, height = height, pixels = rgba samples photometric (width * height) raw }
+            let
+                need =
+                    width * height * samples
+
+                raw =
+                    stripped data need (field 273 []) (field 279 [])
+            in
+            if Bytes.length raw < need then
+                Err "short"
+
+            else
+                Ok { width = width, height = height, pixels = rgba samples photometric (width * height) raw }
+
+
+{-| The strips at `offsets`, of `counts` bytes, joined in order until
+`need` bytes are had: a strip past them is not read, and one that reaches
+past them is cut, so the result is never longer than `need`. -}
+stripped : Bytes -> Int -> Array Int -> Array Int -> Bytes
+stripped data need offsets counts =
+    Array.map2 (\o c -> { o = o, c = c }) offsets counts
+        |> Array.foldl
+            (\strip acc ->
+                if acc.have >= need || strip.c <= 0 then
+                    acc
+
+                else
+                    let
+                        piece =
+                            Bytes.slice strip.o (strip.o + min strip.c (need - acc.have)) data
+                    in
+                    { have = acc.have + Bytes.length piece, parts = Array.pushLast piece acc.parts }
+            )
+            { have = 0, parts = [] }
+        |> .parts
+        |> Bytes.flatten
 
 
 {-| The samples of `n` pixels as RGBA. -}

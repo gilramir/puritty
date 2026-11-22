@@ -9,7 +9,11 @@ component each. Each block dequantized and inverse transformed in floating
 point; chroma half as wide, or half as wide and tall, smoothed as
 libjpeg does it ("fancy upsampling"), any other from the nearest sample. Progressive and
 arithmetic-coded files, and 12-bit or CMYK ones, are not decoded, and say
-so. Held to `most` bytes of pixels.
+so. Held to `most` bytes of pixels, and its work to a bound (review VI3):
+a scan names one to four components, each once and each in the frame; a
+sequential file scans each component once; a progressive one has at most
+`maxScans` scans. Each scan is a pass over the frame's blocks, so without
+these a file of a few KB of empty scans was hours of work.
 -}
 
 import Array.Builder as Builder exposing (Builder)
@@ -98,6 +102,14 @@ decode most data =
 -- THE MARKERS
 
 
+{-| The most scans a progressive file may have. Each is a pass over every
+block of its components; IT6's progressive files have about ten, and a
+file with more is refused rather than decoded at ten times the cost. -}
+maxScans : Int
+maxScans =
+    100
+
+
 {-| Each marker segment from `at` to EOI (or the data's end). -}
 markers : Bytes -> Int -> Parsed -> Result String Parsed
 markers data at p =
@@ -169,6 +181,9 @@ markers data at p =
                 -- Exif: the orientation a camera wrote, which the picture
                 -- is turned by as a browser turns it (IT5)
                 markers data after { p | orientation = orientationOf (Bytes.slice 6 (Bytes.length body) body) }
+
+            else if m == 0xDA && Array.length p.scans >= maxScans then
+                Err "too many scans"
 
             else if m == 0xDA then
                 when scanOf body p is
@@ -373,7 +388,38 @@ scanOf body p =
                         _ ->
                             Err "a table not defined"
             in
-            Array.foldl (\i acc -> Result.andThen (\a -> Result.map (\c -> Array.pushLast c a) (one i)) acc) (Ok []) (Array.range 0 (n - 1))
+            if n < 1 || n > 4 || n > Array.length f.comps then
+                Err "a scan's count of components"
+
+            else
+                Array.foldl (\i acc -> Result.andThen (\a -> Result.map (\c -> Array.pushLast c a) (one i)) acc) (Ok []) (Array.range 0 (n - 1))
+                    |> Result.andThen (once p)
+
+
+{-| A scan's components, each named once in it; in a sequential file, none
+scanned by an earlier scan, so the file has at most a scan a component. -}
+once : Parsed -> Array ScanComp -> Result String (Array ScanComp)
+once p comps =
+    let
+        indexes =
+            Array.map .index comps
+
+        earlier =
+            if p.progressive then
+                []
+
+            else
+                Array.mapAndFlatten (\scan -> Array.map .index scan.comps) p.scans
+
+        repeated =
+            Array.indexedMap (\k i -> Array.member i (Array.takeFirst k indexes) || Array.member i earlier) indexes
+                |> Array.member True
+    in
+    if repeated then
+        Err "a component scanned twice"
+
+    else
+        Ok comps
 
 
 {-| A table not defined, for a progressive scan, which does not use it: an

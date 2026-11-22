@@ -213,4 +213,28 @@ suite =
                     in
                     Expect.equal (lines (feed "old\r\n" (term 10 3))) (lines t)
           }
+        , { name = "SD, IL and DL with a count of 65,535 do no more than the region's height (review VP1)"
+          , test =
+                \_ ->
+                    let
+                        filled =
+                            "a\r\nb\r\nc\r\nd\r\ne\u{001B}[2;4H"
+
+                        -- 20 of each on 1000 by 1000: before the clamp, each
+                        -- one was 65,535 shifts of the region
+                        many =
+                            String.repeat 20 "\u{001B}[65535T\u{001B}[65535L\u{001B}[65535M"
+                    in
+                    Expect.equal
+                        { sd = lines (feed (filled ++ "\u{001B}[5T") (term 10 5))
+                        , il = lines (feed (filled ++ "\u{001B}[4L") (term 10 5))
+                        , dl = lines (feed (filled ++ "\u{001B}[4M") (term 10 5))
+                        , big = lines (feed ("x" ++ many ++ "y") (term 1000 1000)) |> Array.takeFirst 4
+                        }
+                        { sd = lines (feed (filled ++ "\u{001B}[65535T") (term 10 5))
+                        , il = lines (feed (filled ++ "\u{001B}[65535L") (term 10 5))
+                        , dl = lines (feed (filled ++ "\u{001B}[65535M") (term 10 5))
+                        , big = [ "screen 1000x1000 main", "cursor 1,0", "history 0", "0 |y|" ]
+                        }
+          }
         ]

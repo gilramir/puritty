@@ -40,6 +40,7 @@ Facts the findings lean on, all read from the tree:
 - Fix: pass the limit in; check width, height, `width * height * 4 <= most` first; then require
   the strips' byte counts to sum to no more than `width * height * samples` (and each strip to
   lie inside the file) before slicing or flattening anything.
+- Fixed: 2026-11-21. `Tiff.decode` takes the limit and refuses a size over it first, and `stripped` reads the strips only up to `width * height * samples` bytes, so overlapping strips cannot make more. Test: `Iterm`'s "a TIFF's strips are read only up to its pixels" (99,999 overlapping strips), which ran out of memory before.
 
 ### VI2 · Sixel: a 30-byte string allocates gigabytes; the size is never held to the image limit
 - Where: vt/src/Vt/Sixel.geng:100-119; vt/src/Vt/Kitty.geng:1159
@@ -61,6 +62,7 @@ Facts the findings lean on, all read from the tree:
 - Fix: give `decode` the terminal's limit and refuse (or clip) when `width * height * 4` passes
   it, before the second pass; build the canvas with `Builder.repeat` of bytes (or a `Bytes`
   fill) rather than three intermediate arrays.
+- Fixed: 2026-11-21. `Sixel.decode` takes the limit and refuses after the first pass, before the canvas; the canvas is one builder filled by doubling a copy of its first pixel. Test: `Sixel`'s "a Sixel string's size is held to the image limit", which ran out of memory before.
 
 ### VI3 · JPEG: nothing bounds the number of scans or a scan's components, so a small file hangs the terminal
 - Where: vt/src/Vt/Jpeg.geng:173-207 (`markers`, SOS), 345-376 (`scanOf`), 478-483, 860-894 (`scanned`), 496-530
@@ -81,6 +83,7 @@ Facts the findings lean on, all read from the tree:
   of a component already scanned; cap progressive scans (libjpeg-turbo warns past 100 or so);
   stop a scan when its segment's bits are exhausted rather than decoding zeros to the end; and
   consider a budget of blocks decoded per image.
+- Fixed: 2026-11-21. `scanOf` refuses a scan of no components or more than four or than the frame has, and one naming a component twice or, in a sequential file, one scanned already; a progressive file has at most 100 scans (`maxScans`). Stopping a scan at the end of its bits, and a budget of blocks, are not done: these bound the passes to 100. Test: `Jpeg`'s "a scan's components are bounded", whose three refusals were decoded before.
 
 ### VI4 · Decoders peak at roughly ten times the pixel bytes, so the 320 MB limit admits multi-GB spikes from small inputs
 - Where: vt/src/Vt/Inflate.geng:48,77 (`Builder UInt8` output to `most`); vt/src/Vt/Kitty.geng:520,528,551-553 (`maxSize` 400 MiB); vt/src/Vt/Png.geng:281,304,329; vt/src/Vt/Jpeg.geng:466,478-485,841,1299; vt/src/Vt/Gif.geng:176,213,243,324
