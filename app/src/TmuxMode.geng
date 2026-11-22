@@ -4,6 +4,7 @@ module TmuxMode exposing
     , State
     , activeMode
     , afterSent
+    , answerEntry
     , anyMotion
     , bells
     , customize
@@ -14,6 +15,8 @@ module TmuxMode exposing
     , dropTarget
     , dueAt
     , encodeKey
+    , entryAsked
+    , expectEntry
     , givingUp
     , idle
     , isAsking
@@ -37,11 +40,13 @@ module TmuxMode exposing
     , setCell
     , setEmbedder
     , setLook
+    , startsTmux
     , tabKey
     , tick
     , title
     , typeInto
     , typed
+    , typedOutside
     , viewLine
     , wantedSize
     )
@@ -83,6 +88,10 @@ import Window
 
 type alias State =
     { reader : Control.Reader
+    -- the line typed outside control mode since the last Enter, or
+    -- `Nothing` when a key that edits it unseen (an arrow, a recalled
+    -- line) was typed: on Enter, whether it starts `tmux -CC` (TM108)
+    , typedLine : Maybe String
     , on : Bool
     -- control mode begun and tmux's reply to the command it was started
     -- with not yet ended: what it has said meanwhile, which is an error
@@ -797,6 +806,7 @@ type alias PaneInfo =
 idle : {} -> State
 idle _ =
     { reader = Control.reader
+    , typedLine = Just ""
     , on = False
     , starting = Nothing
     , window = -1
@@ -1025,10 +1035,85 @@ read size bytes s =
 {-| `read`'s bytes, before a prompt they opened asks its history. -}
 readHere : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String, view : Maybe String }
 readHere size bytes s =
-    let
-        fed =
-            Control.feed bytes s.reader
+    readEvents size (Control.feed bytes s.reader) s
 
+
+{-| Whether the next `ESC P 1000 p` is expected: the tab's user has just
+started `tmux -CC` (TM108). -}
+expectEntry : Bool -> (taken s : State) -> State
+expectEntry yes s =
+    { s | reader = Control.expect yes s.reader }
+
+
+{-| Whether a command line starts `tmux -CC` (TM108): a word that is
+`tmux` or ends in `/tmux`, and after it a flag holding `CC` (`-CC`,
+`-CCu`), as `tmux -CC attach` or `ssh -t host tmux -CC new -A`. -}
+startsTmux : String -> Bool
+startsTmux line =
+    let
+        words =
+            String.words line
+    in
+    when Array.findFirst (\w -> w == "tmux" || String.endsWith "/tmux" w) words is
+        Just found ->
+            Array.any (\w -> String.startsWith "-" w && not (String.startsWith "--" w) && String.contains "CC" w) (Array.dropFirst (found.index + 1) words)
+
+        Nothing ->
+            meant Reason.FromOutside False
+
+
+{-| A key's bytes typed outside control mode: the line kept, and on Enter
+whether control mode is expected next (TM108). Erasing keys are
+followed; any other control or escape sequence makes the line unknown
+until the next Enter, as a recalled line is. -}
+typedOutside : Bytes -> (taken s : State) -> State
+typedOutside bytes s =
+    if s.on then
+        s
+
+    else
+        String.foldl typedChar s (Bytes.toStringLossy bytes)
+
+
+typedChar : Char -> (taken st : State) -> State
+typedChar c st =
+    let
+        code =
+            Char.toCode c
+    in
+    if code == 0x0D || code == 0x0A then
+        { st | typedLine = Just "", reader = Control.expect (Maybe.map startsTmux st.typedLine |> Maybe.withDefault (meant Reason.FromOutside False)) st.reader }
+
+    else if code == 0x7F || code == 0x08 then
+        { st | typedLine = Maybe.map (String.dropLast 1) st.typedLine }
+
+    else if code == 0x15 || code == 0x03 then
+        { st | typedLine = Just "" }
+
+    else if code < 0x20 then
+        { st | typedLine = Nothing }
+
+    else
+        { st | typedLine = Maybe.map (\l -> l ++ String.fromChar c) st.typedLine }
+
+
+{-| Whether an entry that was not expected waits to be answered (TM108). -}
+entryAsked : State -> Bool
+entryAsked s =
+    Control.isAsking s.reader
+
+
+{-| The answer to an entry that was not expected: `True` follows control
+mode from it, `False` gives its bytes to the terminal (TM108). -}
+answerEntry : { cols : Int, rows : Int } -> Bool -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String, view : Maybe String }
+answerEntry size yes s =
+    readEvents size (Control.answer yes s.reader) s
+
+
+{-| What a read's events did. -}
+readEvents : { cols : Int, rows : Int } -> { reader : Control.Reader, events : Array Event } -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String, view : Maybe String }
+readEvents size fed s =
+    let
         -- each pane's bells before the output, so that one that rang is
         -- found (TM99)
         rangBefore =
@@ -1157,6 +1242,9 @@ describe next e =
 
         Stray ->
             [ "a line that is not tmux's: tmux asked whether it is there" ]
+
+        Asked ->
+            [ "control mode's start not expected: the user is asked" ]
 
         Foreign b ->
             [ "tmux answered: " ++ String.fromInt (Bytes.length b) ++ " bytes another program wrote into the terminal" ]
@@ -2547,6 +2635,10 @@ event size e acc =
                         }
                 , outside = acc.outside ++ said
             }
+
+        Asked ->
+            -- the user is asked (TM108); `answerEntry` goes on
+            acc
 
         Stray ->
             -- tmux asked something it answers at once, and given up on if
@@ -4166,7 +4258,7 @@ notice n acc =
                     -- a nested client's control mode, dropped until it ends
                     let
                         fed =
-                            Control.feed o.bytes inner
+                            nestedFeed o.bytes inner
 
                         nested =
                             if Control.isInside fed.reader then
@@ -4180,16 +4272,26 @@ notice n acc =
                 Nothing ->
                     meant Reason.NotOpen
                         if Control.startsControl o.bytes then
-                            -- `tmux -CC` run inside a pane (TM19): an empty line
-                            -- detaches that client, what it sends in control mode
-                            -- is dropped, and the pane says why
+                            -- `tmux -CC` run inside a pane (TM19): what it sends in
+                            -- control mode is dropped and the pane says why; no
+                            -- key is sent for it, since the bytes may be any
+                            -- program's (the code review's TA15), and a line
+                            -- that is not tmux's ends it
                             let
                                 fed =
-                                    Control.feed o.bytes Control.reader
+                                    nestedFeed o.bytes (Control.strict (Control.expect True Control.reader))
 
                                 said =
                                     feedPane o.pane
-                                        (Bytes.flatten [ outsideOf fed.events, Bytes.fromString "\r\npuritty: tmux -CC inside a tmux pane is not shown; it was detached.\r\n" ])
+                                        (Bytes.flatten
+                                            [ outsideOf fed.events
+                                            , if Control.isInside fed.reader then
+                                                Bytes.fromString "\r\npuritty: tmux -CC inside a tmux pane is not shown; an empty line (Enter) detaches it.\r\n"
+
+                                              else
+                                                Bytes.empty
+                                            ]
+                                        )
                                         { st
                                             | nested =
                                                 if Control.isInside fed.reader then
@@ -4198,11 +4300,8 @@ notice n acc =
                                                 else
                                                     st.nested
                                         }
-
-                                detached =
-                                    sent (bytesTo st.caps o.pane (Bytes.fromString "\n")) said
                             in
-                            { acc | state = detached.state, commands = acc.commands ++ detached.commands }
+                            { acc | state = said }
 
                         else
                             let
@@ -17552,3 +17651,23 @@ resized size s =
 
     else
         { state = s, commands = [] }
+
+
+{-| A nested client's control mode read (TM19): a line that is not tmux's
+ends it at once, its bytes the pane's, as there is no client to ask
+whether tmux is there (the code review's TA15). -}
+nestedFeed : Bytes -> Control.Reader -> { reader : Control.Reader, events : Array Event }
+nestedFeed bytes inner =
+    let
+        fed =
+            Control.feed bytes inner
+    in
+    if Array.any (\e -> e == Stray) fed.events then
+        let
+            ended =
+                Control.feed Bytes.empty (Control.giveUp fed.reader)
+        in
+        { reader = ended.reader, events = fed.events ++ ended.events }
+
+    else
+        fed

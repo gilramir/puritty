@@ -775,11 +775,12 @@ down a row, pass as before.
   goes on from there: what the paused pane printed shows, and nothing is
   drawn twice.
 - **`tmux -CC` inside a pane** (tmux does not refuse it for a control
-  client, TM5.1): when a pane's output starts control mode, puritty sends
-  the pane an empty line, which detaches that inner client, reads the rest
-  of its output with a `Tmux.Control` reader of its own, so that the inner
-  client's lines are dropped until its `ESC \`, and writes a line in the
-  pane saying why.
+  client, TM5.1): when a pane's output starts control mode, puritty reads
+  the rest of its output with a `Tmux.Control` reader of its own, so that
+  the inner client's lines are dropped until its `ESC \`, and writes a
+  line in the pane saying why and that an empty line (Enter) detaches it.
+  *Changed by TM108:* puritty no longer sends that empty line itself, and
+  the reader is strict: a line that is not tmux's ends it, shown.
 - **When control mode ends with a reason**, `%exit REASON` (as "too far
   behind"), puritty writes it on the terminal it goes back to. Measured: a
   detach gives a bare `%exit`, then ST, so nothing is said for one.
@@ -4218,3 +4219,42 @@ before, it sent bytes and copy mode did not move. **Left:** Shift+PgUp
 still scrolls puritty's own view of the pane (TB2), and a paste over a
 pane in copy mode is not looked at here.
 
+
+## TM108 · Control mode only when this tab started tmux -CC (2026-11-22)
+
+The code review's TA3 (high) and TA15: control mode began on `ESC P 1000 p`
+anywhere in the terminal's output, and from then the stream was believed.
+A file shown with `cat`, or a remote service's output, could play tmux:
+its `list-keys` answer became the bindings puritty follows, and on a tmux
+without `send-keys -K` (TM50) a bound key wrote the binding's text to the
+pty as a line, which the shell would run. In a pane, the same bytes made
+puritty press Enter there (TM19). Gilbert's decision (2026-11-22): enter at
+once only when this tab started it, and otherwise ask.
+
+- **Expected**: `Tmux.Control`'s reader enters at once only when the entry
+  is expected (`Control.expect`), and an expectation is used up by one
+  entry. It is set when the tab's command starts `tmux -CC` (an ssh host's
+  command, or puritty's own command line) and, outside control mode, on
+  each Enter, from the line typed before it (`TmuxMode.typedOutside`):
+  whether that line starts `tmux -CC` (`TmuxMode.startsTmux`: a word
+  `tmux` or ending in `/tmux`, and after it a flag holding `CC`). Erasing
+  keys (Backspace, Ctrl-U, Ctrl-C) are followed; any other control or
+  escape sequence (an arrow, a recalled line) makes the line unknown, so
+  a line recalled from history is asked about.
+- **Asked**: an entry not expected gives `Asked`, and the bytes from it
+  are held, whole, until `Control.answer`. The tab shows "Start tmux
+  control mode?" (Enter or Start: start it; Esc or Show as text: the entry
+  and the held bytes go to the terminal as output, and a later entry in
+  them is asked again). Past 1 MiB held (TP3's bound), the bytes are the
+  terminal's without an answer.
+- **In a pane** (TA15): no key is sent; the note says an empty line
+  detaches the inner client; and the nested reader is strict
+  (`Control.strict`), so a line that is not a `%` line outside a reply
+  ends it at once and is shown in the pane, where before it was dropped
+  until an `ESC \` that a `cat`ed file never sends.
+
+Tests: the tmux package's reader (five: asked and held, yes, no, an
+expectation used up, the 1 MiB bound) and the app's `TmuxMode` suite
+(asked and refused, asked and started, typed lines, `startsTmux`, the
+pane's case on each tmux). Before, the pane's case sent `send-keys -H 0a`
+to the pane and showed nothing of the line after.

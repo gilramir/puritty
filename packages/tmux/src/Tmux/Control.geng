@@ -2,12 +2,16 @@ module Tmux.Control exposing
     ( Event(..)
     , Notice(..)
     , Reader
+    , answer
+    , expect
     , feed
     , giveUp
+    , isAsking
     , isGivingUp
     , isInside
     , reader
     , startsControl
+    , strict
     , unescape
     )
 
@@ -43,6 +47,16 @@ type alias Reader =
     -- when `giveUp` says it will not
     , stray : Maybe Bytes
     , givingUp : Bool
+    -- whether `ESC P 1000 p` is expected: the terminal's user started
+    -- `tmux -CC` (puritty `docs/tmux.md` TM108); set by `expect`, used up
+    -- by one entry
+    , expected : Bool
+    -- the bytes from an entry that was not expected, held until `answer`
+    -- says whether they are tmux's (TM108)
+    , asking : Maybe Bytes
+    -- whether a bare line outside a reply is in doubt from the start, not
+    -- only once tmux has spoken (`strict`)
+    , strictLines : Bool
     }
 
 
@@ -57,7 +71,49 @@ type alias Block =
 
 reader : Reader
 reader =
-    { inside = False, held = Bytes.empty, block = Nothing, spoken = False, stray = Nothing, givingUp = False }
+    { inside = False, held = Bytes.empty, block = Nothing, spoken = False, stray = Nothing, givingUp = False, expected = False, asking = Nothing, strictLines = False }
+
+
+{-| A reader for which any line outside a reply that is not a `%` line is
+in doubt from the start, a start-up error too (TM70): for a nested client
+whose output is dropped anyway, so that bytes that only looked like its
+entry end it at their first line (puritty `docs/tmux.md` TM19). -}
+strict : Reader -> Reader
+strict r =
+    { r | strictLines = True }
+
+
+{-| Whether the next `ESC P 1000 p` is expected: `True` when the
+terminal's user has just started `tmux -CC`, `False` when they have done
+something else since. An entry that is not expected is not followed: it
+is `Asked`, and the bytes wait for `answer`. -}
+expect : Bool -> Reader -> Reader
+expect yes r =
+    { r | expected = yes }
+
+
+{-| Whether an entry waits for `answer`. -}
+isAsking : Reader -> Bool
+isAsking r =
+    r.asking /= Nothing
+
+
+{-| The answer to `Asked`: `True` follows control mode from the entry, its
+bytes read as tmux's; `False` hands the entry and the bytes after it back
+as the terminal's (a later entry in them is asked again). -}
+answer : Bool -> Reader -> { reader : Reader, events : Array Event }
+answer yes r =
+    when r.asking is
+        Just waiting ->
+            if yes then
+                bounded (step waiting 0 { r | asking = Nothing, inside = True, spoken = False, stray = Nothing, held = Bytes.empty } [ Entered ])
+
+            else
+                step waiting 0 { r | asking = Nothing, held = Bytes.empty } [ Outside entry ]
+
+        Nothing ->
+            -- no entry waits for an answer
+            meant Reason.NotOpen { reader = r, events = [] }
 
 
 isInside : Reader -> Bool
@@ -97,6 +153,9 @@ type Event
     -- the lines in doubt, tmux having spoken since: another program's,
     -- written into the terminal (`wall`), control mode going on
     | Foreign Bytes
+    -- `ESC P 1000 p` not expected (`expect`): the bytes from it are held
+    -- until `answer` says whether to follow it
+    | Asked
 
 
 {-| tmux 3.8's notifications (`docs/tmux.md` TM5.3). Ids are the numbers
@@ -142,6 +201,22 @@ feed bytes r =
             else
                 Bytes.flatten [ r.held, bytes ]
     in
+    when r.asking is
+        Just waiting ->
+            -- held whole until answered; past what a reply may hold, not
+            -- tmux's after all: the terminal's
+            if Bytes.length waiting + Bytes.length bytes > heldMost then
+                step (Bytes.flatten [ waiting, bytes ]) 0 { r | asking = Nothing } [ Outside entry ]
+
+            else
+                { reader = { r | asking = Just (Bytes.flatten [ waiting, bytes ]) }, events = [] }
+
+        Nothing ->
+            meant Reason.NotOpen (feedOn data r)
+
+
+feedOn : Bytes -> Reader -> { reader : Reader, events : Array Event }
+feedOn data r =
     if r.givingUp then
         -- the lines in doubt and everything since are the terminal's
         let
@@ -226,8 +301,11 @@ outside data from at r events =
             seen =
                 Bytes.slice esc (min n (esc + 7)) data
         in
-        if seen == entry then
-            step data (esc + 7) { r | inside = True, spoken = False, stray = Nothing } (Array.pushLast Entered (withOutside data from esc events))
+        if seen == entry && r.expected then
+            step data (esc + 7) { r | inside = True, spoken = False, stray = Nothing, expected = False } (Array.pushLast Entered (withOutside data from esc events))
+
+        else if seen == entry then
+            { reader = { r | asking = Just (Bytes.slice (esc + 7) n data) }, events = Array.pushLast Asked (withOutside data from esc events) }
 
         else if Bytes.length seen < 7 && seen == Bytes.slice 0 (Bytes.length seen) entry then
             -- the start of `ESC P 1000 p`, or not: the next read says
@@ -276,7 +354,7 @@ inside data at r events =
         in
         step data (at + 2) { r | inside = False, block = Nothing, stray = Nothing } (events ++ left)
 
-    else if r.block == Nothing && r.spoken && byteAt at data /= 0x25 then
+    else if r.block == Nothing && (r.spoken || r.strictLines) && byteAt at data /= 0x25 then
         -- once tmux has begun, it writes outside a reply only `%` lines
         -- and the `ESC \` that ends control mode (above), from 2.7 to 3.8
         -- (`control.c`; 2.7's parse error is inside its guards). Before,

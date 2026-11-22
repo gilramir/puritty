@@ -76,7 +76,7 @@ settleUpTo n run =
 {-| A session attached to `w` and settled. -}
 attached : World -> Run
 attached w =
-    settle (deliver FakeTmux.startBytes { tmux = TmuxMode.idle {}, world = w, held = [], ms = 1000 })
+    settle (deliver FakeTmux.startBytes { tmux = TmuxMode.expectEntry True (TmuxMode.idle {}), world = w, held = [], ms = 1000 })
 
 
 {-| A key with a letter on it (`k`), typed. -}
@@ -228,6 +228,13 @@ look run =
                 |> Array.map (\r -> Vt.selectionText { row = top + r, col = 0 } { row = top + r, col = painted.canvas.cols - 1 } painted.canvas |> String.trimRight)
     in
     { run = { run | tmux = painted }, rows = rows }
+
+
+{-| A line typed at the shell, outside control mode: `tmux -CC` typed
+makes control mode expected (TM108). -}
+typedOutside : String -> (taken run : Run) -> Run
+typedOutside line run =
+    { run | tmux = TmuxMode.typedOutside (Bytes.fromString line) run.tmux }
 
 
 row : Int -> { run : Run, rows : Array String } -> String
@@ -1462,7 +1469,7 @@ onVersion version =
                             }
 
                         run =
-                            settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.idle {}), world = off, held = [], ms = 1000 })
+                            settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.expectEntry True (TmuxMode.idle {})), world = off, held = [], ms = 1000 })
                     in
                     Expect.equal [ "  replies no question waited for: 0" ]
                         (TmuxMode.diagnose run.tmux |> Array.keepIf (String.startsWith "  replies no question"))
@@ -1490,7 +1497,7 @@ onVersion version =
 
                         -- in tmux's look, which draws tmux's status lines
                         run =
-                            settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.idle {}), world = off, held = [], ms = 1000 })
+                            settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.expectEntry True (TmuxMode.idle {})), world = off, held = [], ms = 1000 })
 
                         wanted =
                             TmuxMode.wantedSize run.tmux
@@ -1551,6 +1558,102 @@ onVersion version =
                     in
                     Expect.equal { saying = says, silent = False } { saying = shown (start version), silent = shown older }
           }
+        , { name = "a tab that did not start tmux -CC is asked before control mode, and refused, the bytes are its text (TM108, the code review's TA3)"
+          , test =
+                \_ ->
+                    let
+                        read =
+                            TmuxMode.read { cols = 80, rows = 25 } FakeTmux.startBytes (TmuxMode.idle {})
+
+                        asked =
+                            { asked = TmuxMode.entryAsked read.state, on = TmuxMode.isOn read.state, outside = read.outside, commands = read.commands }
+
+                        refused =
+                            TmuxMode.answerEntry { cols = 80, rows = 25 } False read.state
+                    in
+                    Expect.equal
+                        { asked = { asked = True, on = False, outside = Bytes.empty, commands = [] }
+                        , refused = { asked = False, on = False, outside = FakeTmux.startBytes }
+                        }
+                        { asked = asked
+                        , refused = { asked = TmuxMode.entryAsked refused.state, on = TmuxMode.isOn refused.state, outside = refused.outside }
+                        }
+          }
+        , { name = "control mode asked about and answered yes starts as one expected does (TM108)"
+          , test =
+                \_ ->
+                    let
+                        read =
+                            TmuxMode.read { cols = 80, rows = 25 } FakeTmux.startBytes (TmuxMode.idle {})
+
+                        yes =
+                            TmuxMode.answerEntry { cols = 80, rows = 25 } True read.state
+
+                        expected =
+                            TmuxMode.read { cols = 80, rows = 25 } FakeTmux.startBytes (TmuxMode.expectEntry True (TmuxMode.idle {}))
+                    in
+                    Expect.equal { on = True, asked = False, commands = expected.commands }
+                        { on = TmuxMode.isOn yes.state, asked = TmuxMode.entryAsked yes.state, commands = yes.commands }
+          }
+        , { name = "a line typed that starts tmux -CC makes control mode expected; a line edited unseen does not (TM108)"
+          , test =
+                \_ ->
+                    let
+                        after typed =
+                            TmuxMode.entryAsked (TmuxMode.read { cols = 80, rows = 25 } FakeTmux.startBytes (TmuxMode.typedOutside (Bytes.fromString typed) (TmuxMode.idle {}))).state
+                    in
+                    Expect.equal
+                        [ False, False, True, True, True, True ]
+                        (Array.map after
+                            [ "tmux -CC attach\r"
+                            , "tmux -CX\u{007F}C\r"
+                            , "\u{001B}[A\r"
+                            , "tmux -CC attach\u{0015}ls\r"
+                            , "tmux -CC\rls\r"
+                            , "tmux -CC"
+                            ]
+                        )
+          }
+        , { name = "a command that starts tmux -CC, by name or path, with -CC among its flags (TM108)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ True, True, True, True, False, False, False, False ]
+                        (Array.map TmuxMode.startsTmux
+                            [ "tmux -CC"
+                            , "tmux -CC attach -t work"
+                            , "/usr/bin/tmux -CCu new -A"
+                            , "ssh -t build tmux -CC"
+                            , "tmux attach"
+                            , "ls -CC"
+                            , "tmux --CC"
+                            , ""
+                            ]
+                        )
+          }
+        , { name = "tmux -CC in a pane sends that pane no key, and a line not tmux's ends its control mode (TM19, the code review's TA15)"
+          , test =
+                \_ ->
+                    let
+                        before =
+                            attached (start version)
+
+                        nested =
+                            before
+                                |> deliver (Bytes.fromString "%output %0 \\033P1000p\u{000D}\n")
+                                |> deliver (Bytes.fromString "%output %0 hello from cat\\015\\012\u{000D}\n")
+                                |> settle
+
+                        sentTo0 =
+                            Array.dropFirst (Array.length before.world.heard) nested.world.heard
+                                |> Array.keepIf (\l -> String.startsWith "send-keys -t '%0'" l)
+
+                        seen =
+                            look nested
+                    in
+                    Expect.equal { keys = [], shown = True }
+                        { keys = sentTo0, shown = Array.any (String.contains "hello from cat") seen.rows }
+          }
         , { name = "a tree open when control mode ends is gone when tmux -CC is run again (TM102)"
           , test =
                 \_ ->
@@ -1564,6 +1667,7 @@ onVersion version =
                         again =
                             prefixThen "s" fresh.run
                                 |> deliver (Bytes.fromString "%exit\u{000D}\n\u{001B}\\")
+                                |> typedOutside "tmux -CC attach\r"
                                 |> deliver FakeTmux.startBytes
                                 |> settle
                                 |> look
@@ -1882,6 +1986,6 @@ failedStart : String -> { said : String, asked : Array String }
 failedStart bytes =
     let
         r =
-            TmuxMode.read { cols = 80, rows = 25 } (Bytes.fromString bytes) (TmuxMode.idle {})
+            TmuxMode.read { cols = 80, rows = 25 } (Bytes.fromString bytes) (TmuxMode.expectEntry True (TmuxMode.idle {}))
     in
     { said = Bytes.toStringLossy r.outside, asked = r.commands }

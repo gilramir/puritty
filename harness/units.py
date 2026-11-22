@@ -114,8 +114,9 @@ SUITES = [
     # a line not tmux's, once it has begun, ends control mode; 136 since
     # TK14: such a line is in doubt until tmux speaks (wall) or not; 139
     # since TP1, TP3 and TP5: ~ in a paste, a line held to 1 MiB, what is
-    # held by commands' names; 140 since TP2: ESC \\ inside a reply
-    Suite("tmux", 140, runs_of("packages/tmux/tests")),
+    # held by commands' names; 140 since TP2: ESC \\ inside a reply; 145
+    # since TA3: an entry not expected, asked (docs/tmux.md TM108)
+    Suite("tmux", 145, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
@@ -176,8 +177,9 @@ SUITES = [
         # a time set ahead and read days later; 476 since VI11: a picture's
         # file by a share's path; 488 since TA5 and TA7: the size's reply
         # waited for, a grab let go, on each tmux; 489 since PS11: the
-        # picker's wheel after the keys
-        489,
+        # picker's wheel after the keys; 519 since TA3 and TA15: control
+        # mode asked about, and in a pane no key sent, on each tmux
+        519,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

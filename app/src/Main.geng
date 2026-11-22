@@ -1520,7 +1520,19 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                         Maybe.map
                             (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] })
                             config.remote
-                     , tmux = TmuxMode.setEmbedder (embedderOf config) <| TmuxMode.setCell (paneCell cell) (TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {}))))
+                     , tmux =
+                        -- control mode expected when the tab's command starts
+                        -- `tmux -CC` (docs/tmux.md TM108)
+                        TmuxMode.expectEntry
+                            (when config.remote is
+                                Just h ->
+                                    Maybe.map TmuxMode.startsTmux h.command |> Maybe.withDefault (meant Reason.NotSet False)
+
+                                Nothing ->
+                                    meant Reason.NotSet (TmuxMode.startsTmux (String.join " " config.command))
+                            ) <|
+                            TmuxMode.setEmbedder (embedderOf config) <|
+                                TmuxMode.setCell (paneCell cell) (TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {}))))
                      , overlaid = False
                      , search = Nothing
                      , barDrag = False
@@ -1755,7 +1767,8 @@ sendKey k bytes ms m =
         sendCommands r.commands { m | tmux = r.state }
 
     else
-        sendPty bytes m
+        -- the line typed, to know whether it starts `tmux -CC` (TM108)
+        sendPty bytes { m | tmux = TmuxMode.typedOutside bytes m.tmux }
 
 
 sendPty : Bytes -> (taken m : Model) -> Model
@@ -2392,7 +2405,7 @@ pointerShape m =
                 Window.TextPointer
 
         shape =
-            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || Maybe.isJust m.dropAsk || m.coloring /= Nothing || m.menu /= Nothing then
+            if m.startFailed /= Nothing || m.closing /= Nothing || TmuxMode.entryAsked m.tmux || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || Maybe.isJust m.dropAsk || m.coloring /= Nothing || m.menu /= Nothing then
                 Window.ArrowPointer
 
             else
@@ -3941,12 +3954,39 @@ replyCap =
 done to its panes and its commands queued; the rest fed to the core. -}
 feed : Backend -> Bytes -> Int -> (taken m : Model) -> Task Error Model
 feed remote chunk ms m =
+    feedRead remote (ReadChunk chunk) ms m
+
+
+{-| What `TmuxMode` is given: a read, or the answer to its question
+before control mode (docs/tmux.md TM108). -}
+type ReadOf
+    = ReadChunk Bytes
+    | EntryAnswer Bool
+
+
+{-| A read, or the answer to the entry question, through `TmuxMode`: the
+log, the terminal's bytes, the commands. -}
+feedRead : Backend -> ReadOf -> Int -> (taken m : Model) -> Task Error Model
+feedRead remote what ms m =
     let
         size =
             { cols = m.term.cols, rows = m.term.rows }
 
         r =
-            TmuxMode.read size chunk m.tmux
+            when what is
+                ReadChunk chunk ->
+                    TmuxMode.read size chunk m.tmux
+
+                EntryAnswer yes ->
+                    TmuxMode.answerEntry size yes m.tmux
+
+        length =
+            when what is
+                ReadChunk chunk ->
+                    Bytes.length chunk
+
+                EntryAnswer _ ->
+                    0
 
         on =
             TmuxMode.isOn r.state
@@ -3954,7 +3994,7 @@ feed remote chunk ms m =
         -- what tmux said, or else the bytes read, in the log
         traced =
             (if Array.isEmpty r.trace && not on then
-                Diag.add ms "read" (String.fromInt (Bytes.length chunk) ++ " bytes") m.diag
+                Diag.add ms "read" (String.fromInt length ++ " bytes") m.diag
 
              else
                 Diag.addAll ms "tmux<" r.trace m.diag
@@ -5950,11 +5990,14 @@ rememberChanges m =
 
 {-| tmux control mode not running, with the settings' look, bar and
 background. -}
-freshTmux : Config -> Vt.Term -> TmuxMode.State
-freshTmux config like =
+freshTmux : Config -> Vt.Term -> Maybe String -> TmuxMode.State
+freshTmux config like command =
     TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
         |> TmuxMode.setCell (paneCell { width = like.config.cellWidth, height = like.config.cellHeight })
         |> TmuxMode.setEmbedder (embedderOf config)
+        -- control mode expected when the tab's command starts `tmux -CC`
+        -- (docs/tmux.md TM108)
+        |> TmuxMode.expectEntry (Maybe.map TmuxMode.startsTmux command |> Maybe.withDefault (meant Reason.NotSet False))
 
 
 {-| What a tmux pane's terminal is given (`docs/images.md` IM18): the
@@ -6248,7 +6291,7 @@ sshKey remote k m =
                             -- session's modes kept, its screen left in place
                             -- (docs/tabs.md TB19)
                             remote.reconnect (ptySize m.term.cols m.term.rows m.term)
-                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing, tried = [], changes = [] }, tmux = freshTmux m.config m.term, term = Vt.restarted m.term, back = 0, selection = Nothing, urgent = True })
+                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing, tried = [], changes = [] }, tmux = freshTmux m.config m.term screen.command, term = Vt.restarted m.term, back = 0, selection = Nothing, urgent = True })
 
                         else if (screen.failed /= Nothing && enter) || escape then
                             -- this tab's session given up: the tab closed, and
@@ -6666,6 +6709,16 @@ handleOne remote ms rest ev m =
                     )
                         |> Task.andThen (\next -> handle next.remote ms rest next)
 
+                EntryAsking ->
+                    -- and the question before control mode (docs/tmux.md TM108)
+                    (if k.action /= 0 then
+                        entryKey k ms m
+
+                     else
+                        Task.succeed m
+                    )
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
                 RenamingUp r ->
                     -- the rename box takes the keys while it is open (TB1)
                     (if k.action /= 0 then
@@ -7023,6 +7076,15 @@ handleOne remote ms rest ev m =
                                             -- the close question takes the pointer: its buttons answer it, and nothing reaches the terminal (TB12)
                                             (if p.action == 0 then
                                                 closePress p c m
+
+                                             else
+                                                Task.succeed m
+                                            )
+                                                |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                                        EntryAsking ->
+                                            (if p.action == 0 then
+                                                entryPress p ms m
 
                                              else
                                                 Task.succeed m
@@ -8331,6 +8393,7 @@ type Dialog
     | ChoosingUp Choosing
     | PasteAsking PasteAsk
     | ClosingUp { id : Int, why : String, window : Bool }
+    | EntryAsking
     | RenamingUp { id : Int, typed : String }
     | ColoringUp Int
     | NoDialog
@@ -8399,7 +8462,13 @@ dialogFromClosing m =
             ClosingUp c
 
         Nothing ->
-            meant Reason.NotOpen (dialogFromRenaming m)
+            meant Reason.NotOpen
+                (if TmuxMode.entryAsked m.tmux then
+                    EntryAsking
+
+                 else
+                    dialogFromRenaming m
+                )
 
 
 dialogFromRenaming : Model -> Dialog
@@ -8464,6 +8533,9 @@ draw ms m =
 
             else if m.closing /= Nothing then
                 Maybe.map closeBox m.closing
+
+            else if TmuxMode.entryAsked m.tmux then
+                Just entryBox
 
             else if Maybe.isJust m.dropAsk then
                 Maybe.map (dropBox m) m.dropAsk
@@ -9357,7 +9429,7 @@ freshTab id remote host name color cols rows m =
     , clips = []
     , clipRead = Nothing
     , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] }) host
-    , tmux = freshTmux m.config m.term
+    , tmux = freshTmux m.config m.term (Maybe.andThen .command host)
     , search = Nothing
     , syncSince = -1
     , upload = Nothing
@@ -9401,7 +9473,7 @@ reopened k id remote host m =
         , clips = []
         , clipRead = Nothing
         , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] }) host
-        , tmux = freshTmux m.config m.term
+        , tmux = freshTmux m.config m.term (Maybe.andThen .command host)
         , search = Nothing
         , syncSince = -1
         , upload = Nothing
@@ -10603,6 +10675,79 @@ closePress p c m =
 
         Nothing ->
             meant Reason.OutOfRange Task.succeed m
+
+
+{-| The question when control mode starts and the tab did not start
+`tmux -CC` (docs/tmux.md TM108): the bytes may be any program's, and
+what follows is taken as tmux's. -}
+entryBox : Dialog.Dialog
+entryBox =
+    { title = "Start tmux control mode?"
+    , lines =
+        [ "Output in this tab started tmux control mode (tmux -CC), but this tab did not start tmux."
+        , "Start it only if you ran tmux -CC: what comes next is taken as tmux's."
+        ]
+    , field = Nothing
+    , swatches = []
+    , check = Nothing
+    , buttons = [ { label = "Start", primary = True }, { label = "Show as text", primary = False } ]
+    , hint = "Enter: start it    Esc: show the output as text"
+    }
+
+
+{-| A key while the entry question is up: Enter or Y starts control mode,
+Esc or N shows the bytes as the terminal's; any other key is held back. -}
+entryKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Int -> (taken m : Model) -> Task Error Model
+entryKey k ms m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+        entryAnswer True ms m
+
+    else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
+        entryAnswer False ms m
+
+    else
+        Task.succeed m
+
+
+{-| A press while the entry question is up: its buttons answer it. -}
+entryPress : Window.PointerEvent -> Int -> (taken m : Model) -> Task Error Model
+entryPress p ms m =
+    let
+        hit =
+            if p.button == 1 then
+                Dialog.buttonAt (overlaySize m) entryBox { x = p.x, y = p.y }
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            entryAnswer True ms m
+
+        Just _ ->
+            entryAnswer False ms m
+
+        Nothing ->
+            -- a press off the buttons, or not the first button
+            meant Reason.OutOfRange Task.succeed m
+
+
+entryAnswer : Bool -> Int -> (taken m : Model) -> Task Error Model
+entryAnswer yes ms m0 =
+    let
+        m =
+            logLine "tmux"
+                ("control mode's start answered: "
+                    ++ (if yes then
+                            "start"
+
+                        else
+                            "text"
+                       )
+                )
+                m0
+    in
+    feedRead m.remote (EntryAnswer yes) ms { m | urgent = True }
 
 
 {-| The close question answered: yes closes the window, or the tab asked

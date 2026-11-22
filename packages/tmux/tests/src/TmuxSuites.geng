@@ -55,7 +55,7 @@ bytes values =
 
 events : Bytes -> Array Event
 events b =
-    (Control.feed b Control.reader).events
+    (Control.feed b (Control.expect True Control.reader)).events
 
 
 {-| The events of `b` fed in two reads, split at `at`. -}
@@ -63,7 +63,7 @@ split : Bytes -> Int -> Array Event
 split b at =
     let
         first =
-            Control.feed (Bytes.slice 0 at b) Control.reader
+            Control.feed (Bytes.slice 0 at b) (Control.expect True Control.reader)
 
         second =
             Control.feed (Bytes.slice at (Bytes.length b) b) first.reader
@@ -77,7 +77,7 @@ givenUp : Bytes -> Array Event
 givenUp b =
     let
         first =
-            Control.feed b Control.reader
+            Control.feed b (Control.expect True Control.reader)
 
         after =
             Control.feed Bytes.empty (Control.giveUp first.reader)
@@ -253,7 +253,7 @@ control =
                 \_ ->
                     let
                         first =
-                            Control.feed (Bytes.fromString "ab\u{001B}P10") Control.reader
+                            Control.feed (Bytes.fromString "ab\u{001B}P10") (Control.expect True Control.reader)
 
                         second =
                             Control.feed (Bytes.fromString "00p%sessions-changed\n") first.reader
@@ -298,7 +298,7 @@ control =
                                     in
                                     { reader = r.reader, events = acc.events ++ r.events }
                                 )
-                                (Control.feed (Bytes.fromString "\u{001B}P1000p%sessions-changed\n") Control.reader)
+                                (Control.feed (Bytes.fromString "\u{001B}P1000p%sessions-changed\n") (Control.expect True Control.reader))
                                 (Array.range 1 20)
 
                         outsideBytes =
@@ -316,6 +316,84 @@ control =
                     in
                     Expect.equal { exited = True, outside = 20 * 65536, inside = False }
                         { exited = Array.member Exited fed.events, outside = outsideBytes, inside = Control.isInside fed.reader }
+          }
+        , { name = "an entry not expected is asked, and what follows it is held until answered (TM108, the code review's TA3)"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Control.feed (Bytes.fromString "ab\u{001B}P1000p%sessions-changed\r\n") Control.reader
+
+                        more =
+                            Control.feed (Bytes.fromString "%window-add @1\r\n") first.reader
+                    in
+                    Expect.equal { first = [ Outside (Bytes.fromString "ab"), Asked ], more = [], asking = True, inside = False }
+                        { first = first.events, more = more.events, asking = Control.isAsking more.reader, inside = Control.isInside more.reader }
+          }
+        , { name = "an entry answered yes: the held bytes are tmux's (TM108)"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Control.feed (Bytes.fromString "ab\u{001B}P1000p%sessions-changed\r\n") Control.reader
+
+                        more =
+                            Control.feed (Bytes.fromString "%window-add @1\r\n") first.reader
+
+                        yes =
+                            Control.answer True more.reader
+                    in
+                    Expect.equal { events = Array.dropFirst 1 (events (Bytes.fromString "ab\u{001B}P1000p%sessions-changed\r\n%window-add @1\r\n")), inside = True }
+                        { events = yes.events, inside = Control.isInside yes.reader }
+          }
+        , { name = "an entry answered no: it and the held bytes are the terminal's (TM108)"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Control.feed (Bytes.fromString "ab\u{001B}P1000p%sessions-changed\r\n") Control.reader
+
+                        no =
+                            Control.answer False first.reader
+                    in
+                    Expect.equal { events = [ Outside (Bytes.fromString "\u{001B}P1000p%sessions-changed\r\n") ], inside = False, asking = False }
+                        { events = merged no.events, inside = Control.isInside no.reader, asking = Control.isAsking no.reader }
+          }
+        , { name = "an expected entry is used up: after control mode ends, the next is asked (TM108)"
+          , test =
+                \_ ->
+                    let
+                        fed =
+                            Control.feed (Bytes.fromString "\u{001B}P1000p%exit\r\n\u{001B}\\\u{001B}P1000p") (Control.expect True Control.reader)
+                    in
+                    Expect.equal { first = Just Entered, exited = True, last = Just Asked }
+                        { first = Array.first fed.events, exited = Array.member Exited fed.events, last = Array.last fed.events }
+          }
+        , { name = "bytes held for an answer past what a reply may hold are the terminal's (TM108)"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Control.feed (Bytes.fromString "\u{001B}P1000p") Control.reader
+
+                        big =
+                            Control.feed (Bytes.fromString (String.repeat 1100000 "x")) first.reader
+                    in
+                    Expect.equal { asking = False, outside = 7 + 1100000 }
+                        { asking = Control.isAsking big.reader
+                        , outside =
+                            Array.foldl
+                                (\e n ->
+                                    when e is
+                                        Outside b ->
+                                            n + Bytes.length b
+
+                                        _ ->
+                                            n
+                                )
+                                0
+                                big.events
+                        }
           }
         , { name = "the client killed: the shell's line outside a reply is in doubt, and given up on it is the terminal's (TK13, TK14)"
           , test =
@@ -348,7 +426,7 @@ control =
                 \_ ->
                     let
                         first =
-                            Control.feed (Bytes.fromString ("\u{001B}P1000p%sessions-changed\r\n" ++ String.takeFirst 30 wallMessage)) Control.reader
+                            Control.feed (Bytes.fromString ("\u{001B}P1000p%sessions-changed\r\n" ++ String.takeFirst 30 wallMessage)) (Control.expect True Control.reader)
 
                         second =
                             Control.feed (Bytes.fromString (String.dropFirst 30 wallMessage ++ "%sessions-changed\r\n")) first.reader

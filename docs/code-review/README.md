@@ -198,7 +198,7 @@ Decided by Gilbert on 2026-11-22, each the recommended choice; to build.
   (its own command, or a line just typed in it, was `tmux -CC`); otherwise
   ask "Enter tmux control mode?" first, the bytes shown as output until
   answered. TA15's Enter sent to a pane on the sequence goes too: a note,
-  no keys sent.
+  no keys sent. **Built** 2026-11-22: `docs/tmux.md` TM108.
 - **SC6**: under `accept-new` or `no`, a key of a new type is accepted for a
   host known by another type. OpenSSH does the same, the review says.
   *Decided:* under `accept-new`, ask, with the question `ask` shows; under
@@ -249,7 +249,7 @@ covered" sections. The larger gaps:
 | [MB1](10-app-main-b.md) | bug | confirmed | **fixed** Closing a tab never closes its pty: the shell gets SIGTERM only, and the descriptor is kept for the window's life |
 | [TA1](11-tmuxmode-a.md) | bug | plausible | **fixed** A typed line that tmux parses to no command leaves the reply queue one behind for good |
 | [TA2](11-tmuxmode-a.md) | bug | confirmed | **fixed** `endsClient` takes `detach-client -t another-client` for this client leaving: nothing is sent again |
-| [TA3](11-tmuxmode-a.md) | security | plausible | Control mode is entered from in-band bytes with no check, and text read from that stream is later written back as command lines |
+| [TA3](11-tmuxmode-a.md) | security | plausible | **fixed** Control mode is entered from in-band bytes with no check, and text read from that stream is later written back as command lines |
 | [TB1](12-tmuxmode-b.md) | bug | plausible | **fixed** A click or the wheel over a pane in copy mode sends mouse bytes and arrow keys into copy mode's key table |
 | [PS1](13-app-picker-settings.md) | bug | confirmed | **fixed** Enter on the font box with nothing picked sets the last font in the list |
 | [PS2](13-app-picker-settings.md) | bug | confirmed | **fixed** A click away from quick connect connects to what is typed (and from "New host" makes the host) |
@@ -503,7 +503,7 @@ covered" sections. The larger gaps:
 | [MB17](10-app-main-b.md) | dead-code | plausible | `ownTerm`'s question text is never drawn: the same questions are written twice and have drifted |
 | [MB18](10-app-main-b.md) | bug | confirmed | A paste while the ssh question is up does not reach the question's field |
 | [TA14](11-tmuxmode-a.md) | bug | plausible | Commands queued earlier in the read that ends control mode are still written |
-| [TA15](11-tmuxmode-a.md) | security | confirmed | A pane's output holding the entry sequence types a newline into that pane and hides its output |
+| [TA15](11-tmuxmode-a.md) | security | confirmed | **fixed** A pane's output holding the entry sequence types a newline into that pane and hides its output |
 | [TA16](11-tmuxmode-a.md) | efficiency | confirmed | Before 3.2 the status polls are sent every second whether or not the last were answered |
 | [TA17](11-tmuxmode-a.md) | bug | plausible | `ForCopy` does not look at `ok`: before 3.2 a pane killed in copy mode is never forgotten |
 | [TA18](11-tmuxmode-a.md) | efficiency | confirmed | Work done on every read that only some events need |
