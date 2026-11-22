@@ -146,6 +146,24 @@ suite =
                         , over = images (feed "\u{001B}Pq\"1;1;20;13\u{001B}\\" (small {}))
                         }
           }
+        , { name = "ED 3 keeps the count of rows pushed, and takes an image in the scrollback with it (review VP3)"
+          , test =
+                \_ ->
+                    let
+                        -- an image of one cell at the top, then ten lines,
+                        -- which scroll it into the scrollback
+                        scrolled {} =
+                            feed ("\u{001B}Pq\"1;1;10;20\u{001B}\\" ++ String.repeat 10 "\r\nline") (sixel {})
+
+                        before =
+                            Vt.rowsPushed (scrolled {})
+
+                        after =
+                            feed "\u{001B}[3J" (scrolled {})
+                    in
+                    Expect.equal { pushed = before, images = [], scrollback = 0 }
+                        { pushed = Vt.rowsPushed after, images = images after, scrollback = Vt.scrollbackRows after }
+          }
         , { name = "XTSMGRAPHICS answers the colour registers and the geometry"
           , test =
                 \_ ->

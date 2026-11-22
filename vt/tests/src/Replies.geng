@@ -81,6 +81,24 @@ suite =
                             taken.requests
                         )
           }
+        , { name = "a clipboard request and a notification before RIS in the same read are kept for the embedder (review VP7)"
+          , test =
+                \_ ->
+                    let
+                        input =
+                            "\u{001B}]52;c;aGVsbG8=\u{0007}\u{001B}]9;done\u{0007}\u{001B}c"
+
+                        clip =
+                            Vt.takeClipboard (feed input (term 10 5))
+
+                        notes =
+                            Vt.takeNotices (feed input (term 10 5))
+                    in
+                    Expect.equal { clip = [ Just "hello" ], notes = [ "done" ] }
+                        { clip = Array.map (\c -> Maybe.map Support.text c.text) clip.requests
+                        , notes = Array.map .body notes.notices
+                        }
+          }
         , { name = "OSC 52 with ST, for the primary selection"
           , test =
                 \_ ->

@@ -154,12 +154,16 @@ fromOsc99 rest pending =
                 |> Maybe.map .value
                 |> Maybe.withDefault (meant Reason.NotYet { id = id, title = "", body = "" })
 
+        -- held to `notice`'s limits as the parts come, which `clean` makes
+        -- the same as holding the whole to them at the end; a part past
+        -- them adds nothing (the code review's VS2: each part copied the
+        -- whole so far, and nothing bounded it)
         added =
             if value "p" "title" == "body" then
-                { before | body = before.body ++ text }
+                { before | body = clean 1024 (before.body ++ text) }
 
             else if value "p" "title" == "title" then
-                { before | title = before.title ++ text }
+                { before | title = clean 256 (before.title ++ text) }
 
             else
                 -- another kind of payload (an icon, a button): not shown

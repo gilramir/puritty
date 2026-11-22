@@ -483,7 +483,7 @@ escape bytes n i t =
             oscString bytes n (i + 1) { t | str = Builder.empty 64 }
 
         else if b == 0x50 then
-            dcsString bytes n (i + 1) { t | str = Builder.empty 64 }
+            dcsString bytes n (i + 1) { t | str = Builder.empty 64, dcsKnown = 0 }
 
         else if b == 0x5F then
             apcString bytes n (i + 1) t
@@ -688,18 +688,33 @@ keptText str =
 
 
 {-| Whether the OSC kept so far is the start of iTerm2's long strings: at a
-`:`, `1337;File=` and its arguments; at a `=`, `1337;FilePart`. -}
+`:`, `1337;File=` and its arguments; at a `=`, `1337;FilePart`. The kept
+bytes are compared with the prefix, at most 13 of them, where the whole
+string was made text at every `:` and `=` (the code review's VP4). -}
 itermLong : Int -> Term -> Bool
 itermLong b t =
-    let
-        text =
-            keptText t.str
-    in
     if b == 0x3A then
-        String.startsWith "1337;File=" text
+        keptStarts fileArgs t.str
 
     else
-        text == "1337;FilePart"
+        Builder.length t.str == Array.length filePart && keptStarts filePart t.str
+
+
+fileArgs : Array Int
+fileArgs =
+    Array.map Char.toCode (String.toArray "1337;File=")
+
+
+filePart : Array Int
+filePart =
+    Array.map Char.toCode (String.toArray "1337;FilePart")
+
+
+{-| Whether the string kept so far begins with these bytes. -}
+keptStarts : Array Int -> Builder UInt8 -> Bool
+keptStarts prefix str =
+    Builder.length str >= Array.length prefix
+        && Array.all identity (Array.indexedMap (\k v -> Maybe.map UInt8.toInt (Builder.get k str) == Just v) prefix)
 
 
 {-| An OSC ended: iTerm2's `MultipartFile=` and `FileEnd` while its images
@@ -837,10 +852,14 @@ dcsString bytes n i t =
             -- DCS state unhooks it (§VC17)
             resume bytes n (i + 1) (dcsDispatch t)
 
-        else if b >= 0x80 && b < 0xA0 && dcsHeader t.str 0 0 then
+        else if b >= 0x80 && b < 0xA0 && Bitwise.and t.dcsKnown 1 == 0 && dcsHeader t.str 0 0 then
             c1 bytes n (i + 1) b { t | str = Builder.empty 0 }
 
-        else if b == 0x71 && t.embedder.extraImages && sixelHeader t.str 0 then
+        else if b >= 0x80 && b < 0xA0 && Bitwise.and t.dcsKnown 1 == 0 then
+            -- not a header: known so, and kept as any other byte
+            dcsString bytes n (i + 1) (keepByte b { t | dcsKnown = Bitwise.or t.dcsKnown 1 })
+
+        else if b == 0x71 && t.embedder.extraImages && Bitwise.and t.dcsKnown 2 == 0 && sixelHeader t.str 0 then
             -- `q` after parameters alone: Sixel (`docs/images-sixel.md`)
             let
                 im =
@@ -850,6 +869,9 @@ dcsString bytes n i t =
                     sixelParams (Builder.toArray t.str)
             in
             sixelString bytes n (i + 1) { t | str = Builder.empty 0, images = { im | sixel = Just params, apc = [], apcLen = 0, apcOver = False } }
+
+        else if b == 0x71 && t.embedder.extraImages && Bitwise.and t.dcsKnown 2 == 0 then
+            dcsString bytes n (i + 1) (keepByte b { t | dcsKnown = Bitwise.or t.dcsKnown 2 })
 
         else
             dcsString bytes n (i + 1) (keepByte b t)
@@ -951,7 +973,7 @@ c1 bytes n i b t =
         oscString bytes n i { t | str = Builder.empty 64 }
 
     else if b == 0x90 then
-        dcsString bytes n i { t | str = Builder.empty 64 }
+        dcsString bytes n i { t | str = Builder.empty 64, dcsKnown = 0 }
 
     else if b == 0x9F then
         apcString bytes n i t

@@ -465,6 +465,24 @@ frameBack look focus back view hl t sh0 =
     frameOn look focus noPreedit hl view.screen view.clusters back t sh0
 
 
+{-| Whether the cell at place `at` of the screen, `cols` a row, is a wide
+character's right half. -}
+tailAt : Screen -> Int -> Int -> Bool
+tailAt s cols at =
+    let
+        y =
+            at // max 1 cols
+
+        x =
+            modBy (max 1 cols) at
+    in
+    if y < 0 || y >= s.rows || x < 1 || x >= s.cols then
+        False
+
+    else
+        cellWide (peekCell (rowOffset s y) x s) == wideTail
+
+
 frameOn : Look -> Focus -> Preedit -> Highlight -> Screen -> Clusters -> Int -> Term -> (taken sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
 frameOn look focus preedit hl s clusters back t sh0 =
     let
@@ -478,8 +496,15 @@ frameOn look focus preedit hl s clusters back t sh0 =
         last =
             t.cols * t.rows - 1
 
+        -- a start on a wide character's right half takes the character:
+        -- its head is highlighted with it, as it is copied (the code
+        -- review's VS3)
         selFrom =
-            max 0 hl.from
+            if tailAt s t.cols (max 0 hl.from) then
+                max 0 hl.from - 1
+
+            else
+                max 0 hl.from
 
         selTo =
             min last hl.to

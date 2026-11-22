@@ -3236,6 +3236,16 @@ of them. The core before the fix kept 464.
 
 After it: replay 325 of 325, esctest2 392.
 
+*Found 2026-11-22* (the code review's VP3): ED 3 also lowered
+`rowsPushed`, by the rows it cleared, since it emptied the pages and the
+ring's scrollback without counting them gone as `dropOver` counts a page
+dropped. Every absolute row (a selection's point, an image's anchor) then
+named another row: an image scrolled into the scrollback came back onto
+the screen at its top. ED 3 now adds the rows it clears to `gone`. A vt
+test: an image scrolled away, then ED 3; before, the count went from 6 to
+0 and the image was back at row 0; now the count stays and the image is
+gone with the scrollback.
+
 ## VC39. The pages hold owned bytes (geng-lang D1027, D1031, D1035)
 
 A page is now `{ text, heads, runs : Bytes.Owned, cols, plain }`.

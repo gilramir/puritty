@@ -97,8 +97,10 @@ SUITES = [
     # 211 since FT29: OSC 7 kept, the last one said, cleared by RIS, three;
     # 215 since the code review's VP1, VI1, VI2 and VI3: a hostile count,
     # Sixel size, TIFF strips and JPEG scans, one each; 216 since MAN1:
-    # rows read as text from the pages, as selectionText reads them
-    Suite("vt", 216, runs_of("vt/tests")),
+    # rows read as text from the pages, as selectionText reads them; 218
+    # since VP3 and VP7: ED 3's count of rows, and what RIS keeps; 220
+    # since VS2 and VS3: OSC 99's parts held, a selection from a wide tail
+    Suite("vt", 220, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

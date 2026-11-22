@@ -213,6 +213,7 @@ slice's letters with an `N` (new).
 | VPN2 | `vt/src/Vt.geng` (`linkAt`, `viewPages`) | What VP2 names beyond the search: `linkAt` still reads a whole page per call, and `viewPages` walks the pages from the oldest for every read. **Measured and left** (2026-11-22): `linkAt` is called only on a Ctrl+left press (`Main.geng`, `linkPress`), and costs 1.7 ms a call natively on a paged row (1,000 calls over 10,000 rows of links, the feeding taken off). |
 | MAN1 | `app/src/Search.geng` | The search reads a page at a time now (MA3), but still runs within one turn of the loop, and a longer query does not use a shorter one's failure. **Fixed in part** (2026-11-22): pages are read as text alone (`Vt.Pages.pageTexts`), and a query typed on after a miss reads only the rows the miss did not cover (`Search.findTyped`): natively, one miss over 100,000 rows 1,830 ms to 270 ms, `nowhere` typed a letter at a time about 11 s to 255 ms (`docs/phase3-select.md` §23). Left: one search within one turn, about 27 s at the setting's most. |
 | MAN2 | `app/src/Main.geng`, `TmuxMode.geng`, `PickerDemo.geng` | The rest of MA1 and MA13's kind: a due time compared with `Clock.reached` after a wait with no bound reads as to come once it is 6.2 days old. Not yet looked at one by one: the paced frame's sync time (`syncSince`), the settings reload (`s.at`), the tmux due time, the cursor's blink (`blinkAt`), the note bar's (`n.until`), the closed tabs' ten minutes, and in `TmuxMode` a note's, the stray line's and the status poll's. Each is either refreshed on every turn (then it is right) or wants `Clock.passed` with its span. |
+| VPN3 | `harness/view.py`, `corpus/view/` | The display-list gate fails 46 of its 377 cases, the same 46 at the commit before this work (2026-11-22, compared case by case): 27 are Kitty cases whose frames hold a record of kind 10 the gate's decoder does not know (an image's), 5 cases have no pin, and the rest differ in a cursor's background (`#200030` where the pin has `#220033`) or a frame's size after a resize. The gate has not been kept with the image records and later decisions; each pin wants reading before it is written again, as PSN1's were. |
 
 ## What was not covered
 
@@ -256,14 +257,14 @@ covered" sections. The larger gaps:
 
 | id | kind | confidence | finding |
 |---|---|---|---|
-| [VP3](01-vt-parser-screen.md) | bug | confirmed | ED 3 lowers `rowsPushed`, so absolute rows (image anchors, selection points) no longer name their rows |
-| [VP4](01-vt-parser-screen.md) | security | confirmed | With Sixel/iTerm2 images on, every `:` or `=` in an OSC rebuilds the kept string; a DCS has the same shape per `q` and per C1 byte |
+| [VP3](01-vt-parser-screen.md) | bug | confirmed | **fixed** ED 3 lowers `rowsPushed`, so absolute rows (image anchors, selection points) no longer name their rows |
+| [VP4](01-vt-parser-screen.md) | security | confirmed | **fixed** With Sixel/iTerm2 images on, every `:` or `=` in an OSC rebuilds the kept string; a DCS has the same shape per `q` and per C1 byte |
 | [VP5](01-vt-parser-screen.md) | design | confirmed | The hyperlink table never forgets a link: after 4,096 distinct links OSC 8 stops working for the session |
 | [VP6](01-vt-parser-screen.md) | design | confirmed | Style and cluster ids are never given back; the tmux canvas is one long-lived terminal that takes the union of every pane's |
-| [VP7](01-vt-parser-screen.md) | bug | confirmed | RIS in the same read drops clipboard requests, notifications and diagnostic lines not yet taken |
+| [VP7](01-vt-parser-screen.md) | bug | confirmed | **fixed** RIS in the same read drops clipboard requests, notifications and diagnostic lines not yet taken |
 | [VP8](01-vt-parser-screen.md) | speed | confirmed | `composeStyled` interns a style for every pane cell on every frame |
-| [VS2](02-vt-scrollback-view-input.md) | security | confirmed | OSC 99 parts with `d=0` grow a pending notification without bound, each part copied onto the last |
-| [VS3](02-vt-scrollback-view-input.md) | bug | confirmed | A selection that starts on the right half of a wide character leaves that character out of the copy |
+| [VS2](02-vt-scrollback-view-input.md) | security | confirmed | **fixed** OSC 99 parts with `d=0` grow a pending notification without bound, each part copied onto the last |
+| [VS3](02-vt-scrollback-view-input.md) | bug | confirmed | **fixed** A selection that starts on the right half of a wide character leaves that character out of the copy |
 | [VI4](03-vt-images.md) | security | confirmed | Decoders peak at roughly ten times the pixel bytes, so the 320 MB limit admits multi-GB spikes from small inputs |
 | [VI5](03-vt-images.md) | bug | confirmed | A Sixel or iTerm2 image drawn over an older one never frees it: animations pile up to the limit |
 | [VI6](03-vt-images.md) | bug | confirmed | An image refused for memory is answered even when the program gave no id |

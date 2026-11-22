@@ -141,6 +141,7 @@ fresh config =
     , inter = 0
     , phase = 0
     , str = Builder.empty 0
+    , dcsKnown = 0
     , utf = 0
     , need = 0
     , low = 0x80
@@ -670,7 +671,10 @@ restoreCursor t =
             }
 
 
-{-| RIS: the terminal as new, its replies kept, and the dynamic colors
+{-| RIS: the terminal as new, its replies kept, and with them what waits
+for the embedder to take it: OSC 52's requests, notifications and the lines
+heard for the log, which a reset in the same read lost (the code review's
+VP7); and the dynamic colors
 (OSC 10 to 19), which Ghostty's full reset keeps as its DECSTR does; the
 palette is reset (§VC16). The scrollback's `peak` and `dropped` are kept too: a reply
 made before the reset may have read a screen reflowed from rows the core
@@ -692,8 +696,11 @@ reset t =
 
         back =
             blank.back
+
+        osc52 =
+            blank.osc52
     in
-    withScroll { blank | replies = replies, colors = Dict.keepIf (\k _ -> k > 255) t.colors, named = t.named, embedder = t.embedder, back = { back | peak = peak, dropped = dropped }, images = { noImages | limit = t.images.limit } }
+    withScroll { blank | replies = replies, osc52 = { osc52 | requests = t.osc52.requests }, notices = t.notices, heard = t.heard, colors = Dict.keepIf (\k _ -> k > 255) t.colors, named = t.named, embedder = t.embedder, back = { back | peak = peak, dropped = dropped }, images = { noImages | limit = t.images.limit } }
 
 
 {-| The terminal for a new session in the same tab (puritty `docs/tabs.md`

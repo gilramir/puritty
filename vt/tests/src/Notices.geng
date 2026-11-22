@@ -56,4 +56,18 @@ suite =
                     in
                     Expect.equal 0 (Array.length (Vt.takeNotices first.term).notices)
           }
+        , { name = "OSC 99's parts are held to the limits as they come: 2,000 parts of 2,000 bytes make a body of 1,024 (review VS2)"
+          , test =
+                \_ ->
+                    let
+                        part =
+                            "\u{001B}]99;i=1:d=0:p=body;" ++ String.repeat 2000 "x" ++ "\u{001B}\\"
+
+                        t =
+                            Array.foldl (\k acc -> feed part acc) (term 20 4) (Array.range 1 2000)
+                                |> feed "\u{001B}]99;i=1:d=1;Title\u{001B}\\"
+                    in
+                    Expect.equal [ { title = "Title", body = 1024 } ]
+                        ((Vt.takeNotices t).notices |> Array.map (\n -> { title = n.title, body = String.count n.body }))
+          }
         ]
