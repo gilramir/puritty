@@ -271,9 +271,9 @@ covered" sections. The larger gaps:
 | [VI7](03-vt-images.md) | speed | confirmed | **fixed** Eviction sorts every image once per victim, with a scan of all placements inside the comparison |
 | [VI8](03-vt-images.md) | efficiency | confirmed | **fixed** Placements whose rows have left the scrollback are never removed |
 | [VI9](03-vt-images.md) | speed | confirmed | `imageByKey` is linear, builds a string per image, and re-masks the pixels on every call; View calls it per sent image per frame |
-| [VI10](03-vt-images.md) | speed | confirmed | Sixel painting allocates about eight arrays per data byte, and a repeat is an unbudgeted fill |
+| [VI10](03-vt-images.md) | speed | confirmed | **fixed** Sixel painting allocates about eight arrays per data byte, and a repeat is an unbudgeted fill |
 | [VI11](03-vt-images.md) | security | plausible | With `read_files` on under Windows, a remote program can make puritty open a UNC path |
-| [VI20](03-vt-images.md) | test-gap | confirmed | No malformed-input tests for the JPEG, GIF, TIFF and Sixel decoders |
+| [VI20](03-vt-images.md) | test-gap | confirmed | **fixed** No malformed-input tests for the JPEG, GIF, TIFF and Sixel decoders |
 | [SC1](04-ssh-core.md) | bug | confirmed | A side channel closed while it is still opening is not closed, and then runs |
 | [SC2](04-ssh-core.md) | security | plausible | The channel window is given back on receipt, so the server is never slowed and output queues without bound |
 | [SC3](04-ssh-core.md) | security | confirmed | No warning or fallback when the server has no strict KEX and ChaCha20-Poly1305 is chosen (Terrapin), though the design promises one |

@@ -8,6 +8,8 @@ pixels' Adler-32 worked out by hand.
 -}
 
 import Expect
+import GifCases
+import JpegCases
 import Support exposing (feed, term)
 import Test.Runner.UnitNode as U
 import Vt
@@ -157,5 +159,39 @@ suite =
           , test =
                 \_ ->
                     Expect.equal [] (shown (feed (file "inline=1" tiff) (Vt.withImageLimit 0 (images {}))))
+          }
+        , { name = "truncated and broken files of each format are taken without a crash, and the terminal goes on (review VI20)"
+          , test =
+                \_ ->
+                    let
+                        firstOf cases =
+                            Array.first cases |> Maybe.withDefault ""
+
+                        jpeg =
+                            firstOf (Array.map .jpeg JpegCases.cases)
+
+                        gif =
+                            firstOf (Array.map .gif GifCases.cases)
+
+                        -- base64 cut at a quarter, a half and three quarters,
+                        -- each at a whole group of four
+                        cuts text =
+                            Array.map (\k -> String.takeFirst ((String.count text * k // 4) // 4 * 4) text) [ 1, 2, 3 ]
+
+                        broken =
+                            Array.flatten [ cuts jpeg, cuts gif, cuts tiff ]
+                                -- each format's first bytes, then zeros or ones
+                                ++ [ "/9j/" ++ String.repeat 2000 "AAAA"
+                                   , "/9j/" ++ String.repeat 2000 "////"
+                                   , "R0lGODlh" ++ String.repeat 2000 "AAAA"
+                                   , "R0lGODlh" ++ String.repeat 2000 "////"
+                                   , "SUkqAA" ++ String.repeat 2000 "////"
+                                   , "TU0AKg" ++ String.repeat 2000 "AAAA"
+                                   ]
+
+                        t =
+                            Array.foldl (\data acc -> feed (file "inline=1" data) acc) (images {}) broken
+                    in
+                    Expect.equal True (Array.any (String.contains "|ok") (Support.lines (feed "\r\nok" t)))
           }
         ]

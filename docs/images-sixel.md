@@ -73,7 +73,12 @@ Where the references differ, xterm's semantics as WT emulates them:
    image limit is refused after the first pass, before its canvas is
    made (IM5); until the code review's VI2 (2026-11-21) it was made
    first and refused afterwards, so 30 bytes of raster attributes asked
-   for gigabytes.
+   for gigabytes. Painting is held to sixteen pixel writes for each pixel
+   of the canvas, where an image paints each about once; a repeat over
+   and over ends there (VI10, 2026-11-22: 10,000 repeats of `!10000~$`,
+   90 KB, took 5,632 ms natively before, 6 ms after), and a data byte is
+   painted by counters and a doubling copy, not arrays of rows and
+   columns.
 8. Kept as an image and a placement in the core's store (the Kitty
    store: an implicit id, the screen's own placements), so scrolling,
    erasing, the alternate screen and the panes of `tmux -CC` (IM14, IM18)

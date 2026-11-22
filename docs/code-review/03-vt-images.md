@@ -204,6 +204,7 @@ Facts the findings lean on, all read from the tree:
 - Fix: split it: an existence test by key that parses the key back to (id, generation,
   erasures) and uses `Dict.get`, and the masked pixels only where they are sent
   (View.geng:797); cache the masked bytes on the image per `erasures`.
+- Fixed: In part, 2026-11-22. `View.imageRecords` asks `Kitty.hasKey`, which finds the image without masking its pixels, where it built the masked copy of every image held to compare it with `Nothing`. Natively, 100 frames of a 200 by 50 window with a 1000 by 900 Sixel image partly written over: 59 ms before, 22 ms after. The lookup is still linear with a key built per image, and the masked bytes are not cached; with a few images held that is small.
 
 ### VI10 · Sixel painting allocates about eight arrays per data byte, and a repeat is an unbudgeted fill
 - Where: vt/src/Vt/Sixel.geng:390-420 (`paint`), 143-241 (`run`)
@@ -223,6 +224,7 @@ Facts the findings lean on, all read from the tree:
 - Fix: keep the current colour's four bytes in the pass (set when `#` selects), loop over bits
   and columns with counters instead of arrays, write a repeat as a row fill; hold the painted
   pixel count to a multiple of the canvas (stop painting when it is passed).
+- Fixed: 2026-11-22. `paint` loops over the bits and rows with counters and writes a row's run as its first pixel copied by doubling (`paintRun`, `doubledAt`), and the canvas carries a budget of sixteen writes per pixel, after which nothing more is painted. Natively, 10,000 repeats of `!10000~$` (90 KB): 5,632 ms before, 6 ms after, the same image. Test: `Sixel`'s "a Sixel string's painting is held to sixteen times its canvas"; the other Sixel tests hold the pixels. `run`'s `Pass` record a byte is not changed. `docs/images-sixel.md` SX2 7.
 
 ### VI11 · With `read_files` on under Windows, a remote program can make puritty open a UNC path
 - Where: app/src/ImageFile.geng:38-50, 122-126 (`sensitive`); vt/src/Vt/Kitty.geng:662-700
@@ -432,3 +434,4 @@ Facts the findings lean on, all read from the tree:
   rather than crashing; not listed as a finding.
 - Windows behaviour of `ImageFile` (path forms, temp folders) was not traced into the Os
   package.
+- Fixed: 2026-11-22. With VI1, VI2, VI3 and VI10's tests (TIFF's overlapping strips, a Sixel's size and repeats, JPEG's scans), `Iterm`'s "truncated and broken files of each format are taken without a crash" feeds JPEG, GIF and TIFF fixtures cut at a quarter, a half and three quarters, and each format's first bytes followed by 6 KB of zeros or ones, and holds that the terminal goes on. Not done: a cap on a decode's time or memory as such.

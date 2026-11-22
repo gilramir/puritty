@@ -121,7 +121,7 @@ decode most params data =
                 filled (width * height * 4) fill
 
             painted =
-                run data (Bytes.length data) 0 (start (aspectOf p1)) (Just { width = width, height = height, out = canvas })
+                run data (Bytes.length data) 0 (start (aspectOf p1)) (Just { width = width, height = height, out = canvas, budget = 16 * width * height })
         in
         when painted.out is
             Just o ->
@@ -160,8 +160,12 @@ rgbaOf rgb =
     [ Bitwise.and 0xFF (Bitwise.shiftRightZfBy 16 rgb), Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 rgb), Bitwise.and 0xFF rgb, 255 ]
 
 
+{-| The image painted: its size, its pixels, and how many pixel writes are
+left (`budget`): sixteen for each of its pixels, where an image paints
+each about once, so that repeats painted over and over end (the code
+review's VI10: `!10000~` is 9 bytes and up to 600,000 pixels). -}
 type alias Canvas =
-    { width : Int, height : Int, out : Builder UInt8 }
+    { width : Int, height : Int, out : Builder UInt8, budget : Int }
 
 
 {-| A pass over the data from `i`: measuring when there is no canvas,
@@ -416,34 +420,85 @@ each set bit `aspect` pixels tall, what is past the canvas cut off. -}
 paint : (taken c : Canvas) -> Pass -> Int -> Int -> Canvas
 paint c p v count =
     let
-        rgba =
-            rgbaOf (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get p.color p.palette))
-                |> Array.map UInt8.fromInt
+        rgb =
+            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get p.color p.palette)
 
         aspect =
             clamp 1 10 p.aspect
 
-        top =
-            p.band * 6 * aspect
+        x0 =
+            clamp 0 65535 p.x
 
-        rows =
-            Array.range 0 5
-                |> Array.keepIf (\k -> Bitwise.and v (Bitwise.shiftLeftBy k 1) /= 0)
-                |> Array.mapAndFlatten (\k -> Array.range 0 (aspect - 1) |> Array.map (\a -> top + k * aspect + a))
-                |> Array.keepIf (\y -> y < c.height)
-
-        columns =
-            Array.range p.x (min (c.width - 1) (p.x + count - 1))
+        cols =
+            min (c.width - x0) (max 0 count)
     in
-    { c
-        | out =
-            Array.foldl
-                (\y out ->
-                    Array.foldl (\x o -> Builder.setMany ((y * c.width + x) * 4) rgba o) out columns
-                )
-                c.out
-                rows
-    }
+    if cols <= 0 || c.budget <= 0 then
+        c
+
+    else
+        -- each of the six bits set, `aspect` rows each, a run of `cols`
+        -- pixels a row: counters, not arrays of rows and columns built a
+        -- data byte (VI10)
+        paintBits c { rgb = rgb, top = p.band * 6 * aspect, aspect = aspect, x0 = x0, cols = cols, v = v } 0
+
+
+paintBits : (taken c : Canvas) -> { rgb : Int, top : Int, aspect : Int, x0 : Int, cols : Int, v : Int } -> Int -> Canvas
+paintBits c r k =
+    if k > 5 then
+        c
+
+    else if Bitwise.and r.v (Bitwise.shiftLeftBy k 1) == 0 then
+        paintBits c r (k + 1)
+
+    else
+        -- a band's rows are at most 10,000 bands of 60: the sum stays small
+        paintBits (paintRows c r (clamp 0 1000000 (clamp 0 1000000 r.top + k * clamp 1 10 r.aspect)) 0) r (k + 1)
+
+
+paintRows : (taken c : Canvas) -> { rgb : Int, top : Int, aspect : Int, x0 : Int, cols : Int, v : Int } -> (y : Int where 0 <= y && y <= 1000000) -> (a : Int where 0 <= a && a <= 10) -> Canvas
+paintRows c r y a =
+    if a >= clamp 1 10 r.aspect || y + a >= c.height || c.budget <= 0 then
+        c
+
+    else
+        paintRows (paintRun c r (y + a)) r y (a + 1)
+
+
+{-| Row `y`'s run of pixels from `r.x0`: its first pixel set, then what is
+set copied after itself, doubling. -}
+paintRun : (taken c : Canvas) -> { rgb : Int, top : Int, aspect : Int, x0 : Int, cols : Int, v : Int } -> Int -> Canvas
+paintRun c r y =
+    let
+        -- the canvas is at most 10,000 pixels a side (`limit`)
+        row =
+            clamp 0 10000 y
+
+        width =
+            clamp 0 10000 c.width
+
+        o =
+            clamp 0 400080000 ((row * width + clamp 0 10000 r.x0) * 4)
+
+        size =
+            clamp 0 10000 r.cols * 4
+
+        first =
+            c.out
+                |> Builder.set o (UInt8.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 16 r.rgb)))
+                |> Builder.set (o + 1) (UInt8.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 r.rgb)))
+                |> Builder.set (o + 2) (UInt8.fromInt (Bitwise.and 0xFF r.rgb))
+                |> Builder.set (o + 3) (UInt8.fromInt 255)
+    in
+    { c | out = doubledAt o 4 size first, budget = c.budget - r.cols }
+
+
+doubledAt : (o : Int where 0 <= o && o <= 400080000) -> (done : Int where 0 <= done) -> (size : Int where 0 <= size && size <= 40000) -> (taken out : Builder UInt8) -> Builder UInt8
+doubledAt o done size out =
+    if done <= 0 || done >= size then
+        out
+
+    else
+        doubledAt o (done * 2) size (Builder.copyWithin (o + done) o (o + min done (size - done)) out)
 
 
 {-| The registers an image begins with: VT340's sixteen (as Windows
