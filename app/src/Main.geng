@@ -8141,14 +8141,23 @@ searchKey k s m =
             query =
                 String.dropLast 1 s.query
         in
-        found { s | query = query } (Search.find query True viewBottom m.term) m
+        let
+            r =
+                Search.findTyped query viewBottom s.missed m.term
+        in
+        found { s | query = query, missed = r.missed } r.match m
 
     else if typed /= "" && not ctrl && Array.all (\c -> Char.toCode c >= 0x20) (String.toArray typed) then
         let
             query =
                 s.query ++ typed
+
+            -- a query that begins with one found nowhere is not searched
+            -- for again (review MAN1)
+            r =
+                Search.findTyped query viewBottom s.missed m.term
         in
-        found { s | query = query } (Search.find query True viewBottom m.term) m
+        found { s | query = query, missed = r.missed } r.match m
 
     else
         m

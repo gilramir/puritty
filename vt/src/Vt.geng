@@ -860,11 +860,102 @@ rowTexts firstRow count t =
         { from = firstRow, texts = [] }
 
     else
-        let
-            read =
-                rowsBetween first (last - first + 1) t
-        in
-        { from = first + pushed, texts = Array.map (\row -> String.trimRight (cellsText row.cells read.clusters 0 (t.cols - 1) "")) read.rows }
+        { from = first + pushed, texts = Array.map String.trimRight (textsBetween first (last - first + 1) t) }
+
+
+{-| `rowsBetween`'s rows as text: the pages' read from their text alone
+(`pageTexts`), the ring's through `rowText`. -}
+textsBetween : (first : Int where 0 - 536880105 <= first && first <= t.rows) -> (count : Int where 0 <= count && first + count <= t.rows) -> (t : Term) -> Array String
+textsBetween first count t =
+    let
+        hist =
+            t.screen.hist
+
+        fromPages =
+            if t.alt then
+                0
+
+            else
+                min count (max 0 (0 - hist - first))
+
+        paged =
+            viewPageTexts t.back t.back.head 0 (t.back.rows + first + hist) fromPages []
+
+        ring =
+            ringRows (max (0 - hist) (first + fromPages)) (first + count) t []
+                |> Array.map (\row -> rowText row.cells t.clusters)
+    in
+    paged ++ ring
+
+
+{-| `viewPages` for text: `want` rows' text from paged row `at` on. -}
+viewPageTexts : Back -> Int -> Int -> Int -> Int -> Array String -> Array String
+viewPageTexts b i start at want acc =
+    if want <= 0 then
+        acc
+
+    else
+        when Builder.get i b.pages is
+            Nothing ->
+                meant Reason.NoMore acc
+
+            Just page ->
+                let
+                    count =
+                        pageRowCount page
+                in
+                if count <= at - start then
+                    viewPageTexts b (i + 1) (start + count) at want acc
+
+                else
+                    let
+                        taken =
+                            Array.slice (at - start) (at - start + want) (pageTexts page)
+
+                        n =
+                            Array.length taken
+                    in
+                    viewPageTexts b (i + 1) (start + count) (at + n) (want - n) (acc ++ taken)
+
+
+{-| A row's text as `cellsText` reads it from column 0 to the last, the
+blanks past the row's cells left for the caller's trim: its characters
+pushed into one builder and made a string once, where `cellsText` makes a
+string a cell and joins it to the row's (the code review's VP16; MAN1). -}
+rowText : Array Int64 -> Clusters -> String
+rowText cells clusters =
+    Array.foldl
+        (\c acc ->
+            let
+                w =
+                    cellWide c
+            in
+            if w == wideTail || w == spacerHead then
+                acc
+
+            else if cellIsCluster c then
+                Array.foldl (\cp b -> pushCode cp b) acc (Maybe.withDefault (meant Reason.NotKnown []) (Array.get (cellPoint c) clusters.table))
+
+            else if cellPoint c == 0 then
+                Builder.pushLast ' ' acc
+
+            else
+                pushCode (cellPoint c) acc
+        )
+        (Builder.empty (Array.length cells))
+        cells
+        |> Builder.toArray
+        |> String.fromArray
+
+
+pushCode : Int -> (taken b : Builder Char) -> Builder Char
+pushCode cp b =
+    when Char.fromCode cp is
+        Just ch ->
+            Builder.pushLast ch b
+
+        Nothing ->
+            meant Reason.OutOfRange b
 
 
 textOfRows : Array Row -> Clusters -> Int -> Int -> Int -> Int -> String -> String

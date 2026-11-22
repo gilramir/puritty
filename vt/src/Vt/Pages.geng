@@ -18,6 +18,7 @@ module Vt.Pages exposing
     , pagePromptAt
     , pageRowCount
     , pageRowsOf
+    , pageTexts
     , pagedCell
     , plainPage
     , pushPage
@@ -551,6 +552,100 @@ pageRowsOf page clusters =
         )
         { rows = [], clusters = clusters }
         (unpackPage page)
+
+
+{-| Each row of a page as text, as `Vt.rowText` reads the row
+`pageRowsOf` gives, its blanks at the end left: read from the page's text
+alone, without its styles, cells or clusters (the code review's MAN1: a
+search decoded every cell of every page to read its text). A spacer head is
+nothing, a blank cell (a 0 byte, or a background color alone) a space
+unless a mark joins it, a mark joins the cell before it and is dropped
+where there is none or it is a spacer head, and a wide character takes two
+of the row's cells. -}
+pageTexts : Page -> Array String
+pageTexts page =
+    textRows page 0 0 []
+
+
+textRows : Page -> Int -> Int -> Array String -> Array String
+textRows page h ti acc =
+    if h >= Owned.length page.heads then
+        acc
+
+    else
+        let
+            ext =
+                Bitwise.and 0x3FF (u16At page.heads h)
+
+            row =
+                textOfRow page.text ti ext 0 (Builder.empty ext)
+        in
+        textRows page (h + 2) row.next (Array.pushLast (String.fromArray (Builder.toArray row.chars)) acc)
+
+
+{-| A row's text from `i`, `left` cells to read; `last` is what the cell
+before is: 0 a character, 1 a blank not yet written (a mark may join it),
+2 nothing a mark can join (the row's start, a spacer head). -}
+textOfRow : Owned -> Int -> Int -> Int -> (taken chars : Builder Char) -> { chars : Builder Char, next : Int }
+textOfRow text i left last chars =
+    if left <= 0 && not (startsMark text i) then
+        { chars = blankOut last chars, next = i }
+
+    else
+        let
+            b =
+                ownedAt text i
+
+            d =
+                decodeAt text i
+        in
+        if b == 0xFF then
+            textOfRow text (i + 1) (left - 1) 2 (blankOut last chars)
+
+        else if b == 0xFE then
+            textOfRow text (i + 1) (left - 1) 1 (blankOut last chars)
+
+        else if b == 0xFD then
+            -- the cell before protected: nothing in its text
+            textOfRow text (i + 1) left last chars
+
+        else if d.cp == 0 then
+            textOfRow text d.next (left - 1) 1 (blankOut last chars)
+
+        else if d.cp >= 0x80 && Width.width d.cp == 0 then
+            -- a mark: it joins the cell before, a blank one too, which is
+            -- then its mark alone, as a cluster of it is
+            if last == 2 then
+                textOfRow text d.next left 2 chars
+
+            else
+                textOfRow text d.next left 0 (pushPoint d.cp chars)
+
+        else if d.cp >= 0x80 && Width.width d.cp == 2 then
+            textOfRow text d.next (left - 2) 0 (pushPoint d.cp (blankOut last chars))
+
+        else
+            textOfRow text d.next (left - 1) 0 (pushPoint d.cp (blankOut last chars))
+
+
+{-| A blank cell not yet written, written as the space it reads as. -}
+blankOut : Int -> (taken chars : Builder Char) -> Builder Char
+blankOut last chars =
+    if last == 1 then
+        Builder.pushLast ' ' chars
+
+    else
+        chars
+
+
+pushPoint : Int -> (taken chars : Builder Char) -> Builder Char
+pushPoint cp chars =
+    when Char.fromCode cp is
+        Just c ->
+            Builder.pushLast c chars
+
+        Nothing ->
+            meant Reason.OutOfRange chars
 
 
 {-| Whether a page's last row wrapped, so that its line goes on past it. -}

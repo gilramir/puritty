@@ -237,4 +237,55 @@ suite =
                         , big = [ "screen 1000x1000 main", "cursor 1,0", "history 0", "0 |y|" ]
                         }
           }
+        , { name = "rowTexts reads each row as selectionText reads it alone: wide characters, marks, blanks, the scrollback's pages and the screen (review MAN1)"
+          , test =
+                \_ ->
+                    let
+                        -- 40 rows: the oldest in the pages, wide characters,
+                        -- a base with marks, a blank gap, a row that wraps
+                        text =
+                            Array.range 1 40
+                                |> Array.map
+                                    (\k ->
+                                        "r"
+                                            ++ String.fromInt k
+                                            ++ " \u{D55C}\u{AE00} e\u{0301}\u{0302} \u{0301}\u{001B}[C\u{0301}x  "
+                                            ++ String.repeat (modBy 3 k * 4) "w"
+                                            -- a protected cell, an erase in a background color,
+                                            -- and a wide character that wraps at the row's end
+                                            ++ "\u{001B}[1\"qp\u{001B}[0\"q\u{001B}[41m\u{001B}[K\u{001B}[0m"
+                                            ++ String.repeat (modBy 5 k) "a"
+                                            ++ "\u{D55C}\u{D55C}\u{D55C}\u{D55C}\u{D55C}\u{D55C}"
+                                    )
+                                |> String.join "\r\n"
+
+                        t =
+                            Array.foldl (\line acc -> feed line acc)
+                                (Vt.new { cols = 12, rows = 4, scrollbackBytes = Vt.scrollbackBytesFor { cols = 12, rows = 200 }, pageRows = 8, checksums = False, cellWidth = 0, cellHeight = 0 })
+                                (String.split "\r\n" text
+                                    |> Array.indexedMap
+                                        (\k line ->
+                                            (if k == 0 then
+                                                ""
+
+                                             else
+                                                "\r\n"
+                                            )
+                                                ++ line
+                                        )
+                                )
+
+                        oldest =
+                            Vt.rowsPushed t - Vt.scrollbackRows t
+
+                        count =
+                            Vt.scrollbackRows t + 4
+
+                        read =
+                            Vt.rowTexts oldest count t
+                    in
+                    Expect.equal
+                        { from = oldest, texts = Array.map (\row -> Vt.selectionText { row = row, col = 0 } { row = row, col = 11 } t) (Array.range oldest (oldest + count - 1)) }
+                        read
+          }
         ]

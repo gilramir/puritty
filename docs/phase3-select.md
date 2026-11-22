@@ -1139,3 +1139,18 @@ for them, and so do the matches marked under tmux (`Search.matchesIn`).
 query found nowhere, the 20,000 rows' feeding included): 140.2 s before,
 0.59 s after. Still not done: the search runs in the loop's turn, so a
 far larger scrollback still holds the window for its length.
+
+*Changed again 2026-11-22* (MAN1, VPN2 in the review's "Found while
+fixing"). A page's rows are read as text straight from the page's text
+(`Vt.Pages.pageTexts`), without its styles, cells or clusters, and a row's
+characters go into one builder (`Vt.rowText`). A query typed on after one
+found nowhere reads only the rows that miss did not cover: those that were
+on the screen then, and any since (`Search.findTyped`); the scrollback's
+rows keep their text while the width does. **Measured natively** (80 by
+24, 100,000 rows of a log-like line, the feeding taken off): one search
+found nowhere, about 1,830 ms before this change, 270 ms after; `nowhere`
+typed a letter at a time, where each of its six misses read the whole
+scrollback (about 11 s), 255 ms in all. A Ctrl+click on a link reads its
+row's whole page (`Vt.linkAt`): 1.7 ms a click natively, measured and
+left. **Left:** the search still runs within one turn of the loop; at the
+setting's most, 10,000,000 lines, one miss is some 27 s at this rate.

@@ -1,4 +1,4 @@
-module Search exposing (State, backFor, find, matchesIn, start)
+module Search exposing (State, backFor, find, findTyped, matchesIn, start)
 
 {-| Scrollback search (`docs/phase3-select.md` §23): the query as typed,
 and the match shown, found row by row in the scrollback and the screen,
@@ -15,12 +15,72 @@ type alias State =
     { query : String
     , match : Maybe { start : Vt.Point, end : Vt.Point }
     , failed : Bool
+    , missed : Maybe Missed
     }
+
+
+{-| A query found nowhere from row `bottom` up, when the terminal had
+pushed `pushed` rows into its scrollback and was `cols` wide. The rows it
+covered that cannot change since are those that were in the scrollback
+then, up to `bottom`: a row in the scrollback keeps its text while the
+width does (a resize reflows it), and the screen's rows can be written
+again at any time. -}
+type alias Missed =
+    { query : String, bottom : Int, pushed : Int, cols : Int }
 
 
 start : State
 start =
-    { query = "", match = Nothing, failed = False }
+    { query = "", match = Nothing, failed = False, missed = Nothing }
+
+
+{-| `find` going older from `bottom`, for a query as it is typed. One that
+begins with a query found nowhere is found nowhere in the rows that miss
+covered and that cannot have changed, so only the rows after them are
+read (the code review's MAN1: each character typed after a miss read the
+whole scrollback again). What missed is answered, for the next. -}
+findTyped : String -> Int -> Maybe Missed -> Vt.Term -> { match : Maybe { start : Vt.Point, end : Vt.Point }, missed : Maybe Missed }
+findTyped query bottom missed t =
+    let
+        q =
+            String.toLower query
+
+        oldest =
+            Vt.rowsPushed t - Vt.scrollbackRows t
+
+        newest =
+            Vt.rowsPushed t + t.rows - 1
+
+        -- the newest row the miss covered that cannot have changed
+        covered =
+            when missed is
+                Just mq ->
+                    -- the same width, and no fewer rows pushed: ED 3 can
+                    -- lower the count, and rows' numbers with it (VP3)
+                    if mq.cols == t.cols && Vt.rowsPushed t >= mq.pushed && mq.query /= "" && String.startsWith (String.toLower mq.query) q then
+                        min mq.bottom (mq.pushed - 1)
+
+                    else
+                        oldest - 1
+
+                Nothing ->
+                    meant Reason.NotSet (oldest - 1)
+
+        match =
+            if q == "" then
+                Nothing
+
+            else
+                findFrom q True (clamp oldest newest bottom) (max oldest (covered + 1)) newest t
+    in
+    { match = match
+    , missed =
+        if match == Nothing && query /= "" then
+            Just { query = query, bottom = bottom, pushed = Vt.rowsPushed t, cols = t.cols }
+
+        else
+            Nothing
+    }
 
 
 {-| The first row, from `from` on, going older (`older`) or newer, that

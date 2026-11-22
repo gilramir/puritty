@@ -2048,6 +2048,52 @@ searching =
         , { name = "an empty query finds nothing"
           , test = \_ -> Expect.equal [] (found "" "abc")
           }
+        , { name = "a query typed on after one found nowhere reads only the rows that miss did not cover: output on the screen is found (review MAN1)"
+          , test =
+                \_ ->
+                    let
+                        make text =
+                            Vt.new { cols = 20, rows = 4, scrollbackBytes = Vt.scrollbackBytesFor { cols = 20, rows = 100 }, pageRows = Vt.defaultPageRows, checksums = False, cellWidth = 9, cellHeight = 17 }
+                                |> Vt.feed (Bytes.fromString text)
+
+                        bottomOf t =
+                            Vt.rowsPushed t + 3
+
+                        before {} =
+                            make "alpha\r\nbeta\r\ngamma"
+
+                        first =
+                            let
+                                t =
+                                    before {}
+                            in
+                            Search.findTyped "zz" (bottomOf t) Nothing t
+
+                        -- the longer query, the terminal as it was: answered
+                        -- from the miss
+                        again =
+                            let
+                                t =
+                                    before {}
+                            in
+                            Search.findTyped "zzz" (bottomOf t) first.missed t
+
+                        -- output that holds it: searched, and found
+                        output =
+                            let
+                                t =
+                                    make "alpha\r\nbeta\r\ngamma\r\nzzz here"
+                            in
+                            Search.findTyped "zzz" (bottomOf t) first.missed t
+                    in
+                    Expect.equal
+                        { first = Nothing, missedKept = True, again = Nothing, after = True }
+                        { first = first.match
+                        , missedKept = Maybe.map .query again.missed == Just "zzz" && first.missed /= Nothing
+                        , again = again.match
+                        , after = output.match /= Nothing
+                        }
+          }
         , { name = "a query is found in the paged scrollback, older and newer, and its row's matches read there (review MA3)"
           , test =
                 \_ ->

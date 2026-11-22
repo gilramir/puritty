@@ -96,8 +96,9 @@ SUITES = [
     # hyperlinks, seven; 208 since KG9: Kitty's pictures from files, nine;
     # 211 since FT29: OSC 7 kept, the last one said, cleared by RIS, three;
     # 215 since the code review's VP1, VI1, VI2 and VI3: a hostile count,
-    # Sixel size, TIFF strips and JPEG scans, one each
-    Suite("vt", 215, runs_of("vt/tests")),
+    # Sixel size, TIFF strips and JPEG scans, one each; 216 since MAN1:
+    # rows read as text from the pages, as selectionText reads them
+    Suite("vt", 216, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
@@ -163,8 +164,9 @@ SUITES = [
         # a click away from quick connect; 466 since MA3 and TA1: search in
         # the paged scrollback, and a typed line that makes no command, on
         # each tmux; 467 since W1: a file link shown before it is opened;
-        # 473 since TB1: the wheel over a pane in copy mode, on each tmux
-        473,
+        # 473 since TB1: the wheel over a pane in copy mode, on each tmux;
+        # 474 since MAN1: a query typed on after a miss
+        474,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
