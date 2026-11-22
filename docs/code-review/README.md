@@ -281,13 +281,13 @@ covered" sections. The larger gaps:
 | [SC5](04-ssh-core.md) | inaccuracy | plausible | A host looked up through `HostKeyAlias` on a port other than 22 is looked up as `[alias]:port`; OpenSSH uses the bare alias |
 | [SC6](04-ssh-core.md) | security | confirmed | With `accept-new` or `no`, a key of a type the host is not known by is taken silently even when the host is known by another type |
 | [SC7](04-ssh-core.md) | inaccuracy | confirmed | `ssh_config` keywords the client does not act on are dropped without a word, including ones that restrict what it may do |
-| [SC8](04-ssh-core.md) | bug | confirmed | keyboard-interactive is tried once per connection, so one mistyped answer ends the login |
+| [SC8](04-ssh-core.md) | bug | confirmed | **fixed** keyboard-interactive is tried once per connection, so one mistyped answer ends the login |
 | [ST1](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A batch whose SFTP stream breaks is reported as a success: `Finished` overwrites `Broken` |
 | [ST2](05-ssh-session-transfer.md) | security | plausible | The shell fallback's quoting is only right for POSIX-style login shells: fish misreads `\'`, csh/tcsh refuse the newline |
 | [ST3](05-ssh-session-transfer.md) | security | confirmed | A remembered password is given without asking to a host whose key is not the known one |
 | [ST4](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A dropped folder is walked through its symlinks: a link to `/` or to a parent uploads far more than was dropped, or never finishes |
 | [ST5](05-ssh-session-transfer.md) | security | plausible | **fixed** A hostile SFTP server can crash the client with one `SSH_FXP_NAME`: `entries` and `skipExtended` recurse once per element, not in a loop |
-| [ST6](05-ssh-session-transfer.md) | bug | confirmed | A key that is both a file and in the agent is used from the file, so the passphrase is asked although the agent holds the key |
+| [ST6](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A key that is both a file and in the agent is used from the file, so the passphrase is asked although the agent holds the key |
 | [ST7](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A new host key is appended to `known_hosts` without checking the file ends in a newline |
 | [TP1](06-tmux-package.md) | bug | plausible | **fixed** A paste whose text (or any 1024-byte piece of it) begins with `~` is tilde-expanded by tmux 3.x |
 | [TP2](06-tmux-package.md) | security | plausible | `ESC \` at the start of a line ends control mode even inside a reply, and a reply's lines are split on newlines the pane's program can put there |

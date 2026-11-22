@@ -250,8 +250,9 @@ SUITES = [
         # its data waits for a pump; 8 since FT17: writes kept in pieces go in
         # order, each pump saying what waits
         "ssh-connection",
-        # 9 since SC1: a side channel closed while it opens
-        9,
+        # 9 since SC1: a side channel closed while it opens; 11 since SC8
+        # and ST6: keyboard-interactive again, a file key through the agent
+        11,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "connection"], cwd="packages/ssh/tests"),
             Run(

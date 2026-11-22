@@ -12,6 +12,7 @@ module Ssh.Session exposing
     , pacing
     , resized
     , run
+    , withAgent
     )
 
 {-| One ssh session, end to end (puritty `docs/ssh-client.md` SC8, SC11
@@ -467,7 +468,7 @@ session permissions options role label link notices =
                                                         , connection = Nothing
                                                         , sides = Dict.empty
                                                         , refs = Dict.empty
-                                                        , identities = files ++ agent.identities
+                                                        , identities = withAgent options.identitiesOnly files agent.identities
                                                         , known = known
                                                         , hostKeyTrusted = False
                                                         , keysReady = False
@@ -544,20 +545,11 @@ agentOf permissions options files =
                                 (\message ->
                                     when Agent.identities message is
                                         Ok keys ->
-                                            let
-                                                fromFiles =
-                                                    Array.map (\f -> f.identity.publicKey) files
-
-                                                offered =
-                                                    if options.identitiesOnly then
-                                                        Array.keepIf (\k -> Array.member k.publicKey fromFiles) keys
-
-                                                    else
-                                                        Array.keepIf (\k -> not (Array.member k.publicKey fromFiles)) keys
-                                            in
+                                            -- every key the agent holds; `withAgent` puts
+                                            -- them with the files'
                                             Task.succeed
                                                 { link = Just link
-                                                , identities = Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) offered
+                                                , identities = Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) keys
                                                 }
 
                                         Err why ->
@@ -565,6 +557,43 @@ agentOf permissions options files =
                                 )
                     )
                 |> Task.onError (\_ -> agentOf permissions { options | agents = candidate.rest } files)
+
+
+{-| The identities offered: the files' in their order, each one the agent
+also holds signing through the agent instead (`file = Nothing`), as
+OpenSSH signs with the agent, so that its passphrase is not asked; then,
+unless `IdentitiesOnly`, the agent's other keys. Before, the file's was
+offered and its passphrase asked although the agent held the key (the
+code review's ST6). -}
+withAgent : Bool -> Array Identity -> Array Identity -> Array Identity
+withAgent identitiesOnly files agent =
+    let
+        fromFiles =
+            Array.map (\f -> f.identity.publicKey) files
+
+        inAgent key =
+            Array.findFirst (\a -> a.identity.publicKey == key) agent |> Maybe.map .value
+
+        own =
+            Array.map
+                (\f ->
+                    when inAgent f.identity.publicKey is
+                        Just a ->
+                            a
+
+                        Nothing ->
+                            meant Reason.NotKnown f
+                )
+                files
+
+        others =
+            if identitiesOnly then
+                []
+
+            else
+                Array.keepIf (\a -> not (Array.member a.identity.publicKey fromFiles)) agent
+    in
+    own ++ others
 
 
 linkTo : Permissions -> AgentPath -> Task Os.Error.Error AgentLink

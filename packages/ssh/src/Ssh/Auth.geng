@@ -113,7 +113,10 @@ type alias State =
     , allowed : Array String
     , triedKeys : Array Int
     , passwords : Int
-    , keyboardTried : Bool
+    -- keyboard-interactive's tries, held to the passwords' count: a PAM
+    -- server answers a wrong answer with a failure, and the method is
+    -- begun again, as OpenSSH does (the code review's SC8)
+    , keyboardTries : Int
     , send : Array Bytes
     , requests : Array Request
     , events : Array Event
@@ -185,7 +188,7 @@ begin config sessionId =
         , allowed = []
         , triedKeys = []
         , passwords = 0
-        , keyboardTried = False
+        , keyboardTries = 0
         , send = [ Bytes.flatten [ Wire.writeByte msgServiceRequest, Wire.writeText "ssh-userauth" ] ]
         , requests = []
         , events = []
@@ -299,9 +302,6 @@ failed failure st =
                 SentSignature identity ->
                     { told | triedKeys = Array.pushLast identity.id told.triedKeys }
 
-                KeyboardInteractive ->
-                    { told | keyboardTried = True }
-
                 _ ->
                     told
     in
@@ -338,12 +338,12 @@ next st =
                                     meant Reason.NoMore choose m.rest
 
                         "keyboard-interactive" ->
-                            if st.keyboardTried then
+                            if st.keyboardTries >= st.config.passwordTries then
                                 choose m.rest
 
                             else
                                 queue (Bytes.flatten [ requestHead st "keyboard-interactive", Wire.writeText "", Wire.writeText "" ])
-                                    { st | attempt = KeyboardInteractive, keyboardTried = True }
+                                    { st | attempt = KeyboardInteractive, keyboardTries = st.keyboardTries + 1 }
 
                         "password" ->
                             if st.passwords >= st.config.passwordTries then

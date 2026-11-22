@@ -82,6 +82,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `next` sets `keyboardTried = True` when it sends the request and never offers the method again; `password` has `passwordTries` (3) but keyboard-interactive has no count. A PAM server answers a wrong password inside keyboard-interactive with `USERAUTH_FAILURE`, and a client is expected to start the method again (OpenSSH does, `NumberOfPasswordPrompts` times).
 - Scenario: a server with `KbdInteractiveAuthentication yes` and `PasswordAuthentication no` (common with PAM or a one-time code). The user mistypes once: `Refused`, then `Exhausted`, "permission denied: nothing left to try", and the connection is closed. The same flag also stops the method after partial success if it had failed earlier in the connection.
 - Fix: count keyboard-interactive attempts against the same limit as passwords (a counter in place of the Bool), and reset neither on partial success.
+- Fixed: 2026-11-22. `keyboardTries` counts keyboard-interactive's starts and holds them to `passwordTries`, where a flag stopped the method after one failure; partial success does not reset it. Test: `Connection`'s "keyboard-interactive is begun again after a failure": before, asked once and then exhausted.
 
 ### SC9 · The hourly rekey in the design is not built: `Transport.rekey` has no caller
 - Where: packages/ssh/src/Ssh/Transport.geng:294-300, 1114-1120; packages/ssh/src/Ssh/Session.geng (no call; `keysAt` at 282 is the time of the last typed key, despite its name); docs/ssh-client.md:67, 550

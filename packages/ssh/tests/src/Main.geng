@@ -217,6 +217,95 @@ connectionSuite =
         , ends "data that does not read" (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, short ])
         , ends "extended data that does not read" (Bytes.flatten [ Wire.writeByte 95, Wire.writeUint32 0, Wire.writeUint32 1, short ])
         , ends "a window adjustment that does not read" (Bytes.flatten [ Wire.writeByte 93, Wire.writeUint32 0, Wire.writeByte 1 ])
+        , caseTest "a key file the agent also holds is offered through the agent, in the file's place (review ST6)"
+            (\_ ->
+                let
+                    key k =
+                        Bytes.fromString k
+
+                    file id k =
+                        { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Just { path = "/home/me/.ssh/" ++ k, text = Bytes.empty } }
+
+                    agent id k =
+                        { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Nothing }
+
+                    shown list =
+                        Array.map
+                            (\i ->
+                                Bytes.toStringLossy i.identity.publicKey
+                                    ++ (if i.file == Nothing then
+                                            "@agent"
+
+                                        else
+                                            "@file"
+                                       )
+                            )
+                            list
+
+                    files =
+                        [ file 1 "A", file 2 "B" ]
+
+                    held =
+                        [ agent 1000 "B", agent 1001 "C" ]
+                in
+                when { all = shown (Session.withAgent False files held), only = shown (Session.withAgent True files held) } is
+                    { all = [ "A@file", "B@agent", "C@agent" ], only = [ "A@file", "B@agent" ] } ->
+                        Nothing
+
+                    r ->
+                        Just (String.join "," r.all ++ " / " ++ String.join "," r.only)
+            )
+        , caseTest "keyboard-interactive is begun again after a failure, as often as a password is tried (review SC8)"
+            (\_ ->
+                let
+                    config =
+                        { user = "me", identities = [], methods = [ "keyboard-interactive" ], serverSigAlgs = [], passwordTries = 3 }
+
+                    failure =
+                        Bytes.flatten [ Wire.writeByte 51, Wire.writeText "keyboard-interactive", Wire.writeByte 0 ]
+
+                    started =
+                        Auth.received (Bytes.flatten [ Wire.writeByte 6, Wire.writeText "ssh-userauth" ]) (Auth.begin config Bytes.empty).auth
+
+                    asked step =
+                        Array.length (Array.keepIf (\b -> String.contains "keyboard-interactive" (Bytes.toStringLossy b)) step.send)
+
+                    -- four failures in a row, each answered by a new try
+                    -- until the count is spent
+                    steps =
+                        Array.foldl
+                            (\_ acc ->
+                                let
+                                    st =
+                                        Auth.received failure acc.auth
+                                in
+                                { auth = st.auth
+                                , asked = acc.asked + asked st
+                                , exhausted =
+                                    acc.exhausted || Array.any
+                                                        (\e ->
+                                                            when e is
+                                                                Auth.Exhausted _ ->
+                                                                    True
+
+                                                                _ ->
+                                                                    False
+                                                        )
+                                                        st.events
+                                }
+                            )
+                            { auth = started.auth, asked = asked started, exhausted = False }
+                            (Array.range 1 4)
+                in
+                if steps.asked /= 3 then
+                    Just ("keyboard-interactive asked " ++ String.fromInt steps.asked ++ " times")
+
+                else if not steps.exhausted then
+                    Just "not exhausted after three"
+
+                else
+                    Nothing
+            )
         , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
             (\_ ->
                 let

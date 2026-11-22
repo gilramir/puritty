@@ -71,6 +71,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: with `IdentitiesOnly` off, the agent's keys are filtered with `not (Array.member k.publicKey fromFiles)`, so a key the agent holds is dropped when an identity file has the same public key; with it on, the agent's copy is kept but after the file's. Either way the file's identity is offered first, and when the server takes it `onRequest` finds `encrypted = True` and asks for the passphrase.
 - Scenario: the commonest setup: `~/.ssh/id_ed25519` (a default `IdentityFile`) encrypted, and added to the agent with `ssh-add` so that nothing is asked. OpenSSH signs with the agent. puritty asks for the passphrase on every connection (and on Linux, where nothing is remembered, every time).
 - Fix: when an identity file's public key is among the agent's keys, keep one identity that signs through the agent (`file = Nothing`), in the file's place in the order; fall back to the file only if the agent refuses to sign.
+- Fixed: 2026-11-22. `Session.withAgent` makes the identities: the files' in order, each the agent also holds offered through the agent (`file = Nothing`) in the file's place, then, unless `IdentitiesOnly`, the agent's others. Test: `Connection`'s "a key file the agent also holds is offered through the agent". Not done: falling back to the file when the agent refuses to sign.
 
 ### ST7 · A new host key is appended to `known_hosts` without checking the file ends in a newline
 - Where: packages/ssh/src/Ssh/Session.geng:989 (`remember`, `File.appendFile … (KnownHosts.line …)`)
