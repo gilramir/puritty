@@ -178,8 +178,9 @@ SUITES = [
         # file by a share's path; 488 since TA5 and TA7: the size's reply
         # waited for, a grab let go, on each tmux; 489 since PS11: the
         # picker's wheel after the keys; 519 since TA3 and TA15: control
-        # mode asked about, and in a pane no key sent, on each tmux
-        519,
+        # mode asked about, and in a pane no key sent, on each tmux; 520
+        # since ST3: a remembered password given alone to the known key only
+        520,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

@@ -1086,6 +1086,8 @@ What it decides, as OpenSSH does and SC9 asks:
   unknown one** is refused under `StrictHostKeyChecking yes`, written
   without a question under `accept-new` and `no`, and asked about under
   `ask` (the default): trust and remember, trust this once, or decline.
+  Under `accept-new`, a key of a type the host is not known by, when it is
+  known by another, is asked about too (SC30).
   The known key types order the host key algorithms (SC15).
 - **A key file with a passphrase** is asked about only when the server
   would take its key (SC16), and asked again after a wrong passphrase,
@@ -1601,3 +1603,24 @@ Enter and exits with the status. The other cases' commands now end with
 `exit 0`, closing as before (`exit 7` would now wait for a key); two
 resizes' pins moved from 29×100 to 28×97, R20's gap (0fb39e4), not pinned
 again then. 17 of 17 pass.
+
+
+## SC30 · accept-new takes new hosts, not new keys for known ones (2026-11-22)
+
+The code review's SC6: under `accept-new` (and `no`), a key of a type the
+host is not known by was written and trusted with no question even when
+`known_hosts` holds a key of another type for it. The client knows
+better: SC15 put the known type first in its KEXINIT, so an honest server
+that still has that key would have used it, and a man in the middle that
+offers only another type is the case `accept-new` should not take.
+OpenSSH does the same, so this was Gilbert's to decide (2026-11-22):
+under `accept-new` it is asked about with `ask`'s question, which names
+the types the host is known by; under `no`, where checking was turned off
+on purpose, it is taken as before.
+
+Checked (`packages/ssh/tests/sshd.py`, two cases, the host known by its
+ECDSA key and the server offering only Ed25519): before, under
+`accept-new` the Ed25519 key was written and the session logged in; now
+the driver is asked, declines, and nothing is written. Under `no` it is
+written as before. The saved password a host asks for under such a key is
+PW11's (`saved-secrets.md`).

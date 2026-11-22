@@ -258,3 +258,28 @@ runs each `cmdkey` in the desktop session (`on_desktop`) and checks the
 store is empty at the start and the end; the credential is gone. It also
 sends keys only while puritty is running and reported in front.
 
+
+## PW11 · Given alone only to the known key (2026-11-22)
+
+The code review's ST3: a remembered password (or a one-prompt
+keyboard-interactive password) was given from Credential Manager with no
+keystroke whatever the host's key had been: after "trust once" on a
+changed key, or a key taken without a question under
+`StrictHostKeyChecking accept-new` or `no`. OpenSSH turns password
+authentication off in that state; here the secret left at once, with a
+status line saying so. Gilbert's decision (2026-11-22): offer it behind
+Enter.
+
+`Ssh.Session` now says in `Password` and `Responses` whether the host's
+key was the one `known_hosts` holds (`keyKnown`, true only on SC's
+`Known`), and `Remembered.givenAlone` decides: given alone only then. In
+the other cases the box opens with the remembered one filled in (shown as
+dots), a line saying the host's key is not the one known and that it is
+sent only if Enter is pressed, and the checkbox as for an offered one. A
+passphrase unlocks the user's own key and is given as before.
+
+Tested: `Remembered.givenAlone` in the app's suite (a password and a
+keyboard-interactive one, each under a known and an unknown key, and a
+passphrase). The box itself is `Main`'s, which the node tests do not
+build (as ST27 records for `Sending`), and the local sshd has no password
+for its user, so the path from `Session` to the box is read, not run.

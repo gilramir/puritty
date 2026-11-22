@@ -411,12 +411,25 @@ remembered =
                         , (decoded "[notifications]\ndesktop = false\n").desktopNotifications
                         ]
           }
+        , { name = "a remembered password is given alone only when the host's key was the one known; else it waits for Enter (PW11, the code review's ST3)"
+          , test =
+                \_ ->
+                    Expect.equal [ True, False, True, False, True ]
+                        (Array.map Remembered.givenAlone
+                            [ Remembered.Password { account = "me@h:22", keyKnown = True }
+                            , Remembered.Password { account = "me@h:22", keyKnown = False }
+                            , Remembered.Responses { prompts = [ { text = "Password:", echo = False } ], account = "me@h:22", keyKnown = True }
+                            , Remembered.Responses { prompts = [ { text = "Password:", echo = False } ], account = "me@h:22", keyKnown = False }
+                            , Remembered.Passphrase { file = "/home/me/.ssh/id_ed25519" }
+                            ]
+                        )
+          }
         , { name = "a password by its connection, a passphrase by its file"
           , test =
                 \_ ->
                     Expect.equal
                         [ Just { target = "puritty:ssh:me@h.example.com:2222", user = "me" }, Just { target = "puritty:key:C:\\Users\\me\\.ssh\\id_ed25519", user = "C:\\Users\\me\\.ssh\\id_ed25519" } ]
-                        [ Remembered.keptFor (Remembered.Password { account = "me@h.example.com:2222" })
+                        [ Remembered.keptFor (Remembered.Password { account = "me@h.example.com:2222", keyKnown = True })
                         , Remembered.keptFor (Remembered.Passphrase { file = "C:\\Users\\me\\.ssh\\id_ed25519" })
                         ]
           }
@@ -425,7 +438,7 @@ remembered =
                 \_ ->
                     let
                         asked prompts =
-                            Remembered.keptFor (Remembered.Responses { prompts = prompts, account = "me@h:22" }) /= Nothing
+                            Remembered.keptFor (Remembered.Responses { prompts = prompts, account = "me@h:22", keyKnown = True }) /= Nothing
                     in
                     Expect.equal [ True, True, True, False, False, False ]
                         [ asked [ { text = "Password: ", echo = False } ]
@@ -441,7 +454,7 @@ remembered =
                 \_ ->
                     let
                         password =
-                            Remembered.Password { account = "me@h:22" }
+                            Remembered.Password { account = "me@h:22", keyKnown = True }
                     in
                     Expect.equal [ False, False, False, True ]
                         [ Remembered.offered { available = False, setting = "ask" } password /= Nothing

@@ -1,4 +1,4 @@
-module Remembered exposing (Change, Kept, Question(..), changesAt, keptFor, looksLikePassword, offered)
+module Remembered exposing (Change, Kept, Question(..), changesAt, givenAlone, keptFor, looksLikePassword, offered)
 
 {-| Remembered passwords and passphrases (`docs/saved-secrets.md` PW8):
 which questions of the built-in client may be answered from Windows'
@@ -21,9 +21,9 @@ import Reason
 makes one of `Ssh.Session.Ask` (this module is the app's, built for the
 node tests too, where the ssh package is not). -}
 type Question
-    = Password { account : String }
+    = Password { account : String, keyKnown : Bool }
     | Passphrase { file : String }
-    | Responses { prompts : Array { text : String, echo : Bool }, account : String }
+    | Responses { prompts : Array { text : String, echo : Bool }, account : String, keyKnown : Bool }
     | NotSecret
 
 
@@ -74,6 +74,27 @@ offered o ask =
 
     else
         Nothing
+
+
+{-| Whether a remembered answer is given with no keystroke: a password
+only when the host's key was the one `known_hosts` holds, not one trusted
+once or taken without a question; otherwise it waits in the box for the
+user's Enter (PW11, the code review's ST3). A passphrase unlocks the
+user's own key, whoever the host is. -}
+givenAlone : Question -> Bool
+givenAlone ask =
+    when ask is
+        Password p ->
+            p.keyKnown
+
+        Responses r ->
+            r.keyKnown
+
+        Passphrase _ ->
+            True
+
+        NotSecret ->
+            False
 
 
 {-| A prompt that asks for a password, as servers word it: "Password:",

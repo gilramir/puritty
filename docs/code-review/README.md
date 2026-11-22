@@ -202,11 +202,11 @@ Decided by Gilbert on 2026-11-22, each the recommended choice; to build.
 - **SC6**: under `accept-new` or `no`, a key of a new type is accepted for a
   host known by another type. OpenSSH does the same, the review says.
   *Decided:* under `accept-new`, ask, with the question `ask` shows; under
-  `no`, accept as now.
+  `no`, accept as now. **Built** 2026-11-22: `docs/ssh-client.md` SC30.
 - **ST3**: whether a remembered password is offered after "trust once".
   *Decided:* sent by itself only when the host's key matched
   `known_hosts`; otherwise the password box says the key is not the known
-  one, the saved password ready but sent only by the user's Enter.
+  one, the saved password ready but sent only by the user's Enter. **Built** 2026-11-22: `docs/saved-secrets.md` PW11.
 - **SC7**: `ssh_config` keywords that are read and not acted on are dropped
   without a word. *Decided:* each one not acted on is named once per
   connection; the authentication restrictions (`PasswordAuthentication`,
@@ -280,12 +280,12 @@ covered" sections. The larger gaps:
 | [SC3](04-ssh-core.md) | security | confirmed | No warning or fallback when the server has no strict KEX and ChaCha20-Poly1305 is chosen (Terrapin), though the design promises one |
 | [SC4](04-ssh-core.md) | security | confirmed | An unencrypted key file's text, the private key itself, is held in Geng memory for the whole session |
 | [SC5](04-ssh-core.md) | inaccuracy | plausible | A host looked up through `HostKeyAlias` on a port other than 22 is looked up as `[alias]:port`; OpenSSH uses the bare alias |
-| [SC6](04-ssh-core.md) | security | confirmed | With `accept-new` or `no`, a key of a type the host is not known by is taken silently even when the host is known by another type |
+| [SC6](04-ssh-core.md) | security | confirmed | **fixed** With `accept-new` or `no`, a key of a type the host is not known by is taken silently even when the host is known by another type |
 | [SC7](04-ssh-core.md) | inaccuracy | confirmed | `ssh_config` keywords the client does not act on are dropped without a word, including ones that restrict what it may do |
 | [SC8](04-ssh-core.md) | bug | confirmed | **fixed** keyboard-interactive is tried once per connection, so one mistyped answer ends the login |
 | [ST1](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A batch whose SFTP stream breaks is reported as a success: `Finished` overwrites `Broken` |
 | [ST2](05-ssh-session-transfer.md) | security | plausible | The shell fallback's quoting is only right for POSIX-style login shells: fish misreads `\'`, csh/tcsh refuse the newline |
-| [ST3](05-ssh-session-transfer.md) | security | confirmed | A remembered password is given without asking to a host whose key is not the known one |
+| [ST3](05-ssh-session-transfer.md) | security | confirmed | **fixed** A remembered password is given without asking to a host whose key is not the known one |
 | [ST4](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A dropped folder is walked through its symlinks: a link to `/` or to a parent uploads far more than was dropped, or never finishes |
 | [ST5](05-ssh-session-transfer.md) | security | plausible | **fixed** A hostile SFTP server can crash the client with one `SSH_FXP_NAME`: `entries` and `skipExtended` recurse once per element, not in a loop |
 | [ST6](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A key that is both a file and in the agent is used from the file, so the passphrase is asked although the agent holds the key |

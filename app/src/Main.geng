@@ -5917,7 +5917,22 @@ sshAsked ask m =
                                                 _ ->
                                                     Session.Give secret
                                     in
-                                    sshAnswered asked.remote answer "the remembered one given, from Windows' Credential Manager" { screen | tried = Array.pushLast k.target screen.tried } asked
+                                    if Remembered.givenAlone (questionOf ask) then
+                                        sshAnswered asked.remote answer "the remembered one given, from Windows' Credential Manager" { screen | tried = Array.pushLast k.target screen.tried } asked
+
+                                    else
+                                        -- the host's key is not the one known
+                                        -- (trusted once, or taken without a
+                                        -- question): the remembered one is in the
+                                        -- box, given only by the user's Enter
+                                        -- (docs/saved-secrets.md PW11, the code
+                                        -- review's ST3)
+                                        when screen.asking is
+                                            Just a ->
+                                                Task.succeed { asked | ssh = Just { screen | tried = Array.pushLast k.target screen.tried, asking = Just { a | typed = secret, offer = True } }, urgent = True }
+
+                                            Nothing ->
+                                                meant Reason.NotOpen Task.succeed asked
 
                                 Err _ ->
                                     -- none kept, or the store could not be read
@@ -5933,13 +5948,13 @@ questionOf : Session.Ask -> Remembered.Question
 questionOf ask =
     when ask is
         Session.Password p ->
-            Remembered.Password { account = p.account }
+            Remembered.Password { account = p.account, keyKnown = p.keyKnown }
 
         Session.Passphrase p ->
             Remembered.Passphrase { file = p.file }
 
         Session.Responses r ->
-            Remembered.Responses { prompts = r.prompts, account = r.account }
+            Remembered.Responses { prompts = r.prompts, account = r.account, keyKnown = r.keyKnown }
 
         Session.TrustHostKey _ ->
             Remembered.NotSecret
@@ -6372,6 +6387,9 @@ remembering asking d =
             | lines =
                 (if asking.refused then
                     [ "The remembered one was refused." ]
+
+                 else if not (Remembered.givenAlone (questionOf asking.ask)) && asking.typed /= "" then
+                    [ "The host's key is not the one known, so the remembered one is filled in, and sent only if you press Enter." ]
 
                  else
                     []

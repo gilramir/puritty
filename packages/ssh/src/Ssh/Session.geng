@@ -127,9 +127,9 @@ type AgentPath
 type Ask
     = TrustHostKey { host : String, algorithm : String, fingerprint : String, knownTypes : Array String }
     | HostKeyChanged { host : String, algorithm : String, fingerprint : String, lineNumbers : Array Int }
-    | Password { prompt : String, account : String }
+    | Password { prompt : String, account : String, keyKnown : Bool }
     | Passphrase { file : String }
-    | Responses { name : String, instruction : String, prompts : Array { text : String, echo : Bool }, account : String }
+    | Responses { name : String, instruction : String, prompts : Array { text : String, echo : Bool }, account : String, keyKnown : Bool }
 
 
 {-| The user's answer to the last [`Ask`](#Ask). `Trust`: connect, and
@@ -273,6 +273,10 @@ type alias State =
     , identities : Array Identity
     , known : Array KnownHosts.Entry
     , hostKeyTrusted : Bool
+    -- whether the host's key was the one `known_hosts` holds, not one
+    -- trusted once or taken without a question: a secret is given by
+    -- itself only then (puritty `docs/saved-secrets.md` PW11)
+    , hostKeyKnown : Bool
     , keysReady : Bool
     , waiting : Waiting
     , exitStatus : Maybe Int
@@ -471,6 +475,7 @@ session permissions options role label link notices =
                                                         , identities = withAgent options.identitiesOnly files agent.identities
                                                         , known = known
                                                         , hostKeyTrusted = False
+                                                        , hostKeyKnown = False
                                                         , keysReady = False
                                                         , waiting = NotWaiting
                                                         , exitStatus = Nothing
@@ -946,7 +951,7 @@ hostKey shown st =
     else
         when KnownHosts.check name shown.key st.known is
             KnownHosts.Known ->
-                tell (Status ("the host's " ++ shown.algorithm ++ " key is the one known")) { st | hostKeyTrusted = True }
+                tell (Status ("the host's " ++ shown.algorithm ++ " key is the one known")) { st | hostKeyTrusted = True, hostKeyKnown = True }
 
             KnownHosts.KeyRevoked ->
                 ending ("the host's " ++ shown.algorithm ++ " key " ++ printed ++ " is revoked") st
@@ -980,7 +985,17 @@ hostKey shown st =
                             |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "an unknown key" s.transport) s)
 
                     "accept-new" ->
-                        remember name shown.key st |> Task.map (\s -> { s | hostKeyTrusted = True })
+                        if Array.isEmpty unknown.otherTypes then
+                            remember name shown.key st |> Task.map (\s -> { s | hostKeyTrusted = True })
+
+                        else
+                            -- a new host is taken, not a new key for a known
+                            -- one: a man in the middle offers only a type the
+                            -- host is not known by (the code review's SC6),
+                            -- so asked, as `ask` asks
+                            tell
+                                (Asking (TrustHostKey { host = name, algorithm = shown.algorithm, fingerprint = printed, knownTypes = unknown.otherTypes }))
+                                { st | waiting = ForHostKey { name = name, key = shown.key } }
 
                     "no" ->
                         remember name shown.key st |> Task.map (\s -> { s | hostKeyTrusted = True })
@@ -1188,10 +1203,10 @@ onRequest request st =
                             meant Reason.NotSet signWith need file.text Bytes.empty st
 
         { request = Auth.NeedPassword need } ->
-            tell (Asking (Password { prompt = need.prompt, account = accountOf st.options })) { st | waiting = ForPassword }
+            tell (Asking (Password { prompt = need.prompt, account = accountOf st.options, keyKnown = st.hostKeyKnown })) { st | waiting = ForPassword }
 
         { request = Auth.NeedResponses need } ->
-            tell (Asking (Responses { name = need.name, instruction = need.instruction, prompts = need.prompts, account = accountOf st.options })) { st | waiting = ForResponses }
+            tell (Asking (Responses { name = need.name, instruction = need.instruction, prompts = need.prompts, account = accountOf st.options, keyKnown = st.hostKeyKnown })) { st | waiting = ForResponses }
 
 
 {-| Whom a password is for, `user@host:port`, as the connection was made
