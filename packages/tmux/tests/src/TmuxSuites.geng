@@ -271,6 +271,41 @@ control =
                     Expect.equal [ Notice (Unknown "%frobnicate @1"), Notice SessionsChanged ]
                         (events (Bytes.fromString "\u{001B}P1000p%frobnicate @1\r\n%sessions-changed\r\n") |> Array.dropFirst 1)
           }
+        , { name = "a line that does not end is held to 1 MiB, past which control mode is left and its bytes are the terminal's (review TP3)"
+          , test =
+                \_ ->
+                    let
+                        piece =
+                            Bytes.fromString (String.repeat 65536 "x")
+
+                        fed =
+                            Array.foldl
+                                (\_ acc ->
+                                    let
+                                        r =
+                                            Control.feed piece acc.reader
+                                    in
+                                    { reader = r.reader, events = acc.events ++ r.events }
+                                )
+                                (Control.feed (Bytes.fromString "\u{001B}P1000p%sessions-changed\n") Control.reader)
+                                (Array.range 1 20)
+
+                        outsideBytes =
+                            Array.foldl
+                                (\e n ->
+                                    when e is
+                                        Outside b ->
+                                            n + Bytes.length b
+
+                                        _ ->
+                                            n
+                                )
+                                0
+                                fed.events
+                    in
+                    Expect.equal { exited = True, outside = 20 * 65536, inside = False }
+                        { exited = Array.member Exited fed.events, outside = outsideBytes, inside = Control.isInside fed.reader }
+          }
         , { name = "the client killed: the shell's line outside a reply is in doubt, and given up on it is the terminal's (TK13, TK14)"
           , test =
                 \_ ->
@@ -431,6 +466,15 @@ command =
                         ]
                         (Command.pasteBytes 3 { first = True, last = True } (Bytes.fromString "a\"b$\\\n한"))
           }
+        , { name = "a paste's ~ is escaped, which tmux 3.x would expand at a word's start as a home folder (review TP1)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "set-buffer -b puritty-paste \"\\~/.bashrc a\\~b\""
+                        , "paste-buffer -p -r -d -b puritty-paste -t '%2'"
+                        ]
+                        (Command.pasteBytes 2 { first = True, last = True } (Bytes.fromString "~/.bashrc a~b"))
+          }
         , { name = "a paste's CR, LF, Tab and Escape as every tmux's parser takes them, a byte not UTF-8 in octal (TM94)"
           , test =
                 \_ ->
@@ -576,6 +620,22 @@ bindings =
                 \_ ->
                     Expect.equal [ True, True, True ]
                         (typedAt [ { key = "C-a", ms = 0 }, { key = "Up", ms = 10 }, { key = "x", ms = 100 } ] |> Array.map .send)
+          }
+        , { name = "what is held is decided by commands' names, not any word: inside a block, if-shell's and run-shell -C's commands (review TP5)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ False, False, False, True, True, True, True ]
+                        (Array.map (\c -> Bindings.held c /= Nothing)
+                            [ "send-keys menu Enter"
+                            , "new-window -n popup"
+                            , "display-message menu"
+                            , "if-shell -F '#{x}' 'command-prompt -p name \"rename-window %%\"'"
+                            , "if -F '#{x}' { display-menu -T x a a { kill-pane } }"
+                            , "run-shell -C 'confirm-before kill-pane'"
+                            , "select-pane ; display-popup -E top"
+                            ]
+                        )
           }
         , { name = "suspend-client is held back: a suspended control client takes no keys again"
           , test =

@@ -156,7 +156,41 @@ feed bytes r =
         step (Bytes.flatten [ doubted, data ]) 0 reader [ Exited ]
 
     else
-        step data 0 { r | held = Bytes.empty } []
+        bounded (step data 0 { r | held = Bytes.empty } [])
+
+
+{-| The most bytes a line not yet ended, or the lines in doubt, may hold:
+tmux's lines are short (an `%output` line is cut by tmux's own buffer, a
+reply's line is a pane's row), so more is not tmux's, and control mode is
+left as `ESC \` leaves it, the bytes the terminal's. Before, nothing
+bounded them, and each read copied and scanned the whole held line again
+(the code review's TP3). -}
+heldMost : Int
+heldMost =
+    1048576
+
+
+bounded : { reader : Reader, events : Array Event } -> { reader : Reader, events : Array Event }
+bounded result =
+    let
+        r =
+            result.reader
+
+        stray =
+            when r.stray is
+                Just b ->
+                    b
+
+                Nothing ->
+                    meant Reason.NotOpen Bytes.empty
+    in
+    if r.inside && (Bytes.length r.held > heldMost || Bytes.length stray > heldMost) then
+        { reader = { r | inside = False, held = Bytes.empty, block = Nothing, stray = Nothing }
+        , events = result.events ++ [ Exited, Outside (Bytes.flatten [ stray, r.held ]) ]
+        }
+
+    else
+        result
 
 
 step : Bytes -> Int -> Reader -> Array Event -> { reader : Reader, events : Array Event }

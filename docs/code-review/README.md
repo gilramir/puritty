@@ -289,11 +289,11 @@ covered" sections. The larger gaps:
 | [ST5](05-ssh-session-transfer.md) | security | plausible | **fixed** A hostile SFTP server can crash the client with one `SSH_FXP_NAME`: `entries` and `skipExtended` recurse once per element, not in a loop |
 | [ST6](05-ssh-session-transfer.md) | bug | confirmed | A key that is both a file and in the agent is used from the file, so the passphrase is asked although the agent holds the key |
 | [ST7](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A new host key is appended to `known_hosts` without checking the file ends in a newline |
-| [TP1](06-tmux-package.md) | bug | plausible | A paste whose text (or any 1024-byte piece of it) begins with `~` is tilde-expanded by tmux 3.x |
+| [TP1](06-tmux-package.md) | bug | plausible | **fixed** A paste whose text (or any 1024-byte piece of it) begins with `~` is tilde-expanded by tmux 3.x |
 | [TP2](06-tmux-package.md) | security | plausible | `ESC \` at the start of a line ends control mode even inside a reply, and a reply's lines are split on newlines the pane's program can put there |
 | [TP3](06-tmux-package.md) | security | confirmed | A line that has not ended yet is copied and rescanned on every read, and nothing bounds it, a reply's lines or the lines in doubt |
 | [TP4](06-tmux-package.md) | speed | confirmed | `%output` is unescaped with two allocations per escaped byte, and each short line is decoded to a String twice before that |
-| [TP5](06-tmux-package.md) | bug | confirmed | `Bindings.held` matches a word anywhere in the command: arguments named `menu` or `popup` hold a binding back, and a prompt inside a quoted argument is not held |
+| [TP5](06-tmux-package.md) | bug | confirmed | **fixed** `Bindings.held` matches a word anywhere in the command: arguments named `menu` or `popup` hold a binding back, and a prompt inside a quoted argument is not held |
 | [X2](07-x11-text.md) | bug | confirmed | An INCR transfer whose requestor never finishes holds its slot and its copy of the text for ever; eight of them refuse every large copy |
 | [X3](07-x11-text.md) | speed | confirmed | The fallback cache is a fixed 4,096-slot table with no full case: past that, every uncovered cluster costs a fontconfig match on every draw |
 | [X4](07-x11-text.md) | bug | plausible | Dead keys and the Compose key produce nothing when no XIM server runs |

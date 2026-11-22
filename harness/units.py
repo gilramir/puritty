@@ -111,8 +111,10 @@ SUITES = [
     # 124 since TM84: a menu's -O and -C read; 125 since TM94: a paste's
     # line ends and UTF-8 written for every tmux's parser; 133 since TK13:
     # a line not tmux's, once it has begun, ends control mode; 136 since
-    # TK14: such a line is in doubt until tmux speaks (wall) or not
-    Suite("tmux", 136, runs_of("packages/tmux/tests")),
+    # TK14: such a line is in doubt until tmux speaks (wall) or not; 139
+    # since TP1, TP3 and TP5: ~ in a paste, a line held to 1 MiB, what is
+    # held by commands' names
+    Suite("tmux", 139, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since

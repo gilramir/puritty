@@ -17,6 +17,7 @@ under control mode it would leave the client answering nothing.
 
 import Dict exposing (Dict)
 import Tmux.Reason as Reason
+import Tmux.Syntax as Syntax
 
 
 {-| A key's binding as `list-keys` gives it: its command, and whether it
@@ -201,19 +202,11 @@ nor `choose-buffer` and `choose-client` (TM55), nor `customize-mode`
 held : String -> Maybe String
 held command =
     let
-        words =
-            String.split " " command
-                |> Array.map
-                    (\w ->
-                        if String.startsWith "{" w then
-                            String.dropFirst 1 w
-
-                        else
-                            w
-                    )
+        names =
+            commandNames 4 command
 
         has name =
-            Array.member name words
+            Array.member name names
     in
     if has "command-prompt" then
         Just "command-prompt; tmux -CC shows no prompt yet"
@@ -244,6 +237,53 @@ held command =
 
     else
         Nothing
+
+
+{-| The names of the commands a command line runs: the first word of each
+of its commands, and of the commands inside a `{ … }` block, inside
+`if-shell`'s (`if`) commands and inside `run-shell -C`'s, `depth` deep.
+Words in other places are arguments, not commands: before, any word
+counted, so `send-keys menu Enter` was held as a menu, and a prompt inside
+a quoted `if-shell` command was not held (the code review's TP5). -}
+commandNames : Int -> String -> Array String
+commandNames depth line =
+    Syntax.commands (Syntax.tokens line)
+        |> Array.mapAndFlatten
+            (\words ->
+                when Array.popFirst words is
+                    Just { first, rest } ->
+                        let
+                            name =
+                                first.value
+
+                            -- the words that are commands of their own
+                            inner =
+                                if depth <= 0 then
+                                    []
+
+                                else if name == "if-shell" || name == "if" then
+                                    -- the condition is the first word not a flag
+                                    -- (or a flag's value); the rest are commands
+                                    rest
+                                        |> Array.keepIf (\w -> w.block || not (String.startsWith "-" w.value))
+                                        |> Array.dropFirst 1
+                                        |> Array.mapAndFlatten (\w -> commandNames (depth - 1) w.value)
+
+                                else if (name == "run-shell" || name == "run") && Array.any (\w -> not w.block && String.startsWith "-" w.value && String.contains "C" w.value) rest then
+                                    rest
+                                        |> Array.keepIf (\w -> w.block || not (String.startsWith "-" w.value))
+                                        |> Array.mapAndFlatten (\w -> commandNames (depth - 1) w.value)
+
+                                else
+                                    rest
+                                        |> Array.keepIf .block
+                                        |> Array.mapAndFlatten (\w -> commandNames (depth - 1) w.value)
+                        in
+                        Array.pushFirst name inner
+
+                    Nothing ->
+                        meant Reason.NoMore []
+            )
 
 
 {-| The table a binding's `switch-client -T table` puts the client in. -}
