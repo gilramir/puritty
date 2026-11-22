@@ -7,13 +7,16 @@ file removed once read. The checks are Kitty's, as Ghostty copied them
 under `/proc`, `/sys` or `/dev` but `/dev/shm`; a regular file; at most
 400 MB; and a temporary file only in a temporary folder (`/tmp`,
 `/dev/shm`, `TMPDIR`, `TEMP`, `TMP`), with `tty-graphics-protocol` in its
-name. What fails is answered in Kitty's words, never with the platform's
-message, which would tell the program more of this machine than it asked.
+name; and, on any platform, no path beginning with two separators, which
+on Windows names another machine's share or a device. What fails is
+answered in Kitty's words, never with the platform's message, which would
+tell the program more of this machine than it asked.
 -}
 
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Int64
+import Links
 import Os.Env
 import Os.Error exposing (Error)
 import Os.File as File
@@ -42,6 +45,10 @@ read fs want =
     in
     if not (Path.isAbsolute path) then
         Task.succeed (Err "EINVAL: the path is not absolute")
+
+    else if Links.shared want.path then
+        -- before `realPath`, which would open it
+        Task.succeed (Err "EPERM: that folder is not read")
 
     else
         Task.map2 (\real temps -> { real = real, temps = temps }) (File.realPath fs path) (temporaryFolders fs)

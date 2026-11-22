@@ -266,10 +266,10 @@ covered" sections. The larger gaps:
 | [VS2](02-vt-scrollback-view-input.md) | security | confirmed | **fixed** OSC 99 parts with `d=0` grow a pending notification without bound, each part copied onto the last |
 | [VS3](02-vt-scrollback-view-input.md) | bug | confirmed | **fixed** A selection that starts on the right half of a wide character leaves that character out of the copy |
 | [VI4](03-vt-images.md) | security | confirmed | Decoders peak at roughly ten times the pixel bytes, so the 320 MB limit admits multi-GB spikes from small inputs |
-| [VI5](03-vt-images.md) | bug | confirmed | A Sixel or iTerm2 image drawn over an older one never frees it: animations pile up to the limit |
-| [VI6](03-vt-images.md) | bug | confirmed | An image refused for memory is answered even when the program gave no id |
-| [VI7](03-vt-images.md) | speed | confirmed | Eviction sorts every image once per victim, with a scan of all placements inside the comparison |
-| [VI8](03-vt-images.md) | efficiency | confirmed | Placements whose rows have left the scrollback are never removed |
+| [VI5](03-vt-images.md) | bug | confirmed | **fixed** A Sixel or iTerm2 image drawn over an older one never frees it: animations pile up to the limit |
+| [VI6](03-vt-images.md) | bug | confirmed | **fixed** An image refused for memory is answered even when the program gave no id |
+| [VI7](03-vt-images.md) | speed | confirmed | **fixed** Eviction sorts every image once per victim, with a scan of all placements inside the comparison |
+| [VI8](03-vt-images.md) | efficiency | confirmed | **fixed** Placements whose rows have left the scrollback are never removed |
 | [VI9](03-vt-images.md) | speed | confirmed | `imageByKey` is linear, builds a string per image, and re-masks the pixels on every call; View calls it per sent image per frame |
 | [VI10](03-vt-images.md) | speed | confirmed | Sixel painting allocates about eight arrays per data byte, and a repeat is an unbudgeted fill |
 | [VI11](03-vt-images.md) | security | plausible | With `read_files` on under Windows, a remote program can make puritty open a UNC path |

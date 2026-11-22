@@ -99,8 +99,9 @@ SUITES = [
     # Sixel size, TIFF strips and JPEG scans, one each; 216 since MAN1:
     # rows read as text from the pages, as selectionText reads them; 218
     # since VP3 and VP7: ED 3's count of rows, and what RIS keeps; 220
-    # since VS2 and VS3: OSC 99's parts held, a selection from a wide tail
-    Suite("vt", 220, runs_of("vt/tests")),
+    # since VS2 and VS3: OSC 99's parts held, a selection from a wide tail;
+    # 224 since VI5 to VI8: images over images, refusals, eviction, pruning
+    Suite("vt", 224, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
@@ -168,8 +169,9 @@ SUITES = [
         # each tmux; 467 since W1: a file link shown before it is opened;
         # 473 since TB1: the wheel over a pane in copy mode, on each tmux;
         # 474 since MAN1: a query typed on after a miss; 475 since MA13:
-        # a time set ahead and read days later
-        475,
+        # a time set ahead and read days later; 476 since VI11: a picture's
+        # file by a share's path
+        476,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

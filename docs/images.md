@@ -640,6 +640,13 @@ image behind. `image-sixel-basic` was pinned again: its `cd`, written on
 the image's last row of cells, now clears the one row of the image's
 pixels under those two cells.
 
+*Changed 2026-11-22* (the code review's VI5): an opaque Sixel or iTerm2
+image drawn over the cells takes them from an image drawn into them
+before, as text does, so the frames of an animation do not pile up under
+each other in the store and the window's list. One with transparent pixels
+leaves the one under it, which shows through. A vt test: five opaque
+frames at the same cells leave one image, five transparent ones five.
+
 ## IM24 · Scrolling 3.6 times slower since IM14, and what fixed it (2026-11-17)
 
 `harness/perf.py` had not been run since 11-14, and on 11-17 every

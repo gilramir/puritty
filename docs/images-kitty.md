@@ -143,6 +143,22 @@ pixel counted.
   they reflow with their rows. (The alternate screen's top row on a full
   scroll keeps its pin at row 0: read, not run.)
 
+*Changed 2026-11-22* (the code review's VI6, VI7, VI8):
+
+- An image refused for memory is answered with the command's own `i` and
+  `I`, as Ghostty does, as KG3 says of errors: none for an implicit id,
+  `I` alone for one sent by its number. Before, the id chosen was put in,
+  so `i=2147483647;ENOMEM` reached a program that gave none.
+- Eviction finds the images placed once and orders the images once: a
+  victim takes its own placements only, so no other's rank moves. Before,
+  the images were sorted again for every victim, each comparison scanning
+  the placements. Natively, 1,000 placed images and 100 evicted: 138 ms
+  before, 32 ms after, the loading included.
+- When a placement is added, the placements whose every row has left the
+  scrollback are dropped, as Ghostty drops them, and an implicit,
+  transient image left with none is freed. Before, they stayed until a
+  delete, ED 2 or 3, or their image's eviction.
+
 ## KG8 · The C API for a dump
 
 `ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &g)`; a
@@ -217,3 +233,12 @@ removed, `/proc/self/status` answered `EPERM`, a missing file `ENOENT`;
 with `read_files = false`, all four `EINVAL: unsupported medium` and the
 temporary file left. Claude Code 2.1.328 with a mod whose `Image` has
 `source: { format: 'png', file }`: drawn, its log with no refusal.
+
+*Changed 2026-11-22* (the code review's VI11): a path that begins with two
+separators, `\\` or `//` in any mix, is refused (`EPERM`) before it is
+opened, on every platform: on Windows it names another machine's share,
+which Windows would give the user's credentials to open, or a device
+(`\\?\`, `\\.\`). And what this rule cannot hide: with the setting on,
+the replies tell a program which local files exist and can be read
+(`ENOENT`, `EPERM`, `OK`), as Kitty's and Ghostty's do; the setting's text
+should say so.

@@ -164,6 +164,20 @@ suite =
                     Expect.equal { pushed = before, images = [], scrollback = 0 }
                         { pushed = Vt.rowsPushed after, images = images after, scrollback = Vt.scrollbackRows after }
           }
+        , { name = "an opaque image drawn over an older one takes its cells, so animation frames do not pile up; a transparent one leaves it (review VI5)"
+          , test =
+                \_ ->
+                    let
+                        -- frames of 20 by 20 pixels, two cells by one, at the top
+                        -- left, the cursor sent home between them
+                        frames p2 =
+                            String.repeat 5 ("\u{001B}[H\u{001B}P0;" ++ p2 ++ "q\"1;1;20;20#1;2;100;0;0~\u{001B}\\")
+                    in
+                    Expect.equal { opaque = 1, transparent = 5 }
+                        { opaque = Array.length (images (feed (frames "0") (sixel {})))
+                        , transparent = Array.length (images (feed (frames "1") (sixel {})))
+                        }
+          }
         , { name = "XTSMGRAPHICS answers the colour registers and the geometry"
           , test =
                 \_ ->

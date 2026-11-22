@@ -125,6 +125,7 @@ Facts the findings lean on, all read from the tree:
   images already there (the existing `holed`, which deletes an image once every row is lost),
   at least when the new image is opaque; for transparent ones, compositing or the same rule as
   Windows Terminal.
+- Fixed: 2026-11-22. `placeShown` treats the cells an opaque new image covers as overwritten (`overwritten`, `holed`) before placing it; a transparent one leaves what is under it. Test: `Sixel`'s "an opaque image drawn over an older one takes its cells": five opaque frames left five images before, one after; five transparent ones five. `docs/images.md` IM23.
 
 ### VI6 · An image refused for memory is answered even when the program gave no id
 - Where: vt/src/Vt/Kitty.geng:817-819 (`finishLoad`)
@@ -145,6 +146,7 @@ Facts the findings lean on, all read from the tree:
   not.
 - Fix: reply with `r` as it is (the command's own i and I) on the error path; add a corpus case
   for ENOMEM with no id and with `I`.
+- Fixed: 2026-11-22. The refusal is answered with the command's own `i` and `I`. Test: `KittyFiles`' "an image refused for memory is answered with the command's own ids": before, `i=2147483647;ENOMEM` for no id and `i=1,I=5` for `I=5`. `docs/images-kitty.md` KG7.
 
 ### VI7 · Eviction sorts every image once per victim, with a scan of all placements inside the comparison
 - Where: vt/src/Vt/Kitty.geng:887-928 (`evict`)
@@ -161,6 +163,7 @@ Facts the findings lean on, all read from the tree:
   about 8000 x 13 x 2 x 8000, over 10^9 closure calls per victim, seconds per frame.
 - Fix: compute the set of used image ids once, find the minimum in one pass (no sort), and
   evict in a loop over one ordering computed once.
+- Fixed: 2026-11-22. `evict` finds the placed images once and orders the images once (a victim takes its own placements only, so no rank moves), then evicts in that order (`evictIn`). Natively, 1,000 placed images and 100 evicted: 138 ms before, 32 ms after, loading included. Test: `KittyFiles`' "eviction takes the unplaced images first", which holds KG7's order on both.
 
 ### VI8 · Placements whose rows have left the scrollback are never removed
 - Where: vt/src/Vt/Kitty.geng:1059, 1268 (added), 1649-1671 (`overwritten`), 1979-2025 (`shownPlacements`); vt/src/Vt/Placed.geng:171-194
@@ -182,6 +185,7 @@ Facts the findings lean on, all read from the tree:
 - Fix: drop placements with `row < geo.gone` (and nothing reaching below it) when a placement is
   added, as Ghostty does, and free transient implicit images left with none; cap the
   placements per screen.
+- Fixed: 2026-11-22. `prunedGone`, where a placement is added: placements whose every row is below the rows gone are dropped, and an implicit, transient image left with none freed. Test: `KittyFiles`' "a placement whose rows have left the scrollback is dropped": two placements before, one after. The cap per screen is not done.
 
 ### VI9 · `imageByKey` is linear, builds a string per image, and re-masks the pixels on every call; View calls it per sent image per frame
 - Where: vt/src/Vt/Kitty.geng:1960-1968 (`imageByKey`), 1763-1855 (`masked`); callers vt/src/Vt/View.geng:797, 828; vt/src/Vt.geng:488
@@ -236,6 +240,7 @@ Facts the findings lean on, all read from the tree:
   OK) is also an oracle for whether any local path exists, on both platforms.
 - Fix: on Windows refuse paths that are not `X:\...` on a local fixed drive (no `\\`), before
   `realPath`; say in KG9 and the setting's text that replies reveal which files exist.
+- Fixed: In part, 2026-11-22. `ImageFile.read` refuses a path beginning with two separators (`Links.shared`: `\\host\share`, `//host`, `\\?\`, `\\.\`) before `realPath` opens it, on every platform. Not done: a Windows path that is not on a local fixed drive by other means (a mapped network drive letter), and the setting's text saying the replies reveal which files exist (KG9 says it now). Test: "a picture's file named by a share or a device path is refused".
 
 ### VI12 · JPEG: green is one too high on every YCbCr pixel
 - Where: vt/src/Vt/Jpeg.geng:1289

@@ -816,7 +816,11 @@ finishLoad kv data quiet t =
             in
             when addImage t.images.limit image counted is
                 Err why ->
-                    meant Reason.FromOutside respond quiet { r | id = id, message = why } (withStore counted t)
+                    -- answered with the command's own i and I, as Ghostty
+                    -- does: an implicit id is never answered, and an image
+                    -- sent by its number is answered by it alone (KG3; the
+                    -- code review's VI6)
+                    meant Reason.FromOutside respond quiet { r | message = why } (withStore counted t)
 
                 Ok added ->
                     let
@@ -891,8 +895,11 @@ evict limit adding store =
 
     else
         let
-            used id =
-                Array.any (\pl -> pl.image == id) store.placements
+            -- the images placed, found once (the code review's VI7: each
+            -- comparison of the sort scanned every placement, and the sort
+            -- ran again for every image evicted)
+            used =
+                Array.foldl (\pl acc -> Dict.set pl.image {} acc) Dict.empty store.placements
 
             rank image =
                 (if image.transient then
@@ -901,7 +908,7 @@ evict limit adding store =
                  else
                     2
                 )
-                    + (if used image.id then
+                    + (if Dict.member image.id used then
                         4
 
                        else
@@ -909,7 +916,9 @@ evict limit adding store =
                       )
 
             -- transient unused, unused, transient used, used; then the
-            -- oldest generation, then the lowest id
+            -- oldest generation, then the lowest id. Evicting one image
+            -- takes its own placements only, so no other's rank moves and
+            -- the order holds for every victim.
             order a b =
                 if rank a /= rank b then
                     compare (rank a) (rank b)
@@ -920,12 +929,72 @@ evict limit adding store =
                 else
                     compare (u32 a.id) (u32 b.id)
         in
-        when Dict.values store.images |> Array.sortWith order |> Array.first is
-            Just victim ->
-                evict limit adding (deleteImage victim.id store)
+        evictIn limit adding (Dict.values store.images |> Array.sortWith order |> Array.map .id) store
+
+
+{-| The images of `victims`, in turn, evicted until what is added fits. -}
+evictIn : Int -> Int -> Array Int -> Store -> Store
+evictIn limit adding victims store =
+    if store.bytes + adding <= limit then
+        store
+
+    else
+        when Array.popFirst victims is
+            Just { first, rest } ->
+                evictIn limit adding rest (deleteImage first store)
 
             Nothing ->
                 meant Reason.NoMore store
+
+
+{-| The placements whose every row has left the scrollback taken out, and
+an implicit, transient image (Sixel's, iTerm2's) left with none freed,
+but image `keep`, about to be placed again. Done as a placement is added,
+as Ghostty drops them "until the next placement is added" (KG7); before,
+they stayed until a delete, ED 2 or 3, or their image's eviction, and
+every walk over the placements grew with them (the code review's VI8). -}
+prunedGone : Placed.Geo -> Int -> Store -> Store
+prunedGone geo keep store =
+    let
+        split =
+            Array.partition
+                (\pl ->
+                    when Placed.rect store pl geo is
+                        Just r ->
+                            r.bottom < geo.gone
+
+                        Nothing ->
+                            meant Reason.NotKnown False
+                )
+                store.placements
+    in
+    if Array.isEmpty split.trues then
+        store
+
+    else
+        let
+            kept =
+                { store | placements = split.falses }
+
+            placedStill id =
+                Array.any (\pl -> pl.image == id) split.falses
+        in
+        Array.foldl
+            (\pl acc ->
+                when Dict.get pl.image acc.images is
+                    Just image ->
+                        if image.id /= keep && image.implicit && image.transient && not (placedStill image.id) then
+                            deleteImage image.id acc
+
+                        else
+                            acc
+
+                    Nothing ->
+                        -- freed already, with an earlier placement of it
+                        meant Reason.NotKnown acc
+            )
+            kept
+            split.trues
 
 
 {-| Image `id` and its placements gone. -}
@@ -1046,23 +1115,28 @@ display cmd t =
                             , z = key 0x7A cmd
                             }
 
+                        -- the placements gone with the scrollback dropped
+                        -- first (VI8)
+                        live =
+                            prunedGone (geoOf t) image.id store
+
                         others =
                             if p > 0 then
-                                Array.keepIf (\pl -> not (pl.image == image.id && pl.external && pl.id == p)) store.placements
+                                Array.keepIf (\pl -> not (pl.image == image.id && pl.external && pl.id == p)) live.placements
 
                             else
-                                store.placements
+                                live.placements
 
                         placed =
                             withStore
-                                { store
+                                { live
                                     | placements = Array.pushLast placement others
                                     , internal =
                                         if p > 0 then
-                                            store.internal
+                                            live.internal
 
                                         else
-                                            store.internal + 1
+                                            live.internal + 1
                                 }
                                 t
 
@@ -1197,7 +1271,79 @@ kept) taken down through the rows the image covers by IND (which scrolls),
 to the start column of its bottom row (1) or right of the image there
 (2). -}
 placeShown : { width : Int, height : Int, pixels : Bytes, cols : Int, rows : Int } -> { home : Bool, cursor : Int } -> (taken t : Term) -> Term
-placeShown d how t =
+placeShown d how t0 =
+    let
+        geo =
+            geoOf t0
+
+        y =
+            if how.home then
+                0
+
+            else
+                clamp 0 999 t0.y
+
+        x =
+            if how.home then
+                0
+
+            else
+                clamp 0 999 t0.x
+
+        rows =
+            covered d.rows d.height geo.ch
+
+        cols =
+            covered d.cols d.width geo.cw
+    in
+    -- an opaque image drawn over the cells takes them from an image drawn
+    -- into them before, as text does, so a Sixel animation's frames do not
+    -- pile up under each other (the code review's VI5); one with
+    -- transparent pixels leaves the one under it to show through
+    if opaque d.pixels then
+        placeShownOn d how (overwritten y (y + rows - 1) x (x + cols - 1) t0)
+
+    else
+        placeShownOn d how t0
+
+
+{-| The cells an image takes on one axis: `cells` when given, else its
+`pixels` in cells of `cell` pixels, at least one. -}
+covered : Int -> Int -> Int -> Int
+covered cells pixels cell =
+    clamp 1
+        10000
+        (if cells > 0 then
+            cells
+
+         else if cell > 0 then
+            (clamp 0 10000 pixels + cell - 1) // cell
+
+         else
+            1
+        )
+
+
+{-| Whether every pixel of RGBA bytes is opaque. -}
+opaque : Bytes -> Bool
+opaque pixels =
+    opaqueFrom pixels 3
+
+
+opaqueFrom : Bytes -> Int -> Bool
+opaqueFrom pixels i =
+    if i >= Bytes.length pixels then
+        True
+
+    else if byteAt pixels i /= 255 then
+        False
+
+    else
+        opaqueFrom pixels (i + 4)
+
+
+placeShownOn : { width : Int, height : Int, pixels : Bytes, cols : Int, rows : Int } -> { home : Bool, cursor : Int } -> (taken t : Term) -> Term
+placeShownOn d how t =
     let
         store =
             t.images.shown
@@ -1265,7 +1411,13 @@ placeShown d how t =
                     }
 
                 placed =
-                    withStore { added | placements = Array.pushLast placement added.placements, internal = added.internal + 1 } t
+                    let
+                        -- the placements gone with the scrollback dropped
+                        -- first (VI8)
+                        live =
+                            prunedGone geo image.id added
+                    in
+                    withStore { live | placements = Array.pushLast placement live.placements, internal = live.internal + 1 } t
             in
             if how.cursor == 0 then
                 placed

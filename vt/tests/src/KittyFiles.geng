@@ -161,4 +161,49 @@ suite =
                     in
                     Expect.equal [ Just "/tmp/one", Just "/tmp/two" ] [ before, after ]
           }
+        , { name = "an image refused for memory is answered with the command's own ids: none for an implicit one (KG3, review VI6)"
+          , test =
+                \_ ->
+                    let
+                        -- two red pixels: 6 bytes of RGB, over a limit of 5
+                        sent ids =
+                            replies (feed ("\u{001B}_Ga=t,f=24,s=2,v=1" ++ ids ++ ";/wAA/wAA\u{001B}\\") (Vt.withImageLimit 5 (term 10 4)))
+                    in
+                    Expect.equal
+                        { implicit = [], numbered = [ "\u{001B}_GI=5;ENOMEM: out of memory\u{001B}\\" ], given = [ "\u{001B}_Gi=7;ENOMEM: out of memory\u{001B}\\" ] }
+                        { implicit = sent "", numbered = sent ",I=5", given = sent ",i=7" }
+          }
+        , { name = "eviction takes the unplaced images first, the oldest first, and keeps a placed one (KG7, review VI7)"
+          , test =
+                \_ ->
+                    let
+                        -- two red pixels each: 6 bytes, three to a limit of 18
+                        load action id =
+                            "\u{001B}_Ga=" ++ action ++ ",q=1,f=24,s=2,v=1,i=" ++ String.fromInt id ++ ";/wAA/wAA\u{001B}\\"
+
+                        probe id =
+                            "\u{001B}_Ga=p,q=1,i=" ++ String.fromInt id ++ "\u{001B}\\"
+
+                        t =
+                            feed (load "T" 1 ++ load "t" 2 ++ load "t" 3 ++ load "t" 4 ++ load "t" 5) (Vt.withImageLimit 18 (term 10 4))
+                    in
+                    Expect.equal
+                        [ "\u{001B}_Gi=2;ENOENT: image not found\u{001B}\\", "\u{001B}_Gi=3;ENOENT: image not found\u{001B}\\" ]
+                        (replies (feed (String.join "" (Array.map probe [ 1, 2, 3, 4, 5 ])) t))
+          }
+        , { name = "a placement whose rows have left the scrollback is dropped when another is added (KG7, review VI8)"
+          , test =
+                \_ ->
+                    let
+                        -- a scrollback of about 20 rows in pages of 16: the
+                        -- rows past it are dropped, and gone
+                        t =
+                            Vt.new { cols = 10, rows = 4, scrollbackBytes = Vt.scrollbackBytesFor { cols = 10, rows = 20 }, pageRows = 16, checksums = False, cellWidth = 10, cellHeight = 20 }
+
+                        load id =
+                            "\u{001B}_Ga=T,q=2,f=24,s=2,v=1,i=" ++ String.fromInt id ++ ";/wAA/wAA\u{001B}\\"
+                    in
+                    Expect.equal 1
+                        (Array.length (imageLines (feed (load 1 ++ String.repeat 200 "\r\nx" ++ load 2) t)))
+          }
         ]
