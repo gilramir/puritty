@@ -558,6 +558,33 @@ sftpSuite =
                 else
                     Just "both answers were not read"
             )
+        , caseTest "a NAME of 300,000 entries is read in a loop, and a count the reply cannot hold is refused (review ST5)"
+            (\_ ->
+                let
+                    -- an entry of two empty strings and no attributes: 12 bytes
+                    names count present =
+                        pkt 104 (Bytes.flatten [ Wire.writeUint32 9, Wire.writeUint32 count, Bytes.flatten (Array.repeat present (Bytes.flatten [ Wire.writeText "", Wire.writeText "", Wire.writeUint32 0 ])) ])
+
+                    many =
+                        (Sftp.received (names 300000 300000) ready).events
+
+                    claimed =
+                        (Sftp.received (names 1000000 10) ready).events
+                in
+                when many is
+                    [ Sftp.Answer { id = 9, response = Sftp.Names n } ] ->
+                        if Array.length n /= 300000 then
+                            Just "not every entry was read"
+
+                        else if not (broken claimed) then
+                            Just "a count of a million in 120 bytes was taken"
+
+                        else
+                            Nothing
+
+                    _ ->
+                        Just "the names were not read"
+            )
         , caseTest "64-bit sizes and the EXTENDED bit"
             (\_ ->
                 when (Sftp.received attrs ready).events is
@@ -1311,6 +1338,24 @@ knownHostsSuite text =
                                )
                         )
 
+            else if String.startsWith "append " l then
+                let
+                    before =
+                        if get f "before" == "-" then
+                            ""
+
+                        else
+                            Bytes.toStringLossy (fromHex (get f "before"))
+
+                    got =
+                        KnownHosts.appended before (Bytes.toStringLossy (fromHex (get f "line")))
+                in
+                if got == Bytes.toStringLossy (fromHex (get f "added")) then
+                    Nothing
+
+                else
+                    Just (String.takeFirst 40 l ++ "... " ++ got)
+
             else if String.startsWith "order " l then
                 let
                     got =
@@ -1326,7 +1371,7 @@ knownHostsSuite text =
                 Nothing
 
         ran =
-            Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l || String.startsWith "replace " l) caseLines
+            Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l || String.startsWith "replace " l || String.startsWith "append " l) caseLines
     in
     suiteOf "KnownHosts"
         (Array.indexedMap (\n l -> caseTest (String.fromInt (n + 1) ++ " " ++ String.takeFirst 48 l) (\_ -> run l)) ran)

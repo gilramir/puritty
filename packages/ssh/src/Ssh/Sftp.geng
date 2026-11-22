@@ -451,7 +451,17 @@ response kind r =
             Wire.string r |> Result.map (\d -> Data d.value)
 
         104 ->
-            Wire.uint32 r |> Result.andThen (\n -> entries n.value n.next [])
+            Wire.uint32 r
+                |> Result.andThen
+                    (\n ->
+                        -- an entry is at least 12 bytes: a count more than
+                        -- the rest holds is refused before any is read (ST5)
+                        if n.value > Wire.remaining n.next // 12 then
+                            Err "more names than the reply holds"
+
+                        else
+                            entries n.value n.next []
+                    )
 
         105 ->
             readAttrs r |> Result.map (\a -> Attributes a.value)
@@ -466,20 +476,35 @@ response kind r =
 
 entries : Int -> Wire.Reader -> Array Entry -> Result String Response
 entries n r acc =
+    -- a loop: the call to itself is the last thing done, not inside a
+    -- closure, so a server's count of a million recurses no deeper than
+    -- one (the code review's ST5)
     if n <= 0 then
         Ok (Names acc)
 
     else
-        Wire.string r
-            |> Result.andThen
-                (\name ->
-                    Wire.string name.next
-                        |> Result.andThen
-                            (\long ->
-                                readAttrs long.next
-                                    |> Result.andThen (\a -> entries (n - 1) a.next (Array.pushLast { name = name.value, longname = long.value, attrs = a.value } acc))
-                            )
-                )
+        when entry r is
+            Ok e ->
+                entries (n - 1) e.next (Array.pushLast e.value acc)
+
+            Err why ->
+                -- the reply ended short, or did not read
+                meant Reason.FromOutside (Err why)
+
+
+{-| One entry of a `NAME`: its name, its long name and its attributes. -}
+entry : Wire.Reader -> Result String { value : Entry, next : Wire.Reader }
+entry r =
+    Wire.string r
+        |> Result.andThen
+            (\name ->
+                Wire.string name.next
+                    |> Result.andThen
+                        (\long ->
+                            readAttrs long.next
+                                |> Result.map (\a -> { value = { name = name.value, longname = long.value, attrs = a.value }, next = a.next })
+                        )
+            )
 
 
 readAttrs : Wire.Reader -> Result String { value : Attrs, next : Wire.Reader }
@@ -515,7 +540,16 @@ readAttrs r =
                                                             (\times ->
                                                                 (if flags.value < 0 then
                                                                     -- bit 31, EXTENDED: the sign bit of the flags as read
-                                                                    Wire.uint32 times.next |> Result.andThen (\count -> skipExtended count.value count.next)
+                                                                    Wire.uint32 times.next
+                                                                        |> Result.andThen
+                                                                            (\count ->
+                                                                                -- a pair is at least 8 bytes (ST5)
+                                                                                if count.value > Wire.remaining count.next // 8 then
+                                                                                    Err "more extended attributes than the reply holds"
+
+                                                                                else
+                                                                                    skipExtended count.value count.next
+                                                                            )
 
                                                                  else
                                                                     Ok times.next
@@ -542,11 +576,18 @@ readAttrs r =
 
 skipExtended : Int -> Wire.Reader -> Result String Wire.Reader
 skipExtended n r =
+    -- a loop, as `entries` is (ST5)
     if n <= 0 then
         Ok r
 
     else
-        Wire.string r |> Result.andThen (\t -> Wire.string t.next) |> Result.andThen (\d -> skipExtended (n - 1) d.next)
+        when Wire.string r |> Result.andThen (\t -> Wire.string t.next) is
+            Ok d ->
+                skipExtended (n - 1) d.next
+
+            Err why ->
+                -- the reply ended short, or did not read
+                meant Reason.FromOutside (Err why)
 
 
 {-| An `Int`'s 32 bits as an unsigned number: a time after 2038 stays

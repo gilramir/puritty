@@ -99,6 +99,14 @@ for name, key, removed, kept in [
     out.append(f"replace name={name} key={blob(key)} removed={','.join(map(str, removed)) or '-'} "
                f"kept={','.join(map(str, kept)) or '-'} text={expect.encode().hex()}")
 
+# a new key's line appended (the code review's ST7): after a line end when
+# the file does not end in one, as OpenSSH writes it (it reads the file's
+# last byte first); a missing or empty file takes the line alone
+line = "hostN ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOEzz\n"
+for before in ["", "host1 ssh-ed25519 AAAA\n", "host1 ssh-ed25519 AAAA", "# a comment"]:
+    lead = "\n" if before and not before.endswith("\n") else ""
+    out.append(f"append before={before.encode().hex() or '-'} line={line.encode().hex()} added={(lead + line).encode().hex()}")
+
 (HERE / "known-hosts.txt").write_text("\n".join(out) + "\n")
 subprocess.run(["rm", "-rf", str(work)], check=True)
 print("wrote", len(out) - 2, "known_hosts cases")

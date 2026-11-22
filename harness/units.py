@@ -195,8 +195,9 @@ SUITES = [
     ),
     Suite(
         "ssh-known-hosts",
-        # 40 since SC28: a changed key put in place of the old, six
-        40,
+        # 40 since SC28: a changed key put in place of the old, six; 44
+        # since ST7: a line appended after a line end, four
+        44,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "known-hosts", "known-hosts.txt"], cwd="packages/ssh/tests"),
             Run(
@@ -229,7 +230,8 @@ SUITES = [
         # upload paced by its queue, and cancelled while it opens; 10 since
         # FT19: an EUC-KR name in its command as its own bytes
         "ssh-sftp",
-        10,
+        # 11 since ST5: a NAME of 300,000 entries, and a count too long
+        11,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "sftp"], cwd="packages/ssh/tests"),
             Run(

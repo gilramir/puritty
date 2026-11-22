@@ -81,6 +81,16 @@ jobsFor fs r =
 
 jobsOf : File.Permission -> (Bytes -> Result String Bytes) -> Bytes -> Path -> { jobs : Array Job, refused : Array String } -> Task x { jobs : Array Job, refused : Array String }
 jobsOf fs toHost dir path acc =
+    jobsVia False fs toHost dir path acc
+
+
+{-| `jobsOf`, `link` saying that the entry was listed as a link: a link to
+a file is sent as the file, a link to a folder is not followed, and said
+(the code review's ST4: a link to `/` or to a parent sent the whole file
+system, or never ended). What was dropped itself is followed, a link or
+not: the user chose it. -}
+jobsVia : Bool -> File.Permission -> (Bytes -> Result String Bytes) -> Bytes -> Path -> { jobs : Array Job, refused : Array String } -> Task x { jobs : Array Job, refused : Array String }
+jobsVia link fs toHost dir path acc =
     let
         local =
             Path.filenameAsBytes path
@@ -101,7 +111,10 @@ jobsOf fs toHost dir path acc =
                     (\got ->
                         when got is
                             Ok m ->
-                                if m.kind == File.Directory then
+                                if m.kind == File.Directory && link then
+                                    Task.succeed { acc | refused = Array.pushLast (shown ++ ": a link to a folder, not followed") acc.refused }
+
+                                else if m.kind == File.Directory then
                                     let
                                         there =
                                             joined dir name
@@ -112,7 +125,7 @@ jobsOf fs toHost dir path acc =
                                         |> Task.andThen
                                             (\entries ->
                                                 Array.foldl
-                                                    (\e inner -> inner |> Task.andThen (\soFar -> jobsOf fs toHost there e.path soFar))
+                                                    (\e inner -> inner |> Task.andThen (\soFar -> jobsVia (e.kind == File.Link) fs toHost there e.path soFar))
                                                     (Task.succeed { acc | jobs = Array.pushLast (MakeDir { path = there }) acc.jobs })
                                                     entries
                                             )
@@ -422,24 +435,36 @@ event e acc =
                 acc
 
         Broken why ->
-            finish ("The host's SFTP stopped making sense, and the sending stopped: " ++ why) acc
+            -- a failure of its own, so that the batch is not shown as done,
+            -- and what was sent before it said (the code review's ST1)
+            let
+                broken =
+                    { s | failed = Array.pushLast ("the host's SFTP stopped making sense, and the sending stopped: " ++ why) s.failed }
+            in
+            finish (capitalized (summary broken)) { acc | sending = broken }
 
 
-{-| The batch over, said, its SFTP channel closed. -}
+{-| The batch over, said, its SFTP channel closed; once, the first word
+kept: the transfer ends a broken stream with `Finished` after `Broken`,
+which said it was sent (ST1). -}
 finish : String -> Step -> Step
 finish said acc =
     let
         s =
             acc.sending
     in
-    { sending = { s | over = Just said, engine = Ended, asking = Nothing }
-    , out =
-        if s.shellRefs then
-            acc.out
+    if s.over /= Nothing then
+        acc
 
-        else
-            Array.pushLast (Input (Session.SideClose s.ref)) acc.out
-    }
+    else
+        { sending = { s | over = Just said, engine = Ended, asking = Nothing }
+        , out =
+            if s.shellRefs then
+                acc.out
+
+            else
+                Array.pushLast (Input (Session.SideClose s.ref)) acc.out
+        }
 
 
 isOver : Sending -> Bool

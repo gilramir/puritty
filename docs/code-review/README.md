@@ -262,7 +262,7 @@ covered" sections. The larger gaps:
 | [VP5](01-vt-parser-screen.md) | design | confirmed | The hyperlink table never forgets a link: after 4,096 distinct links OSC 8 stops working for the session |
 | [VP6](01-vt-parser-screen.md) | design | confirmed | Style and cluster ids are never given back; the tmux canvas is one long-lived terminal that takes the union of every pane's |
 | [VP7](01-vt-parser-screen.md) | bug | confirmed | **fixed** RIS in the same read drops clipboard requests, notifications and diagnostic lines not yet taken |
-| [VP8](01-vt-parser-screen.md) | speed | confirmed | `composeStyled` interns a style for every pane cell on every frame |
+| [VP8](01-vt-parser-screen.md) | speed | confirmed | **fixed** `composeStyled` interns a style for every pane cell on every frame |
 | [VS2](02-vt-scrollback-view-input.md) | security | confirmed | **fixed** OSC 99 parts with `d=0` grow a pending notification without bound, each part copied onto the last |
 | [VS3](02-vt-scrollback-view-input.md) | bug | confirmed | **fixed** A selection that starts on the right half of a wide character leaves that character out of the copy |
 | [VI4](03-vt-images.md) | security | confirmed | Decoders peak at roughly ten times the pixel bytes, so the 320 MB limit admits multi-GB spikes from small inputs |
@@ -282,13 +282,13 @@ covered" sections. The larger gaps:
 | [SC6](04-ssh-core.md) | security | confirmed | With `accept-new` or `no`, a key of a type the host is not known by is taken silently even when the host is known by another type |
 | [SC7](04-ssh-core.md) | inaccuracy | confirmed | `ssh_config` keywords the client does not act on are dropped without a word, including ones that restrict what it may do |
 | [SC8](04-ssh-core.md) | bug | confirmed | keyboard-interactive is tried once per connection, so one mistyped answer ends the login |
-| [ST1](05-ssh-session-transfer.md) | bug | confirmed | A batch whose SFTP stream breaks is reported as a success: `Finished` overwrites `Broken` |
+| [ST1](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A batch whose SFTP stream breaks is reported as a success: `Finished` overwrites `Broken` |
 | [ST2](05-ssh-session-transfer.md) | security | plausible | The shell fallback's quoting is only right for POSIX-style login shells: fish misreads `\'`, csh/tcsh refuse the newline |
 | [ST3](05-ssh-session-transfer.md) | security | confirmed | A remembered password is given without asking to a host whose key is not the known one |
-| [ST4](05-ssh-session-transfer.md) | bug | confirmed | A dropped folder is walked through its symlinks: a link to `/` or to a parent uploads far more than was dropped, or never finishes |
-| [ST5](05-ssh-session-transfer.md) | security | plausible | A hostile SFTP server can crash the client with one `SSH_FXP_NAME`: `entries` and `skipExtended` recurse once per element, not in a loop |
+| [ST4](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A dropped folder is walked through its symlinks: a link to `/` or to a parent uploads far more than was dropped, or never finishes |
+| [ST5](05-ssh-session-transfer.md) | security | plausible | **fixed** A hostile SFTP server can crash the client with one `SSH_FXP_NAME`: `entries` and `skipExtended` recurse once per element, not in a loop |
 | [ST6](05-ssh-session-transfer.md) | bug | confirmed | A key that is both a file and in the agent is used from the file, so the passphrase is asked although the agent holds the key |
-| [ST7](05-ssh-session-transfer.md) | bug | confirmed | A new host key is appended to `known_hosts` without checking the file ends in a newline |
+| [ST7](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A new host key is appended to `known_hosts` without checking the file ends in a newline |
 | [TP1](06-tmux-package.md) | bug | plausible | A paste whose text (or any 1024-byte piece of it) begins with `~` is tilde-expanded by tmux 3.x |
 | [TP2](06-tmux-package.md) | security | plausible | `ESC \` at the start of a line ends control mode even inside a reply, and a reply's lines are split on newlines the pane's program can put there |
 | [TP3](06-tmux-package.md) | security | confirmed | A line that has not ended yet is copied and rescanned on every read, and nothing bounds it, a reply's lines or the lines in doubt |
