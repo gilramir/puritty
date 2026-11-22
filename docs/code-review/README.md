@@ -247,7 +247,7 @@ covered" sections. The larger gaps:
 | [TA1](11-tmuxmode-a.md) | bug | plausible | **fixed** A typed line that tmux parses to no command leaves the reply queue one behind for good |
 | [TA2](11-tmuxmode-a.md) | bug | confirmed | **fixed** `endsClient` takes `detach-client -t another-client` for this client leaving: nothing is sent again |
 | [TA3](11-tmuxmode-a.md) | security | plausible | Control mode is entered from in-band bytes with no check, and text read from that stream is later written back as command lines |
-| [TB1](12-tmuxmode-b.md) | bug | plausible | A click or the wheel over a pane in copy mode sends mouse bytes and arrow keys into copy mode's key table |
+| [TB1](12-tmuxmode-b.md) | bug | plausible | **fixed** A click or the wheel over a pane in copy mode sends mouse bytes and arrow keys into copy mode's key table |
 | [PS1](13-app-picker-settings.md) | bug | confirmed | **fixed** Enter on the font box with nothing picked sets the last font in the list |
 | [PS2](13-app-picker-settings.md) | bug | confirmed | **fixed** A click away from quick connect connects to what is typed (and from "New host" makes the host) |
 

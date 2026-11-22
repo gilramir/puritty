@@ -4192,3 +4192,29 @@ parser. The fake tmux answers those three kinds of line with nothing from
 **Checked:** an app test on each tmux (3.0 on: no view opened by a reply
 not the line's), which on the build before opened one on each.
 
+## TM107 · The pointer over a pane in copy mode (2026-11-21)
+
+The code review's TB1. Whether the pointer was the pane's program's was
+decided from the program's own modes alone: a pane whose program asked for
+the mouse was sent its reports (`send-keys -H`), and the wheel on the
+alternate screen three arrow keys, even with the pane in copy mode. tmux
+gives keys sent to a pane in a mode to the mode's key table. **Measured on
+3.8** (`send-keys -H` of an SGR wheel report to a pane in copy mode): with
+`mode-keys emacs` its Escape ended copy mode and the rest went to the
+program; with `vi` copy mode stayed and its keys ran copy-mode commands.
+
+**Changed.** Over a pane in copy mode, without Shift, no report and no
+arrow is sent: the wheel is copy mode's own scroll, `send-keys -t %N -X -N
+5 scroll-up` (or `scroll-down`), as every tmux from 2.7 binds `WheelUpPane`
+and `WheelDownPane` in copy-mode and copy-mode-vi (`Command.copyScroll`),
+and copy mode's place is asked after it (TM31); a press or a drag is
+puritty's own selection, as over a pane whose program does not take the
+mouse. With Shift, puritty's selection as before.
+
+**Checked:** an app test on each tmux: the wheel over a pane in copy mode
+whose program asked for the mouse, and over one on the alternate screen,
+scrolls copy mode five lines and sends the pane no bytes; on the build
+before, it sent bytes and copy mode did not move. **Left:** Shift+PgUp
+still scrolls puritty's own view of the pane (TB2), and a paste over a
+pane in copy mode is not looked at here.
+

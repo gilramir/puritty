@@ -328,6 +328,36 @@ onVersion version =
                         { scroll = 7, top = { text = "line 170", edge = timed version "[7/176]" } }
                         { scroll = (FakeTmux.copyState 0 seen.run.world).scroll, top = split 0 seen }
           }
+        , { name = "the wheel over a pane in copy mode scrolls copy mode, and sends its program nothing, mouse or not (review TB1, TM107)"
+          , test =
+                \_ ->
+                    let
+                        -- the pane's program asked for the mouse, or is on the
+                        -- alternate screen, then copy mode, then the wheel up
+                        wheeled modes =
+                            attached (start version)
+                                |> deliver (Bytes.fromString ("%output %0 " ++ modes ++ "\u{000D}\n"))
+                                |> settle
+                                |> inCopyMode 0
+                                |> clickAt 4 { col = 5, row = 5 } 2000
+                                |> settle
+
+                        -- copy mode's state, and whether bytes went to the
+                        -- pane (`send-keys -H` or `-l`), which copy mode
+                        -- would take as its keys
+                        state run =
+                            let
+                                c =
+                                    FakeTmux.copyState 0 run.world
+                            in
+                            { mode = c.mode, scroll = c.scroll, sent = Array.any (\l -> String.startsWith "send-keys" l && (String.contains " -H " l || String.contains " -l " l)) run.world.heard }
+                    in
+                    Expect.equal
+                        { mouse = { mode = "copy-mode", scroll = 5, sent = False }, alternate = { mode = "copy-mode", scroll = 5, sent = False } }
+                        { mouse = state (wheeled "\\033[?1000h\\033[?1006h")
+                        , alternate = state (wheeled "\\033[?1049h")
+                        }
+          }
         , { name = "the tree of sessions shows the session, its windows and attachment, and q closes it (TM32)"
           , test =
                 \_ ->

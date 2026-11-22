@@ -162,8 +162,9 @@ SUITES = [
         # 459 since MA2 and PS2: file links to a share or from a host, and
         # a click away from quick connect; 466 since MA3 and TA1: search in
         # the paged scrollback, and a typed line that makes no command, on
-        # each tmux; 467 since W1: a file link shown before it is opened
-        467,
+        # each tmux; 467 since W1: a file link shown before it is opened;
+        # 473 since TB1: the wheel over a pane in copy mode, on each tmux
+        473,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

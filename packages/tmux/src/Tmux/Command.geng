@@ -8,6 +8,7 @@ module Tmux.Command exposing
     , catalog
     , clientFlags
     , continuePane
+    , copyScroll
     , deleteBuffer
     , detachClient
     , detachTemplate
@@ -1235,6 +1236,27 @@ byte) and, when the pane has extended keys, Enter too (puritty
 sendKeyTo : Int -> String -> String
 sendKeyTo pane name =
     render sendNamed [ quote ("%" ++ String.fromInt pane), quote name ]
+
+
+{-| `send-keys -t %N -X -N 5 scroll-up` (or `scroll-down`): the wheel in
+copy mode, as every tmux from 2.7 binds `WheelUpPane` and `WheelDownPane`
+in copy-mode and copy-mode-vi (puritty `docs/tmux.md` TM107). -}
+copyScroll : Int -> Bool -> String
+copyScroll pane up =
+    render copyScrollShape
+        [ quote ("%" ++ String.fromInt pane)
+        , "5"
+        , if up then
+            "scroll-up"
+
+          else
+            "scroll-down"
+        ]
+
+
+copyScrollShape : Shape
+copyScrollShape =
+    { name = "send-keys", parts = [ Value "t", Flag "X", Value "N", Rest ], allowed = \c -> Caps.has "send-keys" "X" c && Caps.has "send-keys" "N" c }
 
 
 {-| `send-keys -K -H`: typed text, its UTF-8 bytes in hex, through the

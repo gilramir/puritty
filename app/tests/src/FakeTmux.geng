@@ -1092,7 +1092,17 @@ sendKeys : { bools : String, values : Dict String String, rest : Array String } 
 sendKeys args p w =
     let
         commandsOf =
-            if String.contains "X" args.bools then
+            if String.contains "X" args.bools && String.contains "N" args.bools then
+                -- `-N count`, read by `parsed` as a flag and the first word
+                -- after it: the commands that many times
+                when Array.popFirst args.rest is
+                    Just { first, rest } ->
+                        Array.repeat (Maybe.withDefault 1 (String.toInt first)) rest |> Array.flatten
+
+                    Nothing ->
+                        []
+
+            else if String.contains "X" args.bools then
                 args.rest
 
             else
@@ -1217,6 +1227,21 @@ copyCommand clamp c acc =
 
         "cancel" ->
             { acc | left = True }
+
+        "scroll-up" ->
+            -- the view a line up, the cursor kept on the screen
+            if p.scroll < historyOf p then
+                { acc | pane = { p | scroll = p.scroll + 1 } }
+
+            else
+                acc
+
+        "scroll-down" ->
+            if p.scroll > 0 then
+                { acc | pane = { p | scroll = p.scroll - 1 } }
+
+            else
+                acc
 
         _ ->
             acc

@@ -8150,6 +8150,24 @@ pointerHere how p s =
                                                         in
                                                         plain (sent select { s | drag = Just { pane = q.id, kind = boxEdge q col row, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } } })
 
+                                                    else if inCopy q.id s && not how.select then
+                                                        -- a pane in copy mode: what is sent to it goes
+                                                        -- through copy mode's keys, so no mouse report
+                                                        -- does, and the wheel is copy mode's own scroll,
+                                                        -- as tmux binds it (review TB1, TM107)
+                                                        if p.action == 0 && (p.button == 4 || p.button == 5) then
+                                                            let
+                                                                r =
+                                                                    sent (selected q.id s ++ [ Command.copyScroll q.id (p.button == 4) ]) s
+
+                                                                asked =
+                                                                    askCopy q.id { state = r.state, outside = [], commands = [], trace = [], run = Nothing }
+                                                            in
+                                                            plain { state = asked.state, commands = r.commands ++ asked.commands }
+
+                                                        else
+                                                            selecting how p col row q s
+
                                                     else if takesMouse then
                                                         let
                                                             select =
