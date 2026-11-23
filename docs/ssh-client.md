@@ -1715,3 +1715,34 @@ Tested: `sshd.py`'s `driver-alias-known` (the alias `box`, its key under
 `box`, `StrictHostKeyChecking yes`): before, "not known, and
 StrictHostKeyChecking is yes"; now "the one known" and logged in. 80 of
 80 sshd cases pass, no other pin moved.
+
+
+## SC33 · A connection open to Terrapin says so (2026-11-23)
+
+The code review's SC3. The client prefers `chacha20-poly1305@openssh.com`,
+and with a server that offers no strict key exchange
+(`kex-strict-s-v00@openssh.com`, OpenSSH 9.6 and later) it goes on
+without it: the combination CVE-2023-48795 (Terrapin) needs, a man in
+the middle dropping the first encrypted messages after the keys. This
+document promised that such a negotiation "says so in the strip once,
+with what would avoid it"; nothing did, and `KeysChanged` did not carry
+whether strict KEX was on.
+
+Now `Transport.Algorithms` has `strict`, and `Session.terrapin` makes the
+notice at the first exchange when the server is not strict and
+ChaCha20-Poly1305 is in use either way: what was found, and that a newer
+server, or `Ciphers aes256-gcm@openssh.com` for the host in
+`~/.ssh/config` (honoured since SC31), avoids it. With GCM the nonce
+does not come from the sequence number.
+
+Not done, for Gilbert to decide: choosing GCM by itself for such a
+server. Our KEXINIT goes before the server's is read, and the cipher is
+the first of ours the server has, so the client would have to wait for
+the server's KEXINIT on every connection (RFC 4253 §7.1 allows it), half
+a round trip more each time.
+
+Tested: the transport driver's `keys:` line says `strict` or `not
+strict`; `scripted.py`'s `ignore-first-not-strict` says `not strict`, the
+other 24 scripted and sshd cases with keys `strict` (re-recorded, only
+that word added). The notice itself is read, not run: the test sshd is
+strict, and the scripted server ends before a session.

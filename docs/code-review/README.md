@@ -277,7 +277,7 @@ covered" sections. The larger gaps:
 | [VI20](03-vt-images.md) | test-gap | confirmed | **fixed** No malformed-input tests for the JPEG, GIF, TIFF and Sixel decoders |
 | [SC1](04-ssh-core.md) | bug | confirmed | **fixed** A side channel closed while it is still opening is not closed, and then runs |
 | [SC2](04-ssh-core.md) | security | plausible | The channel window is given back on receipt, so the server is never slowed and output queues without bound |
-| [SC3](04-ssh-core.md) | security | confirmed | No warning or fallback when the server has no strict KEX and ChaCha20-Poly1305 is chosen (Terrapin), though the design promises one |
+| [SC3](04-ssh-core.md) | security | confirmed | **in part** No warning or fallback when the server has no strict KEX and ChaCha20-Poly1305 is chosen (Terrapin), though the design promises one |
 | [SC4](04-ssh-core.md) | security | confirmed | An unencrypted key file's text, the private key itself, is held in Geng memory for the whole session |
 | [SC5](04-ssh-core.md) | inaccuracy | plausible | **fixed** A host looked up through `HostKeyAlias` on a port other than 22 is looked up as `[alias]:port`; OpenSSH uses the bare alias |
 | [SC6](04-ssh-core.md) | security | confirmed | **fixed** With `accept-new` or `no`, a key of a type the host is not known by is taken silently even when the host is known by another type |

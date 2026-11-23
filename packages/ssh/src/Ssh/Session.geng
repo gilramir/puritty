@@ -918,12 +918,22 @@ onEvent event st =
         Transport.HostKey key ->
             hostKey key st
 
-        Transport.KeysChanged _ ->
+        Transport.KeysChanged algorithms ->
             if st.keysReady then
                 Task.succeed st
 
             else
-                beginAuth { st | keysReady = True }
+                -- once, at the first exchange: a connection open to
+                -- Terrapin says so, and what avoids it (the code review's
+                -- SC3, puritty docs/ssh-client.md SC33)
+                (when terrapin algorithms is
+                    Just said ->
+                        tell (Status said) st
+
+                    Nothing ->
+                        meant Reason.NotSet (Task.succeed st)
+                )
+                    |> Task.andThen (\told -> beginAuth { told | keysReady = True })
 
         Transport.ExtInfo extensions ->
             let
@@ -964,6 +974,18 @@ onEvent event st =
 
 
 -- THE HOST'S KEY
+
+
+{-| What a connection open to Terrapin (CVE-2023-48795) is told: the
+server has no strict key exchange and ChaCha20-Poly1305 was chosen, the
+combination the attack needs; nothing otherwise (SC33). -}
+terrapin : Transport.Algorithms -> Maybe String
+terrapin a =
+    if not a.strict && (String.startsWith "chacha20" a.toServer || String.startsWith "chacha20" a.toClient) then
+        Just "the server has no strict key exchange (OpenSSH 9.6 and later do), and ChaCha20-Poly1305 is in use: a man in the middle could drop the first messages after the keys (Terrapin, CVE-2023-48795); a newer server, or Ciphers aes256-gcm@openssh.com for this host in ~/.ssh/config, avoids it"
+
+    else
+        Nothing
 
 
 {-| The name a host's key is looked up and written under in `known_hosts`:
