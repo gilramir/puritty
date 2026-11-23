@@ -744,8 +744,11 @@ toLines settings =
 
 
 {-| The keywords the built-in client acts on (puritty `docs/ssh-client.md`
-SC31): read into its options, honoured as a restriction, or refused. Any
-other a host's lines set is named, once per connection. -}
+SC31): read into its options, honoured as a restriction, or refused;
+`GSSAPIAuthentication` and `GSSAPIDelegateCredentials` are moot, as a
+method the client does not have is one a server does not offer (Debian's
+and Ubuntu's system file sets the first). Any other a host's lines set is
+named, once per connection. -}
 actedOn : Array String
 actedOn =
     [ "hostname"
@@ -758,6 +761,10 @@ actedOn =
     , "stricthostkeychecking"
     , "hostkeyalias"
     , "setenv"
+    , "sendenv"
+    , "hashknownhosts"
+    , "gssapiauthentication"
+    , "gssapidelegatecredentials"
     , "remotecommand"
     , "serveraliveinterval"
     , "serveralivecountmax"
@@ -787,9 +794,15 @@ it will not connect, if it will not: a keyword whose loss would make it
 less strict than `ssh` (`ProxyCommand`, `RevokedHostKeys`,
 `CertificateFile`), or a list that leaves nothing it has. `MACs` is
 honoured by being moot: every cipher the client has is AEAD, so no MAC is
-used. -}
+used. Beside them, the variables the session sends (`env`): each local
+one a `SendEnv` pattern matches, a `-pattern` taking out the patterns
+before it that it matches, as OpenSSH does, then `SetEnv`'s, to which a
+`SendEnv` one of the same name gives way; and whether a key written to
+`known_hosts` is hashed (`HashKnownHosts`). -}
 type alias Client =
     { ignored : Array String
+    , env : Array { name : String, value : String }
+    , hashKnownHosts : Bool
     , methods : Array String
     , kex : Array String
     , hostKeys : Array String
@@ -798,9 +811,47 @@ type alias Client =
     }
 
 
-client : { kex : Array String, hostKeys : Array String, ciphers : Array String } -> Settings -> Client
-client has settings =
+client : { kex : Array String, hostKeys : Array String, ciphers : Array String } -> Dict String String -> Settings -> Client
+client has environment settings =
     let
+        setEnv =
+            Dict.get "setenv" settings.values
+                |> Maybe.withDefault (meant Reason.NotSet [])
+                |> Array.mapAndFlatten
+                    (\pair ->
+                        when String.firstIndexOf "=" pair is
+                            Just at ->
+                                [ { name = String.takeFirst at pair, value = String.dropFirst (at + 1) pair } ]
+
+                            Nothing ->
+                                meant Reason.FromOutside []
+                    )
+
+        sendPatterns =
+            Dict.get "sendenv" settings.values
+                |> Maybe.withDefault (meant Reason.NotSet [])
+                |> Array.foldl
+                    (\p acc ->
+                        if String.startsWith "-" p then
+                            Array.keepIf (\kept -> not (glob (String.dropFirst 1 p) kept)) acc
+
+                        else
+                            Array.pushLast p acc
+                    )
+                    []
+
+        sent =
+            Dict.foldl
+                (\name text acc ->
+                    if Array.any (\p -> glob p name) sendPatterns && not (Array.any (\v -> v.name == name) setEnv) then
+                        Array.pushLast { name = name, value = text } acc
+
+                    else
+                        acc
+                )
+                []
+                environment
+
         value key =
             Dict.get key settings.values |> Maybe.andThen Array.first
 
@@ -858,6 +909,8 @@ client has settings =
                 |> Array.map .text
     in
     { ignored = Array.keepIf (\k -> not (Array.member k actedOn)) settings.given
+    , env = sent ++ setEnv
+    , hashKnownHosts = Maybe.map (\v -> String.toLower v == "yes") (value "hashknownhosts") |> Maybe.withDefault (meant Reason.NotSet False)
     , methods = methods
     , kex = kex
     , hostKeys = hostKeys

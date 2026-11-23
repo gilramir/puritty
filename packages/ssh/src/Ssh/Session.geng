@@ -93,6 +93,8 @@ type alias Options =
     , hostKeyAlgorithms : Array String
     , ciphers : Array String
     , refused : Array String
+    -- whether a key written to `known_hosts` is hashed (`HashKnownHosts`)
+    , hashKnownHosts : Bool
     }
 
 
@@ -1063,7 +1065,17 @@ remember name key st =
                 -- gets one before the new line (ST7); a file not there yet
                 -- reads as empty
                 |> Task.andThen (\_ -> File.readFile st.permissions.fs path |> Task.onError (\_ -> Task.succeed Bytes.empty))
-                |> Task.andThen (\before -> File.appendFile st.permissions.fs (Bytes.fromString (KnownHosts.appended (Bytes.toStringLossy before) (KnownHosts.line { name = name, salt = Nothing } key))) path)
+                |> Task.andThen
+                    (\before ->
+                        -- hashed with a fresh salt, as HashKnownHosts asks
+                        (if st.options.hashKnownHosts then
+                            Os.Random.bytes 20 |> Task.map Just
+
+                         else
+                            Task.succeed Nothing
+                        )
+                            |> Task.andThen (\salt -> File.appendFile st.permissions.fs (Bytes.fromString (KnownHosts.appended (Bytes.toStringLossy before) (KnownHosts.line { name = name, salt = salt } key))) path)
+                    )
                 |> Task.andThen (\_ -> tell (Status ("the host's key is written to " ++ file)) st)
                 |> Task.onError (\e -> tell (Status ("the host's key could not be written: " ++ Os.Error.toString e)) st)
 
@@ -1439,7 +1451,7 @@ followed.
 -}
 optionsFor :
     Permissions
-    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe Bytes, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe Bytes, home : String, localUser : String, environment : Dict.Dict String String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
     -> Task x { options : Options, jumps : Array Options, problems : Array String }
 optionsFor permissions given =
     resolveOne permissions given
@@ -1520,7 +1532,7 @@ jumpSpecs value =
 it (`none` when neither does). -}
 resolveOne :
     Permissions
-    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe Bytes, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe Bytes, home : String, localUser : String, environment : Dict.Dict String String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
     -> Task x { options : Options, proxyJump : String, problems : Array String }
 resolveOne permissions given =
     let
@@ -1562,7 +1574,7 @@ resolveOne permissions given =
                                     Config.resolve { host = given.host, localUser = given.localUser, home = given.home } source (entry ++ parsed.directives) both.system.directives
 
                                 acts =
-                                    Config.client { kex = Transport.defaultConfig.kex, hostKeys = Transport.defaultConfig.hostKeys, ciphers = Transport.defaultConfig.ciphers } settings
+                                    Config.client { kex = Transport.defaultConfig.kex, hostKeys = Transport.defaultConfig.hostKeys, ciphers = Transport.defaultConfig.ciphers } given.environment settings
 
                                 one key fallback =
                                     Dict.get key settings.values |> Maybe.andThen Array.first |> Maybe.withDefault (meant Reason.NotSet fallback)
@@ -1640,17 +1652,7 @@ resolveOne permissions given =
                                 , hostKeyAlias = Dict.get "hostkeyalias" settings.values |> Maybe.andThen Array.first
                                 , session =
                                     { terminal = given.terminal
-                                    , env =
-                                        all "setenv"
-                                            |> Array.mapAndFlatten
-                                                (\pair ->
-                                                    when String.split "=" pair is
-                                                        [ name, value ] ->
-                                                            [ { name = name, value = value } ]
-
-                                                        _ ->
-                                                            []
-                                                )
+                                    , env = acts.env
                                     , command = remoteCommand
                                     }
                                 , keepaliveSeconds = Dict.get "serveraliveinterval" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 0)
@@ -1661,6 +1663,7 @@ resolveOne permissions given =
                                 , hostKeyAlgorithms = acts.hostKeys
                                 , ciphers = acts.ciphers
                                 , refused = acts.refused
+                                , hashKnownHosts = acts.hashKnownHosts
                                 }
                             , proxyJump = one "proxyjump" "none"
                             , problems =

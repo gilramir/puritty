@@ -1560,8 +1560,27 @@ clientConfigSuite text =
                 "refused" ->
                     String.join " | " c.refused
 
+                "env" ->
+                    String.join " " (Array.map (\v -> v.name ++ "=" ++ v.value) c.env)
+
+                "hash" ->
+                    if c.hashKnownHosts then
+                        "yes"
+
+                    else
+                        "no"
+
                 _ ->
                     "(no such field)"
+
+        -- the local variables every case's SendEnv is matched against
+        environment =
+            Dict.empty
+                |> Dict.set "LANG" "en_US.UTF-8"
+                |> Dict.set "LC_TIME" "C"
+                |> Dict.set "LC_ALL" "C.UTF-8"
+                |> Dict.set "HOME" "/home/me"
+                |> Dict.set "TERM" "xterm"
 
         testOf one =
             let
@@ -1581,7 +1600,7 @@ clientConfigSuite text =
                     Config.resolve { host = host, localUser = "me", home = "/home/me" } (\_ -> []) parsed.directives []
 
                 got =
-                    Config.client { kex = Transport.defaultConfig.kex, hostKeys = Transport.defaultConfig.hostKeys, ciphers = Transport.defaultConfig.ciphers } settings
+                    Config.client { kex = Transport.defaultConfig.kex, hostKeys = Transport.defaultConfig.hostKeys, ciphers = Transport.defaultConfig.ciphers } environment settings
 
                 gotLines =
                     Array.map
@@ -2352,6 +2371,7 @@ sessionMode r target =
             , hostKeyAlgorithms = Transport.defaultConfig.hostKeys
             , ciphers = Transport.defaultConfig.ciphers
             , refused = []
+            , hashKnownHosts = Array.member "--hash-known-hosts" r.args
             , pacing =
                 -- `--pacing UNSENT,PUMP,QUIET_MS,QUIET_UNSENT,QUIET_PUMP`, to
                 -- measure another (docs/sftp.md FT17)

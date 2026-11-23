@@ -131,6 +131,9 @@ SESSION_DRIVER_CASES = [
     # accept-new, as ask asks; taken under no, checking turned off
     ("driver-accept-new-other-type", "other-type", ["--identity", "{ed}", "--strict", "accept-new"]),
     ("driver-no-other-type", "other-type", ["--identity", "{ed}", "--strict", "no"]),
+    # HashKnownHosts (SC31): the key written under a hashed name, which a
+    # second connection under StrictHostKeyChecking yes then finds
+    ("driver-accept-new-hashed", "empty", ["--identity", "{ed}", "--strict", "accept-new", "--hash-known-hosts"]),
     ("driver-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "hunter2"]),
     ("driver-wrong-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "wrong"]),
     ("driver-unknown-key-then-agentless", "known", ["--identity", "{other}", "--identity", "{rsa}"]),
@@ -338,6 +341,10 @@ def main():
             got += "known_hosts holds the key: " + ("yes" if " ".join(server_pub) in kh.read_text() else "no") + "\n"
             if start in ("other", "shared"):
                 got += "known_hosts holds the old key: " + ("yes" if other_pub in kh.read_text() else "no") + "\n"
+            if "--hash-known-hosts" in options:
+                got += "known_hosts names it hashed: " + ("yes" if kh.read_text().startswith("|1|") and lookup not in kh.read_text() else "no") + "\n"
+                got += "again under yes:\n" + run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
+                                                          "--exec", "echo hi; exit 4", "--identity", keys["ed"], "--strict", "yes"])
         finally:
             server.stop()
         got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS").replace(str(server.port), "PORT"))

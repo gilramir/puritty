@@ -514,9 +514,9 @@ general knowledge, with what nene's `ssh -G` showed):
   `HostKeyAlias`, `RequestTTY`, `RemoteCommand`, `SetEnv`, `SendEnv`,
   `ForwardAgent`, the algorithm lists. A keyword it does not act on is
   reported once, by name, not silently ignored.
-  *As built (SC31):* `ConnectTimeout`, `RequestTTY`, `SendEnv` and
-  `ForwardAgent` are not acted on and are named; `ProxyCommand` refuses
-  the connection.
+  *As built (SC31):* `ConnectTimeout`, `RequestTTY` and `ForwardAgent`
+  are not acted on and are named; `ProxyCommand` refuses the connection;
+  `SendEnv` and `HashKnownHosts` are acted on (SC31, 2026-11-23).
 
 **The oracle.** `ssh -F FILE -G HOST` prints the resolved settings, one per
 line (82 lines for the first example), without connecting. A case is a
@@ -1645,9 +1645,22 @@ passed over. The system file was not read either. Gilbert's decision
 - **Named:** each keyword the host's lines set (`Settings.given`, before
   `ssh -G`'s defaults) that is not in `Config.actedOn`, in one line among
   the connection's problems: "for HOST, the built-in client does not act on
-  … (OpenSSH's ssh does: client = "openssh")". On Debian and Ubuntu the
-  system file's `SendEnv`, `HashKnownHosts` and `GSSAPIAuthentication`
-  are named on every connection.
+  … (OpenSSH's ssh does: client = "openssh")". As first built, Debian's
+  and Ubuntu's system file had its `SendEnv`, `HashKnownHosts` and
+  `GSSAPIAuthentication` named on every connection; Gilbert found that too
+  noisy (2026-11-23), so the first two are now acted on (below) and
+  `GSSAPIAuthentication` and `GSSAPIDelegateCredentials` are taken as
+  moot: a method the client does not have is the same as one the server
+  does not offer, and `ssh` falls back from it the same way. A connection
+  under that system file names nothing.
+- **Acted on (2026-11-23):** `SendEnv` sends each local variable one of
+  its patterns matches (they add up over lines; a `-pattern` takes out the
+  patterns before it that it matches, as OpenSSH does), then `SetEnv`'s,
+  a `SendEnv` variable of the same name giving way to it; `SetEnv`'s
+  value is now everything after its first `=` (`A=b=c` was dropped
+  before). `HashKnownHosts yes` writes a newly trusted key under a hashed
+  name, `|1|salt|HMAC-SHA1(salt, name)` with 20 random bytes of salt, the
+  form `KnownHosts` already read.
 - **Honoured:** `PubkeyAuthentication`, `KbdInteractiveAuthentication` (and
   `ChallengeResponseAuthentication`, its old name) and
   `PasswordAuthentication` `no` take their method out, and
@@ -1669,3 +1682,13 @@ passed over. The system file was not read either. Gilbert's decision
 Tested: `ssh-tests client-config client-config.txt`, 21 hand-written
 cases (the `ssh-client-config` suite in `harness/units.py`, on Linux and
 Windows); the sshd cases, 78 of 78, unchanged.
+
+The 2026-11-23 change: `client-config.txt` has 27 cases, the six new
+ones (the Debian system file naming nothing, `SendEnv` adding up, `-` by
+name and by pattern, a pattern nothing matches, `SetEnv` over `SendEnv`)
+failing on the old build ("no such field") and passing now; `sshd.py`
+has `driver-accept-new-hashed`, where under `accept-new` with
+`HashKnownHosts` the key is written as a `|1|` line not naming
+`[127.0.0.1]:PORT`, and a second connection under
+`StrictHostKeyChecking yes` finds it ("the host's ssh-ed25519 key is the
+one known"). 79 of 79 sshd cases pass; no other pin moved.

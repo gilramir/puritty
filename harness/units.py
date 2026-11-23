@@ -237,7 +237,7 @@ SUITES = [
         # options, the keywords it does not act on, the authentication and
         # algorithm restrictions honoured, and the ones it refuses
         "ssh-client-config",
-        21,
+        27,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "client-config", "client-config.txt"], cwd="packages/ssh/tests"),
             Run(
