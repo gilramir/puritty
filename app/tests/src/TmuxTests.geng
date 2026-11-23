@@ -1685,6 +1685,25 @@ onVersion version =
                     in
                     Expect.equal { inCopy = False, outside = True } { inCopy = r.used, outside = plain.used }
           }
+        , { name = "text from tmux drawn in the window has its control characters as spaces: a status line's escape does not run (review TB6)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- DEC's line drawing chosen and left by status-left
+                        withEscape =
+                            { made | options = Dict.set "status-left" "L\u{001B}(0qq\u{001B}(B" made.options }
+
+                        seen =
+                            look (settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.expectEntry True (TmuxMode.idle {})), world = withEscape, held = [], ms = 1000 }))
+
+                        status =
+                            Array.last seen.rows |> Maybe.withDefault ""
+                    in
+                    Expect.equal { drawn = True, lines = False } { drawn = String.contains "L (0qq (B" status, lines = String.contains "─" status }
+          }
         , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
           , test =
                 \_ ->

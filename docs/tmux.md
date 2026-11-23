@@ -4497,3 +4497,25 @@ tmux as any other key, for copy mode's table to take or not.
 Test: "Shift+PgUp over a pane in copy mode is not puritty's scroll", on
 each tmux: in copy mode the key is not used for puritty's scroll
 (before, it was); outside, it is, as before.
+
+
+## TM118 · Text from tmux is drawn inert (2026-11-23)
+
+The code review's TB6. The canvas is a `Vt.Term`, and what puritty draws
+of tmux's (the status line's parts, window texts, tree and list rows,
+menu items, messages, prompt labels) went in by `drawText` as tmux sent
+it. tmux escapes control characters in some values but not in
+`%subscription-changed` values, nor, before 3.4, in what `list-*` and
+`display-message` print, so `status-left '#{b:pane_current_path}'` over
+a directory whose name held `ESC ( 0` or `ESC [ ? 1049 h` ran it in the
+canvas: a charset, insert mode or the alternate screen set, and the
+window drawn wrongly until control mode ended.
+
+Now `drawText`, the canvas's one way in for text, writes each control
+character (C0, DEL, C1) as a space (`inert`), one for one so that widths
+hold, as `shownLine` does for the views.
+
+Test: "text from tmux drawn in the window has its control characters as
+spaces", on each tmux: `status-left` set to `L ESC(0 qq ESC(B` under
+tmux's look. Before, the status line showed `L──`, DEC's line drawing
+chosen; now `L (0qq (B`.

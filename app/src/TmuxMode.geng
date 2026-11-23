@@ -17173,6 +17173,25 @@ filtered text v =
     }
 
 
+{-| Text with its control characters (C0, DEL, C1) as spaces, one for
+one, so that its width is as drawn (TM118). -}
+inert : String -> String
+inert text =
+    if String.any (\c -> Char.toCode c < 0x20 || Char.toCode c == 0x7F || (Char.toCode c >= 0x80 && Char.toCode c < 0xA0)) text then
+        String.map
+            (\c ->
+                if Char.toCode c < 0x20 || Char.toCode c == 0x7F || (Char.toCode c >= 0x80 && Char.toCode c < 0xA0) then
+                    ' '
+
+                else
+                    c
+            )
+            text
+
+    else
+        text
+
+
 shownLine : String -> String
 shownLine text =
     String.toArray text
@@ -17466,7 +17485,11 @@ viewTextColor =
 
 
 {-| Text written in the canvas in a color (TM21): each piece at its row
-and column, with autowrap off (`paint` turns it off), so nothing moves. -}
+and column, with autowrap off (`paint` turns it off), so nothing moves.
+A piece's text is what tmux sent (a status line's part, a tree's or a
+list's row, a menu item, a message), and its control characters (C0, DEL,
+C1) are written as spaces, so that one in a directory's or a program's
+name does not run in the canvas (the code review's TB6, TM118). -}
 drawText : String -> Array { row : Int, col : Int, text : String } -> (taken t : Vt.Term) -> Vt.Term
 drawText color pieces t =
     if Array.isEmpty pieces then
@@ -17477,7 +17500,7 @@ drawText color pieces t =
             (Bytes.fromString
                 (String.join ""
                     (Array.map
-                        (\p -> "\u{001B}[" ++ String.fromInt (p.row + 1) ++ ";" ++ String.fromInt (p.col + 1) ++ "H" ++ color ++ p.text ++ "\u{001B}[0m")
+                        (\p -> "\u{001B}[" ++ String.fromInt (p.row + 1) ++ ";" ++ String.fromInt (p.col + 1) ++ "H" ++ color ++ inert p.text ++ "\u{001B}[0m")
                         pieces
                     )
                 )

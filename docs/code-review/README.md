@@ -340,7 +340,7 @@ covered" sections. The larger gaps:
 | [TB3](12-tmuxmode-b.md) | bug | confirmed | **fixed** A size sent after a status-line change is not put in the reply queue, so the replies after it go to the wrong questions |
 | [TB4](12-tmuxmode-b.md) | security | plausible | A popup's title is expanded twice, the second time as `pane-border-format` |
 | [TB5](12-tmuxmode-b.md) | bug | plausible | customize-mode's filter is sent through `display-message` without `%` doubled, and is longer than strftime's buffer |
-| [TB6](12-tmuxmode-b.md) | security | plausible | Text from tmux is written into the canvas terminal with its control characters |
+| [TB6](12-tmuxmode-b.md) | security | plausible | **fixed** Text from tmux is written into the canvas terminal with its control characters |
 | [TB7](12-tmuxmode-b.md) | bug | confirmed | **fixed** An unknown tmux version (0) is taken as the newest by some gates and as the oldest by others |
 | [TB10](12-tmuxmode-b.md) | speed | confirmed | Work done again on every frame while a mode is open or a search is marked |
 | [TB17](12-tmuxmode-b.md) | design | confirmed | The three modes are three `Maybe`s, and their kinds are bare `Int`s |
