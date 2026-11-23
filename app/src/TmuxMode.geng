@@ -120,6 +120,12 @@ type alias State =
     -- question answered by the reply to another, so none should come
     -- (the code review's TA5, TB3), and the diagnosis says how many
     , unasked : Int
+    -- a binding sent that may move the active pane, not yet settled: keys
+    -- typed meanwhile wait, in order, for the window's answer, so that a
+    -- named key sent by the pane's id and text sent through the client
+    -- reach the same pane (the code review's TA4, docs/tmux.md TM109)
+    , settling : Settling
+    , heldKeys : Array { k : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes }, bytes : Bytes, ms : Int }
     , linesSent : Int
     -- what puritty showed of tmux when last read (`viewLine`)
     , shownView : String
@@ -725,6 +731,7 @@ type Expect
     = ForWindow
     | ForTabs
     | ForPanes
+    | ForLiving
     | ForInfo Int
     | ForSaved Int
     | ForCapture Int
@@ -819,6 +826,8 @@ idle _ =
     , canvas = blank 1 1
     , expecting = []
     , unasked = 0
+    , settling = Settled
+    , heldKeys = []
     , linesSent = 0
     , shownView = ""
     , info = Dict.empty
@@ -1453,6 +1462,9 @@ expectName x =
         ForPanes ->
             "the panes"
 
+        ForLiving ->
+            "the panes still there"
+
         ForInfo p ->
             "pane %" ++ String.fromInt p ++ "'s info"
 
@@ -1852,6 +1864,8 @@ diagnose s =
                     ", keys as bytes (tmux before 3.4)"
                )
         , "  replies no question waited for: " ++ String.fromInt s.unasked
+        , "  keys held behind a binding: " ++ String.fromInt (Array.length s.heldKeys)
+        , "  terminals kept: " ++ String.fromInt (Array.length s.ids) ++ " (" ++ String.join " " (Array.map (\i -> "%" ++ String.fromInt i) s.ids) ++ ")"
         , "  waiting for "
             ++ String.fromInt (Array.length s.expecting)
             ++ " replies"
@@ -2735,13 +2749,59 @@ reply r acc =
             |> (\done ->
                     if asks then
                         ask [ { command = windowQuery, expect = ForWindow } ] done
+                            |> settleOn (\at -> AwaitingWindow at)
 
                     else
-                        done
+                        -- nothing asked: keys held behind the binding go
+                        -- (TM109)
+                        settleOn (\_ -> Settled) done
                )
 
     else
         ours r acc
+
+
+{-| A binding's block read (TM109): one awaited moves on, by `next` from
+the time it began; `Settled` sends the keys held. -}
+settleOn : (Int -> Settling) -> (taken acc : Acc) -> Acc
+settleOn next acc =
+    when settlingSince acc.state.settling is
+        Just at ->
+            moveSettling (next at) acc
+
+        Nothing ->
+            meant Reason.NotOpen acc
+
+
+settlingSince : Settling -> Maybe Int
+settlingSince settling =
+    when settling is
+        Settled ->
+            Nothing
+
+        AwaitingBlock at ->
+            Just at
+
+        AwaitingWindow at ->
+            Just at
+
+
+moveSettling : Settling -> (taken acc : Acc) -> Acc
+moveSettling to acc =
+    let
+        st =
+            acc.state
+    in
+    when to is
+        Settled ->
+            let
+                r =
+                    sendHeld { st | settling = Settled }
+            in
+            { acc | state = r.state, commands = acc.commands ++ r.commands }
+
+        _ ->
+            { acc | state = { st | settling = to } }
 
 
 {-| A block not this client's: the one it was started with, a hook's, or
@@ -2920,7 +2980,22 @@ replied expect ok lines acc =
             { acc | state = { st | dropMark = mark } }
 
         ForWindow ->
-            { acc | state = Array.foldl replyLine acc.state lines }
+            let
+                st =
+                    Array.foldl replyLine acc.state lines
+            in
+            -- the window answered after a binding, and no other asked
+            -- behind it: the keys held go, to the pane now active (TM109)
+            when st.settling is
+                AwaitingWindow _ ->
+                    if Array.any (\a -> a.expect == ForWindow) st.expecting then
+                        { acc | state = st }
+
+                    else
+                        settleOn (\_ -> Settled) { acc | state = st }
+
+                _ ->
+                    { acc | state = st }
 
         ForTabs ->
             let
@@ -2947,18 +3022,27 @@ replied expect ok lines acc =
 
         ForPanes ->
             -- each pane's state and both its captures on one line: three
-            -- replies, in turn
-            Array.foldl
-                (\line a ->
-                    when String.split " " (Bytes.toStringLossy line) is
-                        [ "P", id ] ->
-                            askLine (recapture (idOf id)) a
+            -- replies, in turn; a pane not listed is forgotten (TM110)
+            let
+                asked =
+                    Array.foldl
+                        (\line a ->
+                            when String.split " " (Bytes.toStringLossy line) is
+                                [ "P", id ] ->
+                                    askLine (recapture (idOf id)) a
 
-                        _ ->
-                            a
-                )
-                acc
-                lines
+                                _ ->
+                                    a
+                        )
+                        acc
+                        lines
+            in
+            { asked | state = forgetGone (listedPanes lines) asked.state }
+
+        ForLiving ->
+            -- the session's panes, after one may have gone: those not
+            -- listed forgotten, nothing captured (TM110)
+            { acc | state = forgetGone (listedPanes lines) acc.state }
 
         ForInfo pane ->
             let
@@ -4336,7 +4420,20 @@ notice n acc =
 
         LayoutChange l ->
             if l.window == st.window || st.window < 0 then
-                { acc | state = applyLayout l.visible { st | window = l.window, modal = String.contains "O" l.flags } }
+                let
+                    placed =
+                        layoutIds st.layout
+
+                    next =
+                        applyLayout l.visible { st | window = l.window, modal = String.contains "O" l.flags }
+                in
+                -- a pane the layout no longer has closed, or moved to
+                -- another window: which, asked (TM110)
+                if Array.any (\i -> not (Array.member i (layoutIds next.layout))) placed then
+                    ask [ { command = panesQuery, expect = ForLiving } ] { acc | state = next }
+
+                else
+                    { acc | state = next }
 
             else
                 { acc | state = st }
@@ -4382,14 +4479,15 @@ notice n acc =
             ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }
 
         WindowClose _ ->
-            ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }
+            -- its panes went with it: forgotten (TM110)
+            ask [ { command = tabsQuery, expect = ForTabs }, { command = panesQuery, expect = ForLiving } ] { acc | state = st }
 
         UnlinkedWindowClose w ->
             -- before tmux 3.8 a window of this session closing is said so
             -- too, its last pane's program ended or killed (measured,
             -- docs/tmux-checks.md TK11); another session's is not a tab
             if Array.any (\t -> t.id == w) st.tabs then
-                ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }
+                ask [ { command = tabsQuery, expect = ForTabs }, { command = panesQuery, expect = ForLiving } ] { acc | state = st }
 
             else
                 { acc | state = st }
@@ -5654,10 +5752,68 @@ typedHere k bytes ms s =
                         keyByTable k bytes ms { s | clock = ms }
 
 
-{-| A typed key with no prompt open: by the tables (TM24), a binding
-whose prompt puritty can ask opening it (TM25). -}
+{-| Where a binding that may move the active pane is (TM109): sent, its
+block (from 3.4, tmux runs it) not yet come; its block come, the window
+asked again and not yet answered; each since a time on the key clock. -}
+type Settling
+    = Settled
+    | AwaitingBlock Int
+    | AwaitingWindow Int
+
+
+{-| How long keys wait for a binding to settle, in ms: past it, the next
+key sends those held, as before TM109. -}
+settleMost : Int
+settleMost =
+    2000
+
+
+{-| A typed key with no prompt open: held while a binding settles
+(TM109), else `keyRouted`'s. -}
 keyByTable : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
 keyByTable k bytes ms s =
+    when settlingSince s.settling is
+        Nothing ->
+            meant Reason.NotOpen keyRouted k bytes ms s
+
+        Just at ->
+            if ms - at < settleMost then
+                { state = { s | heldKeys = Array.pushLast { k = k, bytes = bytes, ms = ms } s.heldKeys }, commands = [] }
+
+            else
+                -- tmux has not answered in time: what was held goes, then
+                -- this key
+                let
+                    r =
+                        sendHeld { s | settling = Settled }
+
+                    next =
+                        keyByTable k bytes ms r.state
+                in
+                { state = next.state, commands = r.commands ++ next.commands }
+
+
+{-| The keys held while a binding settled, sent in order, now that it
+has (TM109); one of them that is a binding itself holds those after it
+again. -}
+sendHeld : (taken s : State) -> { state : State, commands : Array String }
+sendHeld s =
+    Array.foldl
+        (\h acc ->
+            let
+                next =
+                    keyByTable h.k h.bytes h.ms acc.state
+            in
+            { state = next.state, commands = acc.commands ++ next.commands }
+        )
+        { state = { s | heldKeys = [] }, commands = [] }
+        s.heldKeys
+
+
+{-| A typed key: by the tables (TM24), a binding whose prompt puritty can
+ask opening it (TM25). -}
+keyRouted : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
+keyRouted k bytes ms s =
     let
         -- a key no binding can take goes straight to the pane: through
         -- the client (`-K`) tmux loses escape-sequence keys, and Enter
@@ -5785,8 +5941,21 @@ keyByTable k bytes ms s =
             let
                 asked =
                     sendAsking [ { command = windowQuery, expect = ForWindow } ] keyed.state
+
+                st =
+                    asked.state
             in
-            { state = asked.state, commands = keyed.commands ++ asked.commands }
+            -- keys after it wait for the window's answer (TM109)
+            { state = { st | settling = AwaitingWindow ms }, commands = keyed.commands ++ asked.commands }
+
+        else if way.ran /= "" && modeTable == "" && s.keys.byTable then
+            -- tmux runs the binding; keys after it wait for its block and
+            -- the window asked after it (TM109)
+            let
+                st =
+                    keyed.state
+            in
+            { state = { st | settling = AwaitingBlock ms }, commands = keyed.commands }
 
         else
             keyed
@@ -16589,6 +16758,84 @@ searchMarks panes s =
                     meant Reason.NotOpen []
         )
         panes
+
+
+{-| The panes a layout places. -}
+layoutIds : Maybe Layout.Cell -> Array Int
+layoutIds layout =
+    when layout is
+        Just cell ->
+            Array.map .id (Layout.panes cell)
+
+        Nothing ->
+            meant Reason.NotYet []
+
+
+{-| The ids `panesQuery`'s answer lists. -}
+listedPanes : Array Bytes -> Array Int
+listedPanes lines =
+    Array.mapAndKeepJust
+        (\line ->
+            when String.split " " (Bytes.toStringLossy line) is
+                [ "P", id ] ->
+                    Just (idOf id)
+
+                _ ->
+                    Nothing
+        )
+        lines
+
+
+{-| Every pane the session's answer does not list forgotten (TM110, the
+code review's TA8): its terminal, and all puritty kept of it. -}
+forgetGone : Array Int -> (taken s : State) -> State
+forgetGone listed s =
+    let
+        gone =
+            Array.keepIf (\i -> not (Array.member i listed)) s.ids
+
+        stay =
+            keepPanes listed s.ids 0 s.panes { ids = [], panes = Builder.empty 0 }
+
+        status =
+            s.status
+    in
+    Array.foldl forgetPane
+        { s
+            | ids = stay.ids
+            , panes = stay.panes
+            , info = Dict.keepIf (\i _ -> Array.member i listed) s.info
+            , nested = Dict.keepIf (\i _ -> Array.member i listed) s.nested
+            , scans = Dict.keepIf (\i _ -> Array.member i listed) s.scans
+            , status = { status | panes = Dict.keepIf (\i _ -> Array.member i listed) status.panes }
+        }
+        gone
+
+
+{-| The terminals of the listed panes, with their ids, each moved out of
+the old builder in turn: a loop, so that the compiler sees the ids and the
+terminals kept as many as each other (TM34). -}
+keepPanes : Array Int -> Array Int -> Int -> (taken old : Builder Vt.Term) -> (taken acc : { ids : Array Int, panes : Builder Vt.Term } where Array.length acc.ids == Builder.length acc.panes) -> (r : { ids : Array Int, panes : Builder Vt.Term } where Array.length r.ids == Builder.length r.panes)
+keepPanes listed ids i old acc =
+    when Array.get i ids is
+        Just id ->
+            if Array.member id listed then
+                let
+                    out =
+                        Builder.swap i (blank 1 1) old
+                in
+                when out.old is
+                    Just term ->
+                        keepPanes listed ids (i + 1) out.builder { ids = Array.pushLast id acc.ids, panes = Builder.pushLast term acc.panes }
+
+                    Nothing ->
+                        meant Reason.OutOfRange keepPanes listed ids (i + 1) out.builder acc
+
+            else
+                keepPanes listed ids (i + 1) old acc
+
+        Nothing ->
+            meant Reason.NoMore acc
 
 
 {-| A pane that is gone, out of every map kept by pane (TM103). -}

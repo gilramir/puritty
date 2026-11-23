@@ -4258,3 +4258,79 @@ expectation used up, the 1 MiB bound) and the app's `TmuxMode` suite
 (asked and refused, asked and started, typed lines, `startsTmux`, the
 pane's case on each tmux). Before, the pane's case sent `send-keys -H 0a`
 to the pane and showed nothing of the line after.
+
+
+## TM109 · Keys typed behind a binding wait for it to settle (2026-11-23)
+
+The code review's TA4: from tmux 3.4 a named key no binding takes goes
+`send-keys -t %<active>` (TM50), by the pane puritty believes active,
+while text goes `send-keys -K`, to the pane tmux has active; before 3.4
+every byte goes by puritty's belief. A binding that moves the active pane
+(`prefix o`, `%`, `n`, `c`) is known to have done so only when
+`%window-pane-changed` or the window's answer is read, a round trip
+later. Typed ahead, `prefix o` then `ls` Enter put `ls` in the new pane
+and Enter in the old one (3.4 and later), or all of it in the old one
+(before).
+
+Now a key that runs a binding of tmux's outside a mode (`way.ran`, the
+mode table empty) starts a settle (`State.settling`), and the keys typed
+while it lasts are held in order (`heldKeys`), not routed:
+
+- **From 3.4** (`AwaitingBlock`): until the binding's block (flags 0)
+  comes. That block asks the window again, as before (TK12), and the
+  keys wait for its answer (`AwaitingWindow`); where no window is asked
+  (the binding entered copy mode or the tree), they go at the block.
+- **Before 3.4** (`AwaitingWindow`): puritty sends the binding's command
+  and asks the window after it, and the keys wait for that answer.
+- **When it ends**, the window answered with no other window question
+  behind it, the held keys are routed in order as if typed then
+  (`sendHeld`); one that is a binding again holds those after it.
+- **Bound**: 2 s on the key clock (`settleMost`). Past it, the next key
+  sends those held, then itself, by what is known, as before. Nothing is
+  sent while no key comes, so a tmux that never answers keeps the keys
+  until one is typed.
+
+A paste is not held: it goes to the active pane as before. The diagnosis
+names how many keys are held.
+
+Test: "keys typed after a binding that moves the active pane, before tmux
+has answered, all go to the pane it made active", on each tmux: `prefix
+o`, `l`, `s`, Enter typed unanswered, then tmux's pane 1 active. Before,
+on 3.4, 3.6a and 3.8 Enter went `send-keys -t '%0'`, and on 2.7, 3.0 and
+3.2a all three went to `%0`; now none goes to `%0`. The app's 526 tests
+pass.
+
+
+## TM110 · A pane that is gone is forgotten (2026-11-23)
+
+The code review's TA8: a terminal was made for every pane of the session
+and every `%output` id, and nothing took one out: `ids` and `panes`, and
+`info`, `nested`, `scans` and the status line's per-pane values, only
+grew. A closed pane kept its terminal and scrollback, a `switch-client`
+kept the old session's, and each paint and read walked them all. TM103's
+`forgetPane` cleared five maps, for a pane that closed in copy mode.
+
+Now `forgetGone` takes every pane a list of the session's panes does not
+name out of all of them at once: the terminal (moved out of the builder
+in a loop, `keepPanes`, so the compiler still sees as many ids as
+terminals, TM34), `info`, `nested`, `scans`, the status line's, and
+`forgetPane`'s five. The list is `panesQuery`'s answer:
+
+- **On attach and on `%session-changed`** (`ForPanes`), as before; a pane
+  it does not name, the last session's, is forgotten.
+- **When a pane may have gone** (`ForLiving`, the same question with no
+  capture after it): on `%window-close`, on `%unlinked-window-close` of
+  this session's, and on a `%layout-change` of the shown window that no
+  longer places a pane the last one did (closed, or moved by
+  `break-pane`, which the list then still names).
+
+A pane is listed if it lives when tmux answers, and tmux writes a pane's
+output and the answer in one stream in order, so a pane forgotten is one
+that closed. The diagnosis names the terminals kept.
+
+Test: "a pane that closes is forgotten, its terminal with it", on each
+tmux: two panes, the second closed by its layout. With `ForPanes` and
+`ForLiving` forgetting nothing (the old behaviour) the diagnosis said
+`terminals kept: 2 (%0 %1)` after, on all six; now `1 (%0)`. The
+finding's other half, one record per pane in place of the parallel maps,
+is not done.

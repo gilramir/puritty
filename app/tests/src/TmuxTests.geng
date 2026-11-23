@@ -1446,6 +1446,84 @@ onVersion version =
                     Expect.equal True
                         (Array.any (\l -> String.startsWith "send-keys -t '%1'" l) (Array.dropFirst (Array.length closed.world.heard) after.world.heard))
           }
+        , { name = "keys typed after a binding that moves the active pane, before tmux has answered, all go to the pane it made active (review TA4)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        two =
+                            { made | panes = made.panes ++ Array.map (\p -> { p | id = 1 }) made.panes }
+
+                        prefixed =
+                            settle (ctrl "b" (attached two))
+
+                        -- `prefix o`, then `ls` and Enter, typed before
+                        -- tmux's answer to the `o` is read
+                        typedAhead =
+                            prefixed
+                                |> typeKey "o"
+                                |> typeKey "l"
+                                |> typeKey "s"
+                                |> named enterKey
+
+                        -- tmux runs the binding: pane 1 is active; from 3.4
+                        -- the binding's block comes, not this client's
+                        w =
+                            typedAhead.world
+
+                        moved =
+                            { typedAhead | world = { w | active = 1 } }
+                                |> deliver
+                                    (Bytes.fromString
+                                        ((if Array.member version [ "3.4", "3.6a", "3.8" ] then
+                                            "%begin 1700000000 900 0\u{000D}\n%end 1700000000 900 0\u{000D}\n"
+
+                                          else
+                                            ""
+                                         )
+                                            ++ "%window-pane-changed @"
+                                            ++ String.fromInt w.window.id
+                                            ++ " %1\u{000D}\n"
+                                        )
+                                    )
+                                |> settle
+
+                        after =
+                            Array.dropFirst (Array.length prefixed.world.heard) moved.world.heard
+                    in
+                    Expect.equal { toOld = [], toNew = True }
+                        { toOld = Array.keepIf (String.startsWith "send-keys -t '%0'") after
+                        , toNew = Array.any (String.startsWith "send-keys -t '%1'") after
+                        }
+          }
+        , { name = "a pane that closes is forgotten, its terminal with it (review TA8)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        two _ =
+                            attached { made | panes = made.panes ++ Array.map (\p -> { p | id = 1 }) made.panes }
+
+                        closed =
+                            let
+                                run =
+                                    two {}
+
+                                c =
+                                    FakeTmux.closePane 1 run.world
+                            in
+                            settle (deliver (Bytes.fromString (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") c.notices))) { run | world = c.world })
+
+                        kept run =
+                            TmuxMode.diagnose run.tmux |> Array.keepIf (String.startsWith "  terminals kept")
+                    in
+                    Expect.equal { before = [ "  terminals kept: 2 (%0 %1)" ], after = [ "  terminals kept: 1 (%0)" ] }
+                        { before = kept (two {}), after = kept closed }
+          }
         , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
           , test =
                 \_ ->

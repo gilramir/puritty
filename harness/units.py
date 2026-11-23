@@ -179,8 +179,10 @@ SUITES = [
         # waited for, a grab let go, on each tmux; 489 since PS11: the
         # picker's wheel after the keys; 519 since TA3 and TA15: control
         # mode asked about, and in a pane no key sent, on each tmux; 520
-        # since ST3: a remembered password given alone to the known key only
-        520,
+        # since ST3: a remembered password given alone to the known key
+        # only; 526 since TA4: keys typed behind a binding, on each tmux;
+        # 532 since TA8: a closed pane forgotten, on each tmux
+        532,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

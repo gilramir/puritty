@@ -324,11 +324,11 @@ covered" sections. The larger gaps:
 | [MB5](10-app-main-b.md) | speed | confirmed | Every read of a tab not shown forces an unpaced frame of the shown tab |
 | [MB6](10-app-main-b.md) | security | confirmed | OSC 52 writes of a tab not shown queue without bound, and are applied when it is next shown |
 | [MB19](10-app-main-b.md) | design | confirmed | The dialogs are listed in six places, and four groups of this half are modules in waiting |
-| [TA4](11-tmuxmode-a.md) | bug | confirmed | After the active pane or window changes, named keys go to the old pane and text to the new one |
+| [TA4](11-tmuxmode-a.md) | bug | confirmed | **fixed** After the active pane or window changes, named keys go to the old pane and text to the new one |
 | [TA5](11-tmuxmode-a.md) | bug | confirmed | **fixed** A change in the status line's row count sends a resize that nothing waits for |
 | [TA6](11-tmuxmode-a.md) | bug | confirmed | Before tmux 3.4 a binding of several commands is sent on one line and waited for once; `source-file` in it has no fence |
 | [TA7](11-tmuxmode-a.md) | bug | confirmed | **fixed** A pane that closes while it holds the pointer leaves `grab` set: clicks, selection and tabs stop working |
-| [TA8](11-tmuxmode-a.md) | bug | confirmed | Panes are never taken out of `ids`/`panes`/`info`: closed panes and a left session's panes keep their terminals |
+| [TA8](11-tmuxmode-a.md) | bug | confirmed | **fixed** Panes are never taken out of `ids`/`panes`/`info`: closed panes and a left session's panes keep their terminals |
 | [TA9](11-tmuxmode-a.md) | efficiency | confirmed | Every attach asks the window, tabs, panes and modes twice, so every pane is captured twice |
 | [TA10](11-tmuxmode-a.md) | efficiency | confirmed | A pane's whole history is captured on attach and on every `%pause`, into a terminal that keeps about 1000 rows |
 | [TA11](11-tmuxmode-a.md) | bug | confirmed | `applyLayout` sizes terminals without the scrollbar's columns; only `refit` uses `fittedIn` |
