@@ -3425,61 +3425,32 @@ applyLook new m =
         language c =
             Maybe.withDefault (meant Reason.NotSet locale.language) c.language
 
-        charset =
-            Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) new.charset)
-
-        term0 =
-            if new.palette /= old.palette then
-                Vt.setPalette new.palette m.term
-
-            else
-                m.term
-
-        term1 =
-            if new.scrollbackLines /= old.scrollbackLines then
-                Vt.setScrollbackBytes (Vt.scrollbackBytesFor { cols = term0.cols, rows = new.scrollbackLines }) term0
-
-            else
-                term0
-
-        -- the colors a program asks for, and a 997 to one that asked to
-        -- hear of the theme changing (docs/tmux.md TM4), sent at once
-        told =
-            if new.foreground /= old.foreground || new.background /= old.background then
-                Vt.takeReplies (Vt.withEmbedder (embedderOf new) term1)
-
-            else
-                { term = term1, replies = [] }
-
-        term =
-            told.term
-
-        -- read before `term` is moved into the model
-        shape =
-            { back = min m.back (Vt.scrollbackRows term), cols = term.cols, rows = term.rows }
-
         refont =
             new.font /= old.font || language new /= language old || new.glyphCacheMb /= old.glyphCacheMb
 
-        applied =
-            { m
-                | config = new
-                , tmux = TmuxMode.setEmbedder (embedderOf new) <| TmuxMode.setBackground new.background (TmuxMode.setLook (new.tmuxLook == "tmux") (TmuxMode.setBar (new.tmuxTabs == "top") m.tmux))
-                , look = { foreground = new.foreground, background = new.background, boldIsBright = new.boldIsBright }
-                , term = term
-                , back = shape.back
-                , charset = charset
-                , decoder =
-                    if charset /= m.charset then
-                        Charset.decoder
+        -- every tab's terminal, the shown one's here and the others' below
+        -- (the code review's MA5, docs/settings.md ST37)
+        tabbed =
+            lookTab old new m
 
-                    else
-                        m.decoder
+        shape =
+            { cols = tabbed.term.cols, rows = tabbed.term.rows }
+
+        starter =
+            tabbed.starter
+
+        applied =
+            { tabbed
+                | config = new
+                , look = { foreground = new.foreground, background = new.background, boldIsBright = new.boldIsBright }
+                , starter = { starter | charset = charsetOf locale new }
                 , wordBoundaries = Array.map Char.toCode (String.toArray new.wordBoundaries)
-                , shadow = View.shadowIn shape.cols shape.rows m.windowRows
+                , shadow = View.shadowIn shape.cols shape.rows tabbed.windowRows
                 , urgent = True
             }
-                |> (\a -> Array.foldl sendRaw a told.replies)
+
+        hidden =
+            Array.map .id (hiddenOf applied)
 
         -- the bar shown or hidden by `[tabs] bar` changes every tab's rows
         rebar =
@@ -3502,7 +3473,14 @@ applyLook new m =
                 else
                     Task.succeed {}
             )
-        |> Task.andThen (\_ -> refontOr new old language applied)
+        |> Task.andThen
+            (\_ ->
+                Array.foldl
+                    (\id done -> done |> Task.andThen (atTab id (\one -> Task.succeed (lookTab old new one))))
+                    (Task.succeed applied)
+                    hidden
+            )
+        |> Task.andThen (refontOr new old language)
         |> Task.andThen
             (\next ->
                 if rebar then
@@ -3511,6 +3489,77 @@ applyLook new m =
                 else
                     Task.succeed next
             )
+
+
+{-| A settings change's part that is each tab's (docs/settings.md ST4,
+ST37), done to the tab shown: the palette, the scrollback's bound, what the
+embedder says (the colors OSC 10 and 11 answer, with a 997 to a program
+that asked to hear of them, and `[images] read_files`: the code review's
+MA6), tmux's look, and the charset when the setting changed (a host's own
+is kept otherwise). -}
+lookTab : Config -> Config -> (taken m : Model) -> Model
+lookTab old new m =
+    let
+        charset =
+            charsetOf m.settings.locale new
+
+        term0 =
+            if new.palette /= old.palette then
+                Vt.setPalette new.palette m.term
+
+            else
+                m.term
+
+        term1 =
+            if new.scrollbackLines /= old.scrollbackLines then
+                Vt.setScrollbackBytes (Vt.scrollbackBytesFor { cols = term0.cols, rows = new.scrollbackLines }) term0
+
+            else
+                term0
+
+        -- the colors a program asks for, and a 997 to one that asked to
+        -- hear of the theme changing (docs/tmux.md TM4), sent at once;
+        -- and whether a program may name local files for pictures
+        told =
+            if embedderOf new /= embedderOf old then
+                Vt.takeReplies (Vt.withEmbedder (embedderOf new) term1)
+
+            else
+                { term = term1, replies = [] }
+
+        term =
+            told.term
+
+        back =
+            min m.back (Vt.scrollbackRows term)
+
+        recharset =
+            charsetOf m.settings.locale old /= charset
+    in
+    { m
+        | tmux = TmuxMode.setEmbedder (embedderOf new) <| TmuxMode.setBackground new.background (TmuxMode.setLook (new.tmuxLook == "tmux") (TmuxMode.setBar (new.tmuxTabs == "top") m.tmux))
+        , term = term
+        , back = back
+        , charset =
+            if recharset then
+                charset
+
+            else
+                m.charset
+        , decoder =
+            if recharset && charset /= m.charset then
+                Charset.decoder
+
+            else
+                m.decoder
+    }
+        |> (\a -> Array.foldl sendRaw a told.replies)
+
+
+{-| The charset the settings give a local tab. -}
+charsetOf : Platform.Locale -> Config -> Charset
+charsetOf locale config =
+    Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) config.charset)
 
 
 {-| The window's cell size after a zoom or a font change, told to the

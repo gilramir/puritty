@@ -116,7 +116,9 @@ def run_case(env0, name, start, args, keys=None):
     bin_dir = home / "bin"
     bin_dir.mkdir()
     said = home / "ssh-args.txt"
-    (bin_dir / "ssh").write_text(f'#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done > "{said}"\nexec sleep 600\n')
+    # `ssh -G`, which puritty asks first of a host it runs OpenSSH for
+    # (docs/sftp.md FT31), answered with nothing set, and not recorded
+    (bin_dir / "ssh").write_text(f'#!/bin/sh\n[ "$1" = "-G" ] && exit 0\nfor a in "$@"; do printf "%s\\n" "$a"; done > "{said}"\nexec sleep 600\n')
     (bin_dir / "ssh").chmod(0o755)
     env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh",
                PATH=f"{bin_dir}:{env0['PATH']}", PURITTY_SHOT=str(home / "shot.ppm"))
@@ -154,6 +156,16 @@ def run_case(env0, name, start, args, keys=None):
         subprocess.run([XDO, "windowclose", w], env=env, capture_output=True)
     time.sleep(0.3)
     ssh = said.read_text().splitlines() if said.exists() else None
+    # the tab's own ControlMaster (FT31), its socket a random name: left
+    # out, so that what is held is what the host's settings make
+    if ssh is not None:
+        kept = []
+        for a in ssh:
+            if kept and kept[-1] == "-o" and a.split("=")[0] in ("ControlMaster", "ControlPath", "ControlPersist"):
+                kept.pop()
+                continue
+            kept.append(a)
+        ssh = kept
     color = "none"
     if args[:1] == ["settings"] or name == "menu-connects":
         # the settings window and the session it starts both write

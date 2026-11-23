@@ -43,6 +43,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
 import pixels  # noqa: E402  (its fonts)
+import hosts  # noqa: E402  (its xdotool)
 
 APP = ROOT / "app" / "puritty"
 APP_EXE = ROOT / "app" / "puritty.exe"
@@ -51,6 +52,7 @@ RUNNER = ROOT / "harness" / "reload" / "run.ps1"
 REMOTE = "geng-probe/reload"
 DISPLAY = ":83"
 TITLE = "reload-gate"
+XDO = None
 
 # A screen with what the settings change: the default colors, the named
 # colors (SGR 31-36, 91-96), bold (bright under bold_is_bright), a box,
@@ -120,6 +122,16 @@ def cases(windows):
         # none, and on Windows the pseudo console sets one for every
         # program, its path, as it starts (docs/settings.md ST15)
         ("title", BASE, BASE.replace(TITLE, TITLE + "-again"), "rename", "title"),
+        # a tab hidden behind another when the settings change: shown again,
+        # it is what the change made while it was shown gives (the code
+        # review's MA5, docs/settings.md ST37)
+        # `[images] read_files` turned on and off under a running program,
+        # which asks for a picture from a local file after the change: it
+        # is shown, or not, at once (the code review's MA6, ST37)
+        ("read-files-on", BASE + "\n[images]\nread_files = false\n", BASE + "\n[images]\nread_files = true\n", "rename", "image-shown"),
+        ("read-files-off", BASE + "\n[images]\nread_files = true\n", BASE + "\n[images]\nread_files = false\n", "rename", "image-not-shown"),
+        ("palette-hidden-tab", BASE, BASE + '\n[colors]\npalette = ["#000000", "#ff0000", "#00ff00", "#ffff00", "#0000ff"]\n',
+         "rename", "hidden-tab"),
     ])
 
 
@@ -160,6 +172,28 @@ def common(a, b):
     return [r[:w] for r in a[:h]], [r[:w] for r in b[:h]]
 
 
+def aligned(got, fresh):
+    """The running window's picture, cut where its cells begin. A window
+    whose cells changed size keeps its pixels, and what is past the last
+    whole column and row is shared on both sides (docs/renderer.md R21),
+    so its cells start up to half a cell further in than a fresh start's,
+    which has none to spare: the offset (dx, dy), each at most 40, at
+    which the two agree over the part both cover, else none."""
+    if len(got) == len(fresh) and len(got[0]) == len(fresh[0]):
+        return got
+    for dy in range(0, 41):
+        for dx in range(0, 41):
+            moved = [r[dx * 3:] for r in got[dy:]]
+            if not moved or not moved[0]:
+                continue
+            a, b = common(moved, fresh)
+            # the part a cell row can hold, past the bottom gap of either
+            rows = len(a) - 30
+            if rows > 0 and a[:rows] == b[:rows]:
+                return moved
+    return got
+
+
 def judge(held, first, got, fresh, title, said, home):
     """Why the case fails, or None."""
     if got is None:
@@ -177,7 +211,8 @@ def judge(held, first, got, fresh, title, said, home):
         return None if "puritty:" in said else "nothing was said on standard error"
     if fresh is None:
         return "no picture from the fresh start"
-    a, b = common(got, fresh)
+    a, b = common(aligned(got, fresh), fresh)
+    a, b = a[:len(a) - 30], b[:len(b) - 30]
     save_png(home / "got.png", got)
     save_png(home / "fresh.png", fresh)
     if a != b:
@@ -198,7 +233,8 @@ def start(env, home, name, host=False):
         # OpenSSH's ssh stood in for by the screen's program
         bin_ = home / "bin"
         bin_.mkdir(exist_ok=True)
-        (bin_ / "ssh").write_text(f"#!/bin/sh\ncat '{screen}'; exec sleep 600\n")
+        # `ssh -G` (docs/sftp.md FT31) answered with nothing set
+        (bin_ / "ssh").write_text(f"#!/bin/sh\n[ \"$1\" = \"-G\" ] && exit 0\ncat '{screen}'; exec sleep 600\n")
         (bin_ / "ssh").chmod(0o755)
         env = dict(env, PATH=f"{bin_}:{env['PATH']}")
         args = ["--host", "box"]
@@ -237,7 +273,96 @@ def title_of(env):
     return m.group(1) if m else None
 
 
+def keys(env, presses):
+    """Keys pressed in the window, each given time to be acted on."""
+    win = subprocess.run([XDO, "search", "--sync", "--name", f"^{TITLE}"], env=env, capture_output=True,
+                         text=True, timeout=10).stdout.split()[0]
+    subprocess.run([XDO, "windowfocus", "--sync", win], env=env, check=True)
+    for k in presses:
+        subprocess.run([XDO, "key", k], env=env, check=True)
+        time.sleep(1.0)
+
+
+def run_hidden(env0, name, before, after, how):
+    """The screen's tab hidden behind a new one while the file changes,
+    then shown; and again with it shown when the file changes. The two
+    pictures are held to each other, and the change to have been seen."""
+    pictures = {}
+    for order in ("hidden", "shown"):
+        home = WORK / name / order
+        shutil.rmtree(home, ignore_errors=True)
+        config = home / "config" / "puritty"
+        config.mkdir(parents=True)
+        path = config / "config.toml"
+        path.write_text(before)
+        shot = home / "shot.ppm"
+        env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), PURITTY_SHOT=str(shot), SHELL="/bin/sh")
+        p = start(env, home, "running")
+        keys(env, ["ctrl+shift+t"])
+        if order == "hidden":
+            write(path, after, how)
+            time.sleep(1.0)
+            keys(env, ["ctrl+Prior"])
+        else:
+            keys(env, ["ctrl+Prior"])
+            pictures["unchanged"] = read_ppm(shot)
+            write(path, after, how)
+            time.sleep(1.0)
+        pictures[order] = read_ppm(shot)
+        stop(p)
+    got, want, first = pictures["hidden"], pictures["shown"], pictures["unchanged"]
+    if got is None or want is None or first is None:
+        return "no picture"
+    save_png(WORK / name / "hidden.png", got)
+    save_png(WORK / name / "shown.png", want)
+    if want == first:
+        return "the change made with the tab shown did not show"
+    if got != want:
+        diff = sum(1 for ra, rb in zip(got, want) for i in range(0, len(ra), 3) if ra[i:i + 3] != rb[i:i + 3])
+        return f"{diff} pixels differ from the change made with the tab shown"
+    return None
+
+
+def run_image(env0, name, before, after, how, held):
+    """A program that asks for a picture from a local file 2.5 s after it
+    starts, the file changed at 1.5 s: the screen after, against the one
+    before the change."""
+    import base64
+    from PIL import Image
+    home = WORK / name
+    shutil.rmtree(home, ignore_errors=True)
+    config = home / "config" / "puritty"
+    config.mkdir(parents=True)
+    path = config / "config.toml"
+    path.write_text(before)
+    picture = home / "red.png"
+    Image.new("RGB", (60, 40), (255, 0, 0)).save(picture)
+    shot = home / "shot.ppm"
+    env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), PURITTY_SHOT=str(shot))
+    (home / "screen.txt").write_bytes(SCREEN.encode())
+    ask = "\x1b_Ga=T,f=100,t=f;" + base64.b64encode(str(picture).encode()).decode() + "\x1b\\"
+    (home / "ask.txt").write_text(ask)
+    p = subprocess.Popen([str(APP), "--", "sh", "-c", f"cat '{home / 'screen.txt'}'; sleep 2.5; cat '{home / 'ask.txt'}'; exec sleep 600"],
+                         env=env, stdout=subprocess.DEVNULL, stderr=open(home / "running-stderr.txt", "w"))
+    time.sleep(1.5)
+    first = read_ppm(shot)
+    write(path, after, how)
+    time.sleep(2.5)
+    got = read_ppm(shot)
+    stop(p)
+    if first is None or got is None:
+        return "no picture"
+    red = sum(1 for r in got for i in range(0, len(r), 3) if r[i:i + 3] == b"\xff\x00\x00")
+    if held == "image-shown":
+        return None if red >= 60 * 40 // 2 else f"{red} red pixels: the picture was not shown"
+    return None if red == 0 else f"{red} red pixels: the picture was shown"
+
+
 def run_linux(env0, name, before, after, how, held, fresh_text=None):
+    if held == "hidden-tab":
+        return run_hidden(env0, name, before, after, how)
+    if held in ("image-shown", "image-not-shown"):
+        return run_image(env0, name, before, after, how, held)
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     config = home / "config" / "puritty"
@@ -325,6 +450,8 @@ def main():
     else:
         if not APP.exists():
             sys.exit("reload.py: build app/puritty first (app/build.sh)")
+        global XDO
+        XDO = hosts.xdotool()
         conf = pixels.write_fonts_conf()
         env = dict(os.environ, DISPLAY=DISPLAY, FONTCONFIG_FILE=str(conf), PURITTY_NO_XIM="1", PURITTY_DPI="96",
                    LANG="C.UTF-8")

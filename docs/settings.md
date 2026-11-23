@@ -1127,3 +1127,55 @@ Kong added.**
   codes; the key is still `font.language`.
 
 App tests 202.
+
+
+## ST37 · A change reaches every tab, and `read_files` at once (2026-11-23)
+
+The code review's MA5 and MA6. ST4 applies a change to "the running
+window", but `applyLook` changed the shown tab's terminal and tmux state
+only; a hidden tab kept the old palette, scrollback bound, OSC 10/11
+answers, tmux look and charset for good, since the next change compares
+with the config already updated. And the embedder, which carries
+`[images] read_files`, was replaced only when a color changed, so turning
+`read_files` off (a setting that says it applies at once) left every
+running terminal reading local files a program names.
+
+Now `lookTab old new` is the part of a change that is each tab's: the
+palette, the scrollback's bound, the embedder whenever `embedderOf`
+differs (the colors with their 997, `read_files`, all of it), tmux's
+look, and the charset when the charset setting changed (a tab's own,
+a host's, is kept otherwise; before, the shown tab took the setting's
+at every change). `applyLook` does it to the shown tab and, through
+`atTab`, to each hidden one, as `relayout` does sizes; a hidden tab's
+replies (the 997) go to its own program. New local tabs take the
+charset in force (`starter.charset`), not the one the window started
+with. A local tab's pty keeps the UTF-8 flag it was started with.
+
+**Tested** (`harness/reload.py`, Linux): `palette-hidden-tab`, the
+palette changed while the screen's tab is behind a second, then shown,
+held to the same change made with it shown (before: 1,185 pixels
+differ, the old palette's); `read-files-on` and `read-files-off`, a
+local program asking for a picture from a file after the change (before:
+not shown when turned on, shown when turned off; now the reverse). 20 of
+20 pass.
+
+**The gates brought up to date on the way.** Three were failing before
+this change, from two earlier ones:
+
+- `docs/sftp.md` FT31 (2026-11-20) asks `ssh -G` of a host before it
+  runs OpenSSH, and the stand-in `ssh` of `harness/hosts.py` and of the
+  reload gate's host cases slept on it, so the window never started
+  (hosts 6 of 13, reload's two host cases no picture). The stand-ins
+  answer `-G` with nothing set, and hosts.py leaves the tab's own
+  `-o ControlMaster/ControlPath/ControlPersist` out of what it holds,
+  the socket's name being random.
+- `docs/renderer.md` R21 (2026-11-19) shares what is past the last whole
+  row and column on both sides, so a running window whose font changed
+  has its cells up to half a cell in from where a fresh start, which has
+  none to spare, has them (reload's four font cases, 8,540 to 12,655
+  pixels), and the host list's window is 12 px shorter (hosts'
+  `host-list` pin, 742x430 to 742x418, re-recorded). The reload gate now
+  finds the offset, at most 40 px each way, at which the two pictures
+  agree, and leaves the bottom 30 rows out.
+
+With these, hosts passes 13 of 13 and settings 20 of 20.

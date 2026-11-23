@@ -310,8 +310,8 @@ covered" sections. The larger gaps:
 | [W5](08-win32.md) | security | confirmed | The ssh agents' named pipes are opened as ordinary files: the server may impersonate the user, and its owner is not checked |
 | [W6](08-win32.md) | bug | plausible | A font is found by its registry name, which on a localized Windows is not the family name FreeType reads |
 | [MA4](09-app-main-a.md) | bug | confirmed | The dialog shown and the dialog the keys go to are decided by two different orders |
-| [MA5](09-app-main-a.md) | bug | confirmed | A settings reload reaches only the shown tab's terminal |
-| [MA6](09-app-main-a.md) | security | confirmed | `[images] read_files` turned off (or on) does not reach a running terminal |
+| [MA5](09-app-main-a.md) | bug | confirmed | **fixed** A settings reload reaches only the shown tab's terminal |
+| [MA6](09-app-main-a.md) | security | confirmed | **fixed** `[images] read_files` turned off (or on) does not reach a running terminal |
 | [MA7](09-app-main-a.md) | speed | confirmed | Output in a tab not shown forces a frame for every chunk read, past the 16 ms pacing |
 | [MA8](09-app-main-a.md) | bug | plausible | Work that only the timer branch does waits for as long as the shown tab keeps printing |
 | [MA9](09-app-main-a.md) | bug | plausible | A paste in flight goes to whichever tab is shown when its pieces arrive |
