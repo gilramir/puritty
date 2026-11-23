@@ -79,6 +79,11 @@ main =
                     Just "config" ->
                         cases configSuite r
 
+                    Just "client-config" ->
+                        -- what the client makes of ssh_config beyond its
+                        -- options (docs/ssh-client.md SC31)
+                        cases clientConfigSuite r
+
                     Just "connection" ->
                         suites (Array.dropFirst 1 r.args) r [ connectionSuite ]
 
@@ -1500,6 +1505,107 @@ knownHostsSuite text =
 -- SSH_CONFIG
 
 
+{-| `client-config.txt`'s cases (SC31): each `case NAME host=H`, its
+config's lines after `| `, and `want FIELD: VALUE` lines, each field
+(ignored, methods, kex, hostkeys, ciphers, refused) held to what
+`Config.client` makes of the host's settings. -}
+clientConfigSuite : String -> U.Suite
+clientConfigSuite text =
+    let
+        parsedCases =
+            Array.foldl
+                (\l acc ->
+                    if String.startsWith "case " l then
+                        Array.pushLast { head = l, lines = [], want = [] } acc
+
+                    else
+                        let
+                            n =
+                                Array.length acc - 1
+                        in
+                        when Array.get n acc is
+                            Just current ->
+                                if String.startsWith "| " l then
+                                    Array.set n { current | lines = Array.pushLast (String.dropFirst 2 l) current.lines } acc
+
+                                else if String.startsWith "want " l then
+                                    Array.set n { current | want = Array.pushLast (String.dropFirst 5 l) current.want } acc
+
+                                else
+                                    acc
+
+                            Nothing ->
+                                acc
+                )
+                []
+                (String.lines text)
+
+        summary c field =
+            when field is
+                "ignored" ->
+                    String.join ", " c.ignored
+
+                "methods" ->
+                    String.join "," c.methods
+
+                "kex" ->
+                    String.join "," c.kex
+
+                "hostkeys" ->
+                    String.join "," c.hostKeys
+
+                "ciphers" ->
+                    String.join "," c.ciphers
+
+                "refused" ->
+                    String.join " | " c.refused
+
+                _ ->
+                    "(no such field)"
+
+        testOf one =
+            let
+                words =
+                    String.words one.head
+
+                name =
+                    Array.get 1 words |> Maybe.withDefault "?"
+
+                host =
+                    Array.findFirst (String.startsWith "host=") words |> Maybe.map (\f -> String.dropFirst 5 f.value) |> Maybe.withDefault "h"
+
+                parsed =
+                    Config.parse "config" (String.join "\n" one.lines)
+
+                settings =
+                    Config.resolve { host = host, localUser = "me", home = "/home/me" } (\_ -> []) parsed.directives []
+
+                got =
+                    Config.client { kex = Transport.defaultConfig.kex, hostKeys = Transport.defaultConfig.hostKeys, ciphers = Transport.defaultConfig.ciphers } settings
+
+                gotLines =
+                    Array.map
+                        (\w ->
+                            let
+                                field =
+                                    String.split ":" w |> Array.first |> Maybe.withDefault ""
+                            in
+                            field ++ ": " ++ summary got field
+                        )
+                        one.want
+            in
+            U.test name (\_ -> Task.succeed (Expect.equal (Array.map String.trimRight one.want) (Array.map String.trimRight gotLines)))
+    in
+    U.suite
+        { name = "client-config"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests = Array.map testOf parsedCases
+        }
+
+
 {-| `make-config.py`'s cases: each config resolved for its host, and the
 lines held to what `ssh -G` printed, keyword by keyword in order. A test for
 each, named by the case. -}
@@ -2241,6 +2347,11 @@ sessionMode r target =
             , session = sessionOf r.args
             , keepaliveSeconds = 0
             , keepaliveCountMax = 3
+            , methods = [ "publickey", "keyboard-interactive", "password" ]
+            , kex = Transport.defaultConfig.kex
+            , hostKeyAlgorithms = Transport.defaultConfig.hostKeys
+            , ciphers = Transport.defaultConfig.ciphers
+            , refused = []
             , pacing =
                 -- `--pacing UNSENT,PUMP,QUIET_MS,QUIET_UNSENT,QUIET_PUMP`, to
                 -- measure another (docs/sftp.md FT17)

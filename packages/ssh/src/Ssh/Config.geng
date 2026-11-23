@@ -1,8 +1,11 @@
 module Ssh.Config exposing
-    ( Context
+    ( Client
+    , Context
     , Directive
     , Settings
     , Source
+    , actedOn
+    , client
     , parse
     , resolve
     , toLines
@@ -314,7 +317,7 @@ type alias Source =
 in, and the problems met: lines that do not read, `Match` criteria this
 client cannot judge (`exec`, `localnetwork`). -}
 type alias Settings =
-    { values : Dict String (Array String), numbers : Dict String Int, problems : Array String }
+    { values : Dict String (Array String), numbers : Dict String Int, problems : Array String, given : Array String }
 
 
 multi : Array String
@@ -358,7 +361,7 @@ resolve context source user system =
             else
                 first
     in
-    { values = defaults context whole.values, numbers = whole.numbers, problems = whole.problems }
+    { values = defaults context whole.values, numbers = whole.numbers, problems = whole.problems, given = Dict.keys whole.values }
 
 
 apply : Context -> Source -> Directive -> Reading -> Reading
@@ -735,3 +738,166 @@ toLines settings =
     , raw "proxyjump"
     ]
         |> Array.flatten
+
+
+-- WHAT THE CLIENT DOES WITH THEM
+
+
+{-| The keywords the built-in client acts on (puritty `docs/ssh-client.md`
+SC31): read into its options, honoured as a restriction, or refused. Any
+other a host's lines set is named, once per connection. -}
+actedOn : Array String
+actedOn =
+    [ "hostname"
+    , "port"
+    , "user"
+    , "identityfile"
+    , "identitiesonly"
+    , "identityagent"
+    , "userknownhostsfile"
+    , "stricthostkeychecking"
+    , "hostkeyalias"
+    , "setenv"
+    , "remotecommand"
+    , "serveraliveinterval"
+    , "serveralivecountmax"
+    , "proxyjump"
+    , "passwordauthentication"
+    , "kbdinteractiveauthentication"
+    , "challengeresponseauthentication"
+    , "pubkeyauthentication"
+    , "preferredauthentications"
+    , "hostkeyalgorithms"
+    , "kexalgorithms"
+    , "ciphers"
+    , "macs"
+    , "proxycommand"
+    , "revokedhostkeys"
+    , "certificatefile"
+    ]
+
+
+{-| What the client makes of a host's settings beyond its options (SC31):
+the keywords it does not act on; the authentication methods, in order,
+after `PubkeyAuthentication`, `KbdInteractiveAuthentication` (or
+`ChallengeResponseAuthentication`), `PasswordAuthentication` and
+`PreferredAuthentications`; the key exchanges, host key algorithms and
+ciphers it offers, from its own (`has`) by OpenSSH's list forms; and why
+it will not connect, if it will not: a keyword whose loss would make it
+less strict than `ssh` (`ProxyCommand`, `RevokedHostKeys`,
+`CertificateFile`), or a list that leaves nothing it has. `MACs` is
+honoured by being moot: every cipher the client has is AEAD, so no MAC is
+used. -}
+type alias Client =
+    { ignored : Array String
+    , methods : Array String
+    , kex : Array String
+    , hostKeys : Array String
+    , ciphers : Array String
+    , refused : Array String
+    }
+
+
+client : { kex : Array String, hostKeys : Array String, ciphers : Array String } -> Settings -> Client
+client has settings =
+    let
+        value key =
+            Dict.get key settings.values |> Maybe.andThen Array.first
+
+        isNo key =
+            Maybe.map (\v -> String.toLower v == "no") (value key) |> Maybe.withDefault (meant Reason.NotSet False)
+
+        allowed =
+            [ { name = "publickey", off = isNo "pubkeyauthentication" }
+            , { name = "keyboard-interactive", off = isNo "kbdinteractiveauthentication" || isNo "challengeresponseauthentication" }
+            , { name = "password", off = isNo "passwordauthentication" }
+            ]
+                |> Array.keepIf (\m -> not m.off)
+                |> Array.map .name
+
+        methods =
+            when value "preferredauthentications" is
+                Just list ->
+                    String.split "," list
+                        |> Array.map String.trim
+                        |> Array.keepIf (\m -> Array.member m allowed)
+
+                Nothing ->
+                    meant Reason.NotSet allowed
+
+        listed key ours =
+            when value key is
+                Just spec ->
+                    algorithms ours spec
+
+                Nothing ->
+                    meant Reason.NotSet ours
+
+        kex =
+            listed "kexalgorithms" has.kex
+
+        hostKeys =
+            listed "hostkeyalgorithms" has.hostKeys
+
+        ciphers =
+            listed "ciphers" has.ciphers
+
+        set key =
+            Array.member key settings.given
+
+        why =
+            [ { refused = set "proxycommand" && Maybe.map String.toLower (value "proxycommand") /= Just "none", text = "ProxyCommand is set for this host, and the built-in client cannot run it" }
+            , { refused = set "revokedhostkeys", text = "RevokedHostKeys is set for this host, and the built-in client does not read it" }
+            , { refused = set "certificatefile", text = "CertificateFile is set for this host, and the built-in client cannot use certificates" }
+            , { refused = Array.isEmpty methods, text = "the authentication settings leave no method the built-in client has" }
+            , { refused = Array.isEmpty kex, text = "KexAlgorithms names no key exchange the built-in client has (" ++ String.join "," has.kex ++ ")" }
+            , { refused = Array.isEmpty hostKeys, text = "HostKeyAlgorithms names no host key algorithm the built-in client has" }
+            , { refused = Array.isEmpty ciphers, text = "Ciphers names no cipher the built-in client has (" ++ String.join "," has.ciphers ++ ")" }
+            ]
+                |> Array.keepIf .refused
+                |> Array.map .text
+    in
+    { ignored = Array.keepIf (\k -> not (Array.member k actedOn)) settings.given
+    , methods = methods
+    , kex = kex
+    , hostKeys = hostKeys
+    , ciphers = ciphers
+    , refused = why
+    }
+
+
+{-| An algorithm list as ssh_config(5) has it, over the client's own:
+`+` adds (all the client has are in its list already), `-` takes away,
+`^` puts first, and a bare list is the list, in its order; each name may
+be a pattern (`*`, `?`). Names the client does not have are left out. -}
+algorithms : Array String -> String -> Array String
+algorithms ours spec =
+    let
+        named text =
+            String.split "," text |> Array.map String.trim |> Array.keepIf (\n -> n /= "")
+
+        matching patterns =
+            Array.keepIf (\a -> Array.any (\p -> glob p a) patterns) ours
+    in
+    if String.startsWith "+" spec then
+        ours
+
+    else if String.startsWith "-" spec then
+        let
+            gone =
+                named (String.dropFirst 1 spec)
+        in
+        Array.keepIf (\a -> not (Array.any (\p -> glob p a) gone)) ours
+
+    else if String.startsWith "^" spec then
+        let
+            first =
+                matching (named (String.dropFirst 1 spec))
+        in
+        first ++ Array.keepIf (\a -> not (Array.member a first)) ours
+
+    else
+        Array.foldl
+            (\p acc -> acc ++ Array.keepIf (\a -> glob p a && not (Array.member a acc)) ours)
+            []
+            (named spec)

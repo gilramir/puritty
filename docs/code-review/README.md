@@ -214,7 +214,7 @@ Decided by Gilbert on 2026-11-22, each the recommended choice; to build.
   algorithm lists (`HostKeyAlgorithms`, `KexAlgorithms`, `Ciphers`,
   `MACs`) are honoured; a connection is refused, naming `client =
   "openssh"` as the way, when `ProxyCommand`, `RevokedHostKeys` or
-  `CertificateFile` applies; and `/etc/ssh/ssh_config` is read.
+  `CertificateFile` applies; and `/etc/ssh/ssh_config` is read. **Built** 2026-11-22: `docs/ssh-client.md` SC31.
 
 ## What was not covered
 
@@ -281,7 +281,7 @@ covered" sections. The larger gaps:
 | [SC4](04-ssh-core.md) | security | confirmed | An unencrypted key file's text, the private key itself, is held in Geng memory for the whole session |
 | [SC5](04-ssh-core.md) | inaccuracy | plausible | A host looked up through `HostKeyAlias` on a port other than 22 is looked up as `[alias]:port`; OpenSSH uses the bare alias |
 | [SC6](04-ssh-core.md) | security | confirmed | **fixed** With `accept-new` or `no`, a key of a type the host is not known by is taken silently even when the host is known by another type |
-| [SC7](04-ssh-core.md) | inaccuracy | confirmed | `ssh_config` keywords the client does not act on are dropped without a word, including ones that restrict what it may do |
+| [SC7](04-ssh-core.md) | inaccuracy | confirmed | **fixed** `ssh_config` keywords the client does not act on are dropped without a word, including ones that restrict what it may do |
 | [SC8](04-ssh-core.md) | bug | confirmed | **fixed** keyboard-interactive is tried once per connection, so one mistyped answer ends the login |
 | [ST1](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A batch whose SFTP stream breaks is reported as a success: `Finished` overwrites `Broken` |
 | [ST2](05-ssh-session-transfer.md) | security | plausible | The shell fallback's quoting is only right for POSIX-style login shells: fish misreads `\'`, csh/tcsh refuse the newline |

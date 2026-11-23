@@ -514,6 +514,9 @@ general knowledge, with what nene's `ssh -G` showed):
   `HostKeyAlias`, `RequestTTY`, `RemoteCommand`, `SetEnv`, `SendEnv`,
   `ForwardAgent`, the algorithm lists. A keyword it does not act on is
   reported once, by name, not silently ignored.
+  *As built (SC31):* `ConnectTimeout`, `RequestTTY`, `SendEnv` and
+  `ForwardAgent` are not acted on and are named; `ProxyCommand` refuses
+  the connection.
 
 **The oracle.** `ssh -F FILE -G HOST` prints the resolved settings, one per
 line (82 lines for the first example), without connecting. A case is a
@@ -1624,3 +1627,45 @@ ECDSA key and the server offering only Ed25519): before, under
 the driver is asked, declines, and nothing is written. Under `no` it is
 written as before. The saved password a host asks for under such a key is
 PW11's (`saved-secrets.md`).
+
+
+## SC31 · What ssh_config says that the client does not do (2026-11-22)
+
+The code review's SC7: `Config.apply` stored every keyword and
+`resolveOne` read the dozen it knows; nothing compared the rest, so SC7's
+"reported once, by name" was not so. Some of them restrict the client:
+with `ProxyCommand` it connected straight to the name, with
+`PasswordAuthentication no` it still asked for and sent a password, and
+`KexAlgorithms`, `HostKeyAlgorithms`, `Ciphers` and `RevokedHostKeys` were
+passed over. The system file was not read either. Gilbert's decision
+(2026-11-22): report, honour the cheap ones, refuse the rest.
+
+`Config.client` makes of a host's settings, beside its options:
+
+- **Named:** each keyword the host's lines set (`Settings.given`, before
+  `ssh -G`'s defaults) that is not in `Config.actedOn`, in one line among
+  the connection's problems: "for HOST, the built-in client does not act on
+  … (OpenSSH's ssh does: client = "openssh")". On Debian and Ubuntu the
+  system file's `SendEnv`, `HashKnownHosts` and `GSSAPIAuthentication`
+  are named on every connection.
+- **Honoured:** `PubkeyAuthentication`, `KbdInteractiveAuthentication` (and
+  `ChallengeResponseAuthentication`, its old name) and
+  `PasswordAuthentication` `no` take their method out, and
+  `PreferredAuthentications` keeps the methods it lists, in its order.
+  `KexAlgorithms`, `HostKeyAlgorithms` and `Ciphers` are read in OpenSSH's
+  forms (a list, `+`, `-`, `^`, patterns) over what the client has; the
+  host key order of SC15 then applies within what is left. `MACs` is moot:
+  every cipher the client has is AEAD.
+- **Refused:** `ProxyCommand` (not `none`), `RevokedHostKeys` and
+  `CertificateFile`, and a restriction that leaves no method, key
+  exchange, host key algorithm or cipher. `Session.run` does not connect,
+  to the host or through a jump host so set, and fails saying why and that
+  `client = "openssh"` uses OpenSSH's ssh, which acts on them.
+- **The system file**, `/etc/ssh/ssh_config` or
+  `C:/ProgramData/ssh/ssh_config`, is read after the user's, as OpenSSH
+  reads it. An `Include` in it with a relative path is looked for under
+  `~/.ssh`, where OpenSSH looks under `/etc/ssh`; Debian's is absolute.
+
+Tested: `ssh-tests client-config client-config.txt`, 21 hand-written
+cases (the `ssh-client-config` suite in `harness/units.py`, on Linux and
+Windows); the sshd cases, 78 of 78, unchanged.

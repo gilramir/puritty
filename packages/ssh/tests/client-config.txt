@@ -1,0 +1,106 @@
+# What the built-in client makes of ssh_config beyond its options
+# (docs/ssh-client.md SC31): `ssh-tests client-config client-config.txt`.
+# Each case: `case NAME host=HOST`, the config's lines after `| `, and
+# `want FIELD: VALUE` for the fields it holds (ignored, methods, kex,
+# hostkeys, ciphers, refused). Hand-written; ssh -G has no say here.
+
+case ignored-named host=h
+| Host *
+|   SendEnv LANG LC_*
+|   HashKnownHosts yes
+|   User me
+want ignored: hashknownhosts, sendenv
+want refused:
+
+case acted-on-only host=h
+| Host h
+|   HostName h.example.com
+|   Port 2222
+|   ServerAliveInterval 30
+|   MACs hmac-sha2-256
+want ignored:
+want refused:
+want methods: publickey,keyboard-interactive,password
+
+case another-host-ignored-not host=h
+| Host other
+|   ForwardAgent yes
+|   ProxyCommand nc %h %p
+want ignored:
+want refused:
+
+case password-off host=h
+| PasswordAuthentication no
+want methods: publickey,keyboard-interactive
+
+case kbd-interactive-off host=h
+| KbdInteractiveAuthentication no
+want methods: publickey,password
+
+case challenge-response-off host=h
+| ChallengeResponseAuthentication no
+want methods: publickey,password
+
+case pubkey-off host=h
+| PubkeyAuthentication no
+want methods: keyboard-interactive,password
+
+case preferred-order host=h
+| PreferredAuthentications password,publickey
+want methods: password,publickey
+
+case preferred-and-off host=h
+| PasswordAuthentication no
+| PreferredAuthentications password,publickey
+want methods: publickey
+
+case preferred-none-we-have host=h
+| PreferredAuthentications gssapi-with-mic,hostbased
+want methods:
+want refused: the authentication settings leave no method the built-in client has
+
+case ciphers-list host=h
+| Ciphers aes128-gcm@openssh.com,aes256-gcm@openssh.com
+want ciphers: aes128-gcm@openssh.com,aes256-gcm@openssh.com
+
+case ciphers-minus-pattern host=h
+| Ciphers -chacha20*
+want ciphers: aes256-gcm@openssh.com,aes128-gcm@openssh.com
+
+case ciphers-caret host=h
+| Ciphers ^aes128-gcm@openssh.com
+want ciphers: aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+
+case ciphers-plus host=h
+| Ciphers +aes256-ctr
+want ciphers: chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+
+case ciphers-none-we-have host=h
+| Ciphers aes256-ctr,aes128-cbc
+want ciphers:
+want refused: Ciphers names no cipher the built-in client has (chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com)
+
+case kex-list host=h
+| KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256
+want kex: curve25519-sha256
+want refused:
+
+case hostkeys-list host=h
+| HostKeyAlgorithms ssh-ed25519
+want hostkeys: ssh-ed25519
+
+case proxycommand-refused host=h
+| ProxyCommand nc %h %p
+want refused: ProxyCommand is set for this host, and the built-in client cannot run it
+
+case proxycommand-none host=h
+| ProxyCommand none
+want refused:
+
+case revoked-refused host=h
+| RevokedHostKeys ~/.ssh/revoked
+want refused: RevokedHostKeys is set for this host, and the built-in client does not read it
+
+case certificate-refused host=h
+| CertificateFile ~/.ssh/id_ed25519-cert.pub
+want refused: CertificateFile is set for this host, and the built-in client cannot use certificates

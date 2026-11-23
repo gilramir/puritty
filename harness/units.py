@@ -233,6 +233,23 @@ SUITES = [
         ],
     ),
     Suite(
+        # ssh-client.md SC31: what the client makes of ssh_config beyond its
+        # options, the keywords it does not act on, the authentication and
+        # algorithm restrictions honoured, and the ones it refuses
+        "ssh-client-config",
+        21,
+        [
+            Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "client-config", "client-config.txt"], cwd="packages/ssh/tests"),
+            Run(
+                "windows",
+                ["packages/ssh/tests/build.sh", "--windows"],
+                ["client-config", "client-config.txt"],
+                exe="packages/ssh/tests/ssh-tests.exe",
+                files=["packages/ssh/tests/client-config.txt"],
+            ),
+        ],
+    ),
+    Suite(
         # sftp.md FT14: Ssh.Sftp reading packets split and joined, 64-bit
         # sizes, and the streams it refuses; 9 since FT18: the shell's
         # upload paced by its queue, and cancelled while it opens; 10 since

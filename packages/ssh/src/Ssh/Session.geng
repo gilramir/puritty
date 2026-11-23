@@ -85,6 +85,14 @@ type alias Options =
     , keepaliveSeconds : Int
     , keepaliveCountMax : Int
     , pacing : Pacing
+    -- what `ssh_config` leaves the client (puritty `docs/ssh-client.md`
+    -- SC31): the authentication methods in order, the key exchanges, host
+    -- key algorithms and ciphers it offers, and why it will not connect
+    , methods : Array String
+    , kex : Array String
+    , hostKeyAlgorithms : Array String
+    , ciphers : Array String
+    , refused : Array String
     }
 
 
@@ -312,8 +320,25 @@ tell notice st =
 there are any, telling `notices` as it goes; it ends by telling `Ended`. -}
 run : Permissions -> Array Options -> Options -> Source Notice -> Source Input -> Task x {}
 run permissions jumps options notices inputs =
-    through permissions jumps options notices inputs Nothing
-        |> Task.onError (\e -> Source.emit notices (Failed (Os.Error.toString e)))
+    let
+        -- a host or jump host whose ssh_config the client would follow less
+        -- strictly than `ssh` is not connected to (SC31)
+        refused =
+            Array.mapAndFlatten .refused (jumps ++ [ options ])
+    in
+    (if Array.isEmpty refused then
+        through permissions jumps options notices inputs Nothing
+            |> Task.onError (\e -> Source.emit notices (Failed (Os.Error.toString e)))
+
+     else
+        Source.emit notices
+            (Failed
+                ("the built-in client does not connect: "
+                    ++ String.join "; " refused
+                    ++ ". OpenSSH's ssh acts on these: set client = \"openssh\" for this host to use it."
+                )
+            )
+    )
         |> Task.andThen (\_ -> Source.emit notices Ended)
 
 
@@ -453,7 +478,11 @@ session permissions options role label link notices =
                                                             Transport.defaultConfig
 
                                                         config =
-                                                            { defaults | hostKeys = KnownHosts.orderHostKeys (KnownHosts.keyTypesFor lookupName known) defaults.hostKeys }
+                                                            { defaults
+                                                                | hostKeys = KnownHosts.orderHostKeys (KnownHosts.keyTypesFor lookupName known) options.hostKeyAlgorithms
+                                                                , kex = options.kex
+                                                                , ciphers = options.ciphers
+                                                            }
 
                                                         started =
                                                             Transport.start config seed
@@ -1115,7 +1144,7 @@ beginAuth st =
             config =
                 { user = st.options.user
                 , identities = Array.map .identity st.identities
-                , methods = [ "publickey", "keyboard-interactive", "password" ]
+                , methods = st.options.methods
                 , serverSigAlgs = []
                 , passwordTries = 3
                 }
@@ -1506,10 +1535,14 @@ resolveOne permissions given =
             ]
                 |> Array.mapAndFlatten (\m -> Maybe.map (\d -> [ d ]) m |> Maybe.withDefault (meant Reason.NotSet []))
     in
-    readConfigFile permissions userFile
+    Task.map2 (\user system -> { user = user, system = system }) (readConfigFile permissions userFile) (systemConfig permissions)
         |> Task.andThen
-            (\parsed ->
-                includedFiles permissions given.home parsed.directives Dict.empty 0
+            (\both ->
+                let
+                    parsed =
+                        both.user
+                in
+                includedFiles permissions given.home (parsed.directives ++ both.system.directives) Dict.empty 0
                     |> Task.map
                         (\files ->
                             let
@@ -1526,7 +1559,10 @@ resolveOne permissions given =
                                         files
 
                                 settings =
-                                    Config.resolve { host = given.host, localUser = given.localUser, home = given.home } source (entry ++ parsed.directives) []
+                                    Config.resolve { host = given.host, localUser = given.localUser, home = given.home } source (entry ++ parsed.directives) both.system.directives
+
+                                acts =
+                                    Config.client { kex = Transport.defaultConfig.kex, hostKeys = Transport.defaultConfig.hostKeys, ciphers = Transport.defaultConfig.ciphers } settings
 
                                 one key fallback =
                                     Dict.get key settings.values |> Maybe.andThen Array.first |> Maybe.withDefault (meant Reason.NotSet fallback)
@@ -1620,12 +1656,36 @@ resolveOne permissions given =
                                 , keepaliveSeconds = Dict.get "serveraliveinterval" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 0)
                                 , keepaliveCountMax = Dict.get "serveralivecountmax" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 3)
                                 , pacing = pacing
+                                , methods = acts.methods
+                                , kex = acts.kex
+                                , hostKeyAlgorithms = acts.hostKeys
+                                , ciphers = acts.ciphers
+                                , refused = acts.refused
                                 }
                             , proxyJump = one "proxyjump" "none"
-                            , problems = parsed.problems ++ settings.problems
+                            , problems =
+                                parsed.problems
+                                    ++ both.system.problems
+                                    ++ settings.problems
+                                    ++ (if Array.isEmpty acts.ignored then
+                                            []
+
+                                        else
+                                            [ "for " ++ given.host ++ ", the built-in client does not act on " ++ String.join ", " acts.ignored ++ " (OpenSSH's ssh does: client = \"openssh\")" ]
+                                       )
                             }
                         )
             )
+
+
+{-| The system's ssh_config, after the user's as OpenSSH reads it:
+`/etc/ssh/ssh_config`, or on Windows `%ProgramData%\ssh\ssh_config`
+(`C:/ProgramData`); whichever is there. -}
+systemConfig : Permissions -> Task x { directives : Array Config.Directive, problems : Array String }
+systemConfig permissions =
+    Task.map2 (\unix windows -> { directives = unix.directives ++ windows.directives, problems = unix.problems ++ windows.problems })
+        (readConfigFile permissions "/etc/ssh/ssh_config")
+        (readConfigFile permissions "C:/ProgramData/ssh/ssh_config")
 
 
 readConfigFile : Permissions -> String -> Task x { directives : Array Config.Directive, problems : Array String }
