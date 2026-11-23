@@ -1654,6 +1654,22 @@ onVersion version =
                     in
                     Expect.equal { shown = Just "100x30", hidden = Just "100x30" } { shown = sizeOf 0, hidden = sizeOf 1 }
           }
+        , { name = "a binding of two commands sent by puritty (before 3.4) waits for both replies, so the window asked after it gets its own (review TA6, TM116)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        bound =
+                            { made | extraKeys = [ "bind-key    -T prefix       z                         display-message one \\; display-message two" ] }
+
+                        ran =
+                            prefixThen "z" (attached bound)
+                    in
+                    Expect.equal [ "  replies no question waited for: 0" ]
+                        (TmuxMode.diagnose ran.tmux |> Array.keepIf (String.startsWith "  replies no question"))
+          }
         , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
           , test =
                 \_ ->

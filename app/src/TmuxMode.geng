@@ -5966,8 +5966,18 @@ keyRouted k bytes ms s =
         -- the live screen until that answer came, a ghost behind a held
         -- `k` (TM67)
         let
+            -- a binding's command sent by puritty (before 3.4): each of its
+            -- commands answered on its one line, and a fence after one that
+            -- runs others (the code review's TA6, TM116)
+            sender =
+                if way.ran /= "" && not s.keys.byTable && modeTable == "" then
+                    sentBinding (Command.bindingLine way.ran)
+
+                else
+                    sent commands
+
             keyed =
-                sent commands
+                sender
                     { s
                         | back =
                             if inCopy s.active s then
@@ -8043,6 +8053,27 @@ waitingFor commands s =
 sent : Array String -> (taken s : State) -> { state : State, commands : Array String }
 sent commands s =
     { state = expected (Array.map (\c -> { command = c, expect = ForNothing }) commands) s, commands = commands }
+
+
+{-| A binding's commands on one line (before 3.4, TM72): a reply waited
+for for each, on the line's one number, since tmux answers each and a
+failing one ends the line (TK10), and after one that runs commands of
+its own, a fence (TM116). -}
+sentBinding : String -> (taken s : State) -> { state : State, commands : Array String }
+sentBinding line s =
+    let
+        each =
+            Syntax.commands (Syntax.tokens line)
+                |> Array.map (\words -> { command = String.join " " (Array.map .value words), expect = ForNothing })
+
+        fence =
+            if runsCommands line then
+                [ { command = Command.display fenceWord, expect = ForFence } ]
+
+            else
+                []
+    in
+    { state = expected fence (expectedLine each s), commands = [ line ] ++ Array.map .command fence }
 
 
 {-| What a key sends the active pane's program, by that pane's modes

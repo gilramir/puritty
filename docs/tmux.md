@@ -4456,3 +4456,26 @@ Test: "a resize sizes the panes of windows not shown too", on each tmux:
 a second window added, puritty's window made 100 by 31. Before, its pane
 had no terminal after the resize (one made later by its output is made
 80 by 24); now 100 by 30, as the shown pane.
+
+
+## TM116 · A binding's commands each waited for, before 3.4 (2026-11-23)
+
+The code review's TA6. Before tmux 3.4 puritty sends a binding's command
+itself (TM72), as one line with ` ; ` between its commands
+(`Command.bindingLine`), and waited for one reply; tmux answers each
+command (TK10.1). The window asked right after the binding was answered
+by the second command's block and its own reply came when nothing waited
+for it, and every question asked during the burst was answered by the
+wrong block until the queue emptied. `source-file` in a binding had no
+fence either.
+
+Now `sentBinding` waits for a reply for each of the line's commands, on
+the line's one number (a failing one ends the line, TK10), and sends a
+fence after a line that runs commands of its own (`runsCommands`), as a
+typed line has.
+
+Test: "a binding of two commands sent by puritty (before 3.4) waits for
+both replies", on each tmux, with `prefix z` bound to `display-message
+one \; display-message two` (the fake tmux takes bindings a test adds,
+`extraKeys`). Before, on 2.7, 3.0 and 3.2a, one reply came that no
+question waited for; now none. From 3.4 tmux runs the binding, as before.

@@ -75,6 +75,7 @@ read as the answer to the question before it, until the next attach.
 - What: `[ Command.bindingLine way.ran ]` is one string with ` ; ` between the binding's commands, and `sent` adds one `ForNothing` for it. tmux answers each command (TK10.1). `runsCommands` is not consulted on this path, so `source-file`'s commands, each a block of this client's from 3.2, are not fenced either.
 - Scenario: `bind r source-file ~/.tmux.conf \; display "reloaded"` on 3.2a or 3.3a (Ubuntu 22.04, Debian 12, RHEL 9): one expectation, then the file's commands' blocks and two more. The `windowQuery` sent right after (5577) is answered by the second block and its own reply dropped, and anything asked while the burst is being read is answered by the wrong block. A two-command binding on 2.7 to 3.3a loses the `windowQuery` every time.
 - Fix: send a binding's commands as `Syntax.lines` does for a typed line, one expectation each on one line number (`askLine`'s shape), and fence it when `runsCommands` says so.
+- Fixed: 2026-11-23, `docs/tmux.md` TM116. `sentBinding`: a reply waited for each of the binding's commands on its one line, and a fence after one that runs commands. Test: a two-command binding: before, on 2.7, 3.0 and 3.2a one reply came that no question waited for.
 
 ### TA7 · A pane that closes while it holds the pointer leaves `grab` set: clicks, selection and tabs stop working
 - Where: app/src/TmuxMode.geng:7932-7938 (`target`), 8043-8045, 7925 (`tabHit` needs `grab == Nothing`), 8067, 8892 (where it is set)
