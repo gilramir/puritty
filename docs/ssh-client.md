@@ -1692,3 +1692,26 @@ has `driver-accept-new-hashed`, where under `accept-new` with
 `[127.0.0.1]:PORT`, and a second connection under
 `StrictHostKeyChecking yes` finds it ("the host's ssh-ed25519 key is the
 one known"). 79 of 79 sshd cases pass; no other pin moved.
+
+
+## SC32 · `HostKeyAlias` is looked up bare, whatever the port (2026-11-23)
+
+The code review's SC5. `KnownHosts.lookupName` brackets a name with a
+port other than 22 (`[name]:port`), and both places that name a host's
+key in `known_hosts` passed it `HostKeyAlias` when one was set. OpenSSH
+uses the alias as it is.
+
+**Measured** (OpenSSH 9.6p1 against the test sshd on its own port, with
+`HostKeyAlias=box` and `StrictHostKeyChecking=yes`): a `known_hosts` of
+`box KEY` logs in; one of `[box]:PORT KEY` fails, "Host key verification
+failed". So with an alias on a port not 22, puritty took a key OpenSSH
+wrote as unknown: refused under `yes`, the first-contact question under
+`ask` where a changed key's was due, and taken with no question under
+`accept-new`.
+
+Now `Session.knownName` is the alias as it is when one is set, and the
+bracketed host otherwise, for the lookup and for the line written.
+Tested: `sshd.py`'s `driver-alias-known` (the alias `box`, its key under
+`box`, `StrictHostKeyChecking yes`): before, "not known, and
+StrictHostKeyChecking is yes"; now "the one known" and logged in. 80 of
+80 sshd cases pass, no other pin moved.

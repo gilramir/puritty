@@ -131,6 +131,9 @@ SESSION_DRIVER_CASES = [
     # accept-new, as ask asks; taken under no, checking turned off
     ("driver-accept-new-other-type", "other-type", ["--identity", "{ed}", "--strict", "accept-new"]),
     ("driver-no-other-type", "other-type", ["--identity", "{ed}", "--strict", "no"]),
+    # HostKeyAlias on the server's port, not 22: the key under the bare
+    # alias, as OpenSSH writes and finds it (SC5, docs/ssh-client.md SC32)
+    ("driver-alias-known", "alias", ["--identity", "{ed}", "--strict", "yes", "--host-key-alias", "box"]),
     # HashKnownHosts (SC31): the key written under a hashed name, which a
     # second connection under StrictHostKeyChecking yes then finds
     ("driver-accept-new-hashed", "empty", ["--identity", "{ed}", "--strict", "accept-new", "--hash-known-hosts"]),
@@ -333,6 +336,8 @@ def main():
         ecdsa_pub = " ".join((WORK / "keys" / "ssh_host_ecdsa_key.pub").read_text().split()[:2])
         if start == "other-type":
             kh.write_text(f"{names} {ecdsa_pub}\n")
+        elif start == "alias":
+            kh.write_text(f"box {' '.join(server_pub)}\n")
         else:
             kh.write_text("" if start == "empty" else f"{names} {' '.join(server_pub) if start == 'known' else other_pub}\n")
         try:

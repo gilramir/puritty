@@ -461,7 +461,7 @@ session : Permissions -> Options -> Role -> String -> Link -> Source Notice -> T
 session permissions options role label link notices =
     let
         lookupName =
-            KnownHosts.lookupName { host = Maybe.withDefault (meant Reason.NotSet options.host) options.hostKeyAlias, port = options.port }
+            knownName options
     in
     readKnownHosts permissions options
         |> Task.andThen
@@ -966,11 +966,26 @@ onEvent event st =
 -- THE HOST'S KEY
 
 
+{-| The name a host's key is looked up and written under in `known_hosts`:
+`HostKeyAlias` as it is, whatever the port, as OpenSSH has it (measured,
+OpenSSH 9.6p1: with `HostKeyAlias box` on port 2222 a `box` line is found
+and a `[box]:2222` line is not; the code review's SC5, puritty
+`docs/ssh-client.md` SC32); else the host, bracketed with a port not 22. -}
+knownName : Options -> String
+knownName options =
+    when options.hostKeyAlias is
+        Just alias ->
+            alias
+
+        Nothing ->
+            meant Reason.NotSet KnownHosts.lookupName { host = options.host, port = options.port }
+
+
 hostKey : { algorithm : String, key : Bytes } -> State -> Task Os.Error.Error State
 hostKey shown st =
     let
         name =
-            KnownHosts.lookupName { host = Maybe.withDefault (meant Reason.NotSet st.options.host) st.options.hostKeyAlias, port = st.options.port }
+            knownName st.options
 
         printed =
             fingerprint shown.key

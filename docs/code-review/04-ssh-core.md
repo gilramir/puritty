@@ -55,6 +55,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: both call sites pass `host = hostKeyAlias or host` and the port to `lookupName`, which brackets any name when the port is not 22. OpenSSH's `get_hostfile_hostname_ipaddr` (sshconnect.c) uses `options.host_key_alias` as it is, with no port, and only otherwise `put_host_port(hostname, port)`. From memory of the source; `ssh-keygen -F` on a file OpenSSH wrote would settle it.
 - Scenario: `Host box` / `HostKeyAlias box` / `Port 2222`, key stored by OpenSSH as `box ...`. puritty looks for `[box]:2222`, finds nothing, and reports the key as unknown. If the host's key has in fact changed, the user gets the first-contact question instead of the changed-key dialog, and with `StrictHostKeyChecking accept-new` or `no` the new key is taken and written with no question at all.
 - Fix: when the name comes from `HostKeyAlias`, look it up and write it unbracketed whatever the port. Add a case to `make-known-hosts.py`.
+- Fixed: 2026-11-23, `docs/ssh-client.md` SC32. Measured: OpenSSH 9.6p1 finds `box KEY` and not `[box]:PORT KEY` with `HostKeyAlias box`. `Session.knownName` uses the alias bare. Test: `sshd.py` `driver-alias-known`: before, refused as not known under StrictHostKeyChecking yes.
 
 ### SC6 · With `accept-new` or `no`, a key of a type the host is not known by is taken silently even when the host is known by another type
 - Where: packages/ssh/src/Ssh/KnownHosts.geng:251-255 (`check`); packages/ssh/src/Ssh/Session.geng:947-957
