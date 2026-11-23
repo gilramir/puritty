@@ -8,6 +8,7 @@ module Schema exposing
     , Value(..)
     , choiceLabel
     , decode
+    , defaultsFor
     , deleteHost
     , example
     , find
@@ -386,7 +387,36 @@ settings =
             \v c ->
                 when v is
                     Text t ->
-                        { c | scheme = t }
+                        -- the colors the old scheme gave, the new one's;
+                        -- one the file sets wins over either (PS4)
+                        let
+                            was =
+                                defaultsFor c
+
+                            now =
+                                defaultsFor { c | scheme = t }
+                        in
+                        { c
+                            | scheme = t
+                            , foreground =
+                                if c.foreground == was.foreground then
+                                    now.foreground
+
+                                else
+                                    c.foreground
+                            , background =
+                                if c.background == was.background then
+                                    now.background
+
+                                else
+                                    c.background
+                            , palette =
+                                if c.palette == was.palette then
+                                    now.palette
+
+                                else
+                                    c.palette
+                        }
 
                     _ ->
                         c
@@ -1915,7 +1945,7 @@ writeHost h doc =
         config =
             { defaults | hosts = [ h ] }
     in
-    Array.foldl (\f d -> write f (f.get config) d) doc (hostFields h.name)
+    Array.foldl (\f d -> write config f (f.get config) d) doc (hostFields h.name)
 
 
 {-| A host taken out of the file: its table and the tables under it. -}
@@ -2130,16 +2160,33 @@ words text =
 -- WRITING
 
 
+{-| What each setting is when the file leaves it out, the rest of the file
+being `config`: puritty's, but the three colors are the color scheme's
+(ST29, the code review's PS4). -}
+defaultsFor : Config -> Config
+defaultsFor config =
+    if config.scheme == Config.defaults.scheme then
+        -- puritty's own: its palette the built-in one, not listed
+        Config.defaults
+
+    else
+        let
+            schemed =
+                Palettes.apply config.scheme Config.defaults
+        in
+        { schemed | scheme = Config.defaults.scheme }
+
+
 {-| A setting written into the file (`docs/settings.md` ST6): set when it
 differs from its default, which `Toml.Edit.set` does in place, keeping the
 file's comments and layout, and leaving a value the file already means as
-the file writes it; taken out when it is the default (or unset), so the
+the file writes it; taken out when it is the default given the rest of `config` (`defaultsFor`), or unset, so the
 file holds only what differs, and its table with it when nothing is left
 under it and it has no comment of its own, which would go with it. Nothing
 else in the file changes. -}
-write : Setting -> Value -> Toml.Document -> Toml.Document
-write s v doc =
-    if v == s.get Config.defaults then
+write : Config -> Setting -> Value -> Toml.Document -> Toml.Document
+write config s v doc =
+    if v == s.get (defaultsFor config) then
         let
             removed =
                 Toml.Edit.remove s.key doc

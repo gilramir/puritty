@@ -826,7 +826,7 @@ written text changes =
                 (\c d ->
                     when Schema.find c.key is
                         Just s ->
-                            Schema.write s c.value d
+                            Schema.write (decoded text) s c.value d
 
                         Nothing ->
                             d
@@ -860,7 +860,7 @@ writtenHost text changes =
                 Just name ->
                     when Array.findFirst (\f -> f.key == c.key) (Schema.hostFields name) is
                         Just found ->
-                            edited t (Schema.write found.value c.value)
+                            edited t (Schema.write (decoded t) found.value c.value)
 
                         Nothing ->
                             t
@@ -922,7 +922,30 @@ another s =
 writing : U.Suite
 writing =
     run "Writing"
-        [ { name = "a setting written as it is changes no byte"
+        [ { name = "with a color scheme, a color equal to puritty's own is written, and the scheme's own is its default (review PS4)"
+          , test =
+                \_ ->
+                    let
+                        schemed =
+                            "[colors]\nscheme = \"solarized-dark\"\n"
+
+                        config =
+                            decoded schemed
+
+                        background =
+                            Schema.find [ "colors", "background" ] |> Maybe.map (\b -> SettingsWindow.changed config b)
+
+                        chosen =
+                            Schema.find [ "colors", "scheme" ] |> Maybe.map (\sc -> (sc.set (Schema.Text "solarized-dark") Config.defaults).background)
+                    in
+                    Expect.equal
+                        { file = 0x1D1F21, backgroundChanged = Just False, chosen = Just 0x002B36 }
+                        { file = decoded (written schemed [ { key = [ "colors", "background" ], value = Schema.Color 0x1D1F21 } ]) |> .background
+                        , backgroundChanged = background
+                        , chosen = chosen
+                        }
+          }
+        , { name = "a setting written as it is changes no byte"
           , test = \_ -> Expect.equal sample (written sample [ { key = [ "window", "columns" ], value = Schema.Whole 100 } ])
           }
         , { name = "a value the file writes another way is kept as it writes it"

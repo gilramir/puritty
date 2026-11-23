@@ -184,8 +184,9 @@ SUITES = [
         # 532 since TA8: a closed pane forgotten, on each tmux; 538 since
         # TB7: a version that is not one estimated, on each tmux; 540
         # since MB6: a hidden tab's OSC 52 requests bounded; 541 since PS5:
-        # the header's clicks not a row's
-        541,
+        # the header's clicks not a row's; 542 since PS4: a scheme's colors
+        # as the default
+        542,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

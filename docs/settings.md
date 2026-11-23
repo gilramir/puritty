@@ -1179,3 +1179,28 @@ this change, from two earlier ones:
   agree, and leaves the bottom 30 rows out.
 
 With these, hosts passes 13 of 13 and settings 20 of 20.
+
+
+## ST38 · With a color scheme, its colors are the default (2026-11-23)
+
+The code review's PS4. ST29's reader takes a missing `foreground`,
+`background` or `palette` from the color scheme, but the writer and the
+settings window took a setting's default to be `Config.defaults`'s. With
+`scheme = "solarized-dark"`, setting Background to `#1d1f21` (puritty's)
+wrote nothing, since it was "the default", and the terminals kept
+Solarized's; the three color rows showed as modified, with a reset mark
+that set the model to puritty's colors and wrote nothing; and choosing a
+scheme in the list changed the model's scheme alone, its rows showing
+the old colors until the file came back.
+
+Now `Schema.defaultsFor config` is a setting's default given the rest of
+the file: puritty's, with the three colors the scheme's when one other
+than puritty's own is set. `Schema.write`, the window's "modified" (its
+mark, its count and Modified only) and its reset use it. The scheme's
+setter brings each color still at the old scheme's to the new one's, and
+leaves one the file sets.
+
+Test (the app's Writing suite): with Solarized Dark, `#1d1f21` written is
+in the file (before, the file read back Solarized's `#002b36`); its
+background row is not modified (before, it was); and choosing the scheme
+makes the model's background `#002b36` (before, `#1d1f21`).
