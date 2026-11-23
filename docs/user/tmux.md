@@ -38,6 +38,19 @@ host = "build.example.com"
 command = "tmux -CC new -A -s main"
 ```
 
+Control mode starts at once when the tab started it: you typed a line
+beginning `tmux -CC`, or the tab's command is one. Otherwise (a line
+brought back from the shell's history, a script that runs `tmux -CC`, or
+output that only looks like tmux) puritty asks **Start tmux control
+mode?** first: Enter starts it, Esc shows the output as text. A program
+or a file shown in the tab could otherwise take the tab over as tmux
+would. If you would rather never be asked:
+
+```toml
+[tmux]
+start = "always"
+```
+
 ![puritty on Windows 11 with three colored tabs, the first connected to Linux with puritty's own ssh client and attached to tmux 3.8 by tmux -CC: git history in the left pane, two Chinese poems and a table in the right one, and Thai in a floating pane over them](../images/tmux-on-windows.png)
 
 *On Windows 11, connected to Linux with puritty's own ssh client, running

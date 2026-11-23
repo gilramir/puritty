@@ -4371,3 +4371,21 @@ Test: "a version that is not one is taken as the oldest tmux with what
 this one takes", on each tmux: its recorded `list-commands` and
 `openbsd-7.6` give 3.8, 3.6, 3.4, 3.2, 3.0 and 2.7 in turn, as its own
 version does; before, 0 on all six. The app's 538 tests pass.
+
+
+## TM112 · `[tmux] start = "always"` (2026-11-23)
+
+Gilbert, 2026-11-23: TM108's question needs a setting, and he will set it
+to start without asking. `[tmux] start` is `"ask"` (the default, TM108)
+or `"always"`, on the Window page, applied at once. With `"always"`,
+`TmuxMode.setStart True` makes `readHere` mark the reader's entry as
+expected before each read (`Control.expect True`), so every `ESC P 1000
+p` enters control mode at once, a second after a first has ended too; a
+question already up when the setting changes stays until answered. The
+user guide (`docs/user/tmux.md`) says when puritty asks and how to turn
+it off; it had not said so since TM108.
+
+Test: "with [tmux] start = "always", control mode starts at once, never
+asked, and again after it ends", on each tmux: the same commands as an
+expected entry, and none asked; with the flag ignored (as before) it was
+asked both times. The app's 548 tests pass.

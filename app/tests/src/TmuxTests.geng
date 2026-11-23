@@ -1691,6 +1691,38 @@ onVersion version =
                         , refused = { asked = TmuxMode.entryAsked refused.state, on = TmuxMode.isOn refused.state, outside = refused.outside }
                         }
           }
+        , { name = "with [tmux] start = \"always\", control mode starts at once, never asked, and again after it ends (TM112)"
+          , test =
+                \_ ->
+                    let
+                        always _ =
+                            TmuxMode.setStart True (TmuxMode.idle {})
+
+                        first =
+                            TmuxMode.read { cols = 80, rows = 25 } FakeTmux.startBytes (always {})
+
+                        -- read again, since `first` is looked at below
+                        second =
+                            TmuxMode.read { cols = 80, rows = 25 } FakeTmux.startBytes (always {})
+
+                        expected =
+                            TmuxMode.read { cols = 80, rows = 25 } FakeTmux.startBytes (TmuxMode.expectEntry True (TmuxMode.idle {}))
+
+                        -- control mode ended, then entered again unasked
+                        again =
+                            TmuxMode.read { cols = 80, rows = 25 } (Bytes.fromString "%exit\u{000D}\n\u{001B}\\") second.state
+                                |> .state
+                                |> TmuxMode.read { cols = 80, rows = 25 } FakeTmux.startBytes
+                    in
+                    Expect.equal
+                        { on = True, asked = False, commands = expected.commands, againOn = True, againAsked = False }
+                        { on = TmuxMode.isOn first.state
+                        , asked = TmuxMode.entryAsked first.state
+                        , commands = first.commands
+                        , againOn = TmuxMode.isOn again.state
+                        , againAsked = TmuxMode.entryAsked again.state
+                        }
+          }
         , { name = "control mode asked about and answered yes starts as one expected does (TM108)"
           , test =
                 \_ ->

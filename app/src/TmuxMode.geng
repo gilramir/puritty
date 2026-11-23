@@ -40,6 +40,7 @@ module TmuxMode exposing
     , setCell
     , setEmbedder
     , setLook
+    , setStart
     , startsTmux
     , tabKey
     , tick
@@ -196,6 +197,9 @@ type alias State =
     , history : Dict String (Array String)
     , tmuxHistory : Dict String (Array String)
     , lookTmux : Bool
+    -- every `tmux -CC` entered at once, never asked about (`[tmux] start
+    -- = "always"`, TM112)
+    , startAlways : Bool
     -- what a binding or a command printed, shown in a view that takes
     -- the keys until it is closed (TM26)
     , view : Maybe View
@@ -856,6 +860,7 @@ idle _ =
     , history = Dict.empty
     , tmuxHistory = Dict.empty
     , lookTmux = False
+    , startAlways = False
     , view = Nothing
     , menu = Nothing
     , serial = 0
@@ -1045,7 +1050,16 @@ read size bytes s =
 {-| `read`'s bytes, before a prompt they opened asks its history. -}
 readHere : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String, view : Maybe String }
 readHere size bytes s =
-    readEvents size (Control.feed bytes s.reader) s
+    let
+        -- `[tmux] start = "always"`: any entry is expected (TM112)
+        reader =
+            if s.startAlways && not (Control.isAsking s.reader) then
+                Control.expect True s.reader
+
+            else
+                s.reader
+    in
+    readEvents size (Control.feed bytes reader) s
 
 
 {-| Whether the next `ESC P 1000 p` is expected: the tab's user has just
@@ -2119,6 +2133,13 @@ typeIntoPrompt text s =
             meant Reason.NotOpen s
 
 
+{-| Every `tmux -CC` entered at once (`True`, `[tmux] start = "always"`),
+or one the tab did not start asked about (TM108, TM112). -}
+setStart : Bool -> (taken s : State) -> State
+setStart always s =
+    { s | startAlways = always }
+
+
 {-| tmux's prompts and messages in tmux's look (`True`) or puritty's. -}
 setLook : Bool -> (taken s : State) -> State
 setLook tmuxLook s =
@@ -2639,6 +2660,7 @@ event size e acc =
                         { fresh
                             | reader = st.reader
                             , lookTmux = st.lookTmux
+                            , startAlways = st.startAlways
                             , barTopConfig = st.barTopConfig
                             , lightBackground = st.lightBackground
                             , history = st.history
