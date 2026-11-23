@@ -112,6 +112,7 @@ Two facts used throughout, both checked:
 - Scenario 1: rename `web1` to `web2` (done with `renameTable`, which keeps everything), then Ctrl+Z: the effects are `PutHost web1` and `DeleteHost web2`, so `[hosts.web2]` goes with its `bookmarks = [...]` (the folder picker's, FT33), its comments and its sub-tables' comments, and a bare `[hosts.web1]` is written. Remove a host and undo: the same loss. The user guide says the window "keeps your comments".
 - Scenario 2: remove host A in the window; add host B to the file by hand (or let another window save one of PuTTY's sessions); Ctrl+Z: B is not in the snapshot, so `DeleteHost B` runs.
 - Fix: undo a rename with `RenameHost` back; keep, for a removal, the removed table's text (or its document nodes) and put that back; compute deletions against the hosts as they were *after* the undone action, not against whatever the file holds now; carry `bookmarks` in `writeHost`.
+- Fixed: 2026-11-23, `docs/settings-gui.md` SG24. The undo entry keeps what the change did; Ctrl+Z renames back, puts back or takes out only what it touched; `writeHost` writes `bookmarks`. Left: comments inside a removed host's table are not put back. Test: rename and Ctrl+Z, and bookmarks written: before, put/delete and bookmarks lost.
 
 ### PS11 · After the keyboard moves the highlight down, the wheel does nothing
 - Where: app/src/Picker.geng:2130-2139 (the frame moves `top` to show the highlight but only in its own copy), 1688-1697 (the wheel adds to the model's `top`), 825-833 (`shownRow` only ever scrolls up)

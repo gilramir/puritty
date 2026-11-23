@@ -811,3 +811,29 @@ Test (the app's SettingsWindow suite): with Fira Code set, Font size
 typed to 114, then Ctrl+M and Ctrl+Z. Before, the typing went on into
 the row now first and Ctrl+Z undid nothing (`font.size = 114` alone);
 now Ctrl+Z writes `font.size = 11` back.
+
+
+## SG24 · Undoing a change to the hosts undoes that change only (2026-11-23)
+
+The code review's PS10. Ctrl+Z after a change to the hosts put back each
+host of the snapshot that was not in the hosts now (`PutHost`, the
+window's fields) and deleted every host now the snapshot did not name.
+A rename, done with `renameTable`, which keeps the table whole, was
+undone as a new bare table under the old name and the renamed one
+deleted, its `bookmarks` (FT33), comments and sub-tables gone; and a host
+added to the file by hand, or by another window, after the change was
+deleted by its undo.
+
+Now the undo entry keeps what the change did (`HostsWere { hosts, did
+}`) and Ctrl+Z undoes only that: a rename is renamed back (the table
+kept), a host the change wrote is put back as it was or taken out if the
+change made it, a host it took out is put back; nothing else is touched.
+`Schema.writeHost` writes a host's `bookmarks` too, which no field of the
+window shows.
+
+Left: a host removed and put back by Ctrl+Z is written from its fields,
+so comments inside its table are not kept.
+
+Test (the app's SettingsWindow suite): a host renamed and Ctrl+Z. Before,
+`put build-box` and `delete box2`; now `rename box2 to build-box`. And a
+host with bookmarks written whole keeps them; before, they were lost.

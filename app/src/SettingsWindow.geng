@@ -137,7 +137,9 @@ type alias Model =
 before one was added, removed or renamed. -}
 type Undo
     = Was { setting : Setting, value : Value }
-    | HostsWere (Array Config.Host)
+    -- the hosts before a change, and what the change did to the file, which
+    -- Ctrl+Z undoes and nothing else (the code review's PS10, SG24)
+    | HostsWere { hosts : Array Config.Host, did : Array Effect }
 
 
 {-| What the window is told. `Key`'s `sym` is X's keysym, as both
@@ -640,7 +642,7 @@ hostsChanged hosts effects message m =
         config =
             m.config
     in
-    { model = keepInView { m | config = { config | hosts = hosts }, undo = Array.pushLast (HostsWere config.hosts) m.undo, message = Just message }
+    { model = keepInView { m | config = { config | hosts = hosts }, undo = Array.pushLast (HostsWere { hosts = config.hosts, did = effects }) m.undo, message = Just message }
     , effects = effects
     }
 
@@ -1437,32 +1439,46 @@ undo m =
                     , effects = [ Write { setting = w.setting, value = w.value } ]
                     }
 
-                HostsWere before ->
+                HostsWere was ->
                     let
-                        now =
-                            m.config.hosts
+                        before =
+                            was.hosts
 
-                        -- each host as it was written back, and each host
-                        -- added since taken out
+                        hostWas name =
+                            Array.findFirst (\b -> b.name == name) before |> Maybe.map .value
+
+                        -- what the change did, undone and nothing more: a
+                        -- rename renamed back, its table kept whole; a host
+                        -- it put back as it was, or taken out if it made it;
+                        -- one it took out put back; a host added since by
+                        -- another hand is left alone
                         effects =
-                            Array.mapAndKeepJust
-                                (\h ->
-                                    if Array.member h now then
-                                        Nothing
+                            was.did
+                                |> Array.mapAndFlatten
+                                    (\e ->
+                                        when e is
+                                            RenameHost r ->
+                                                [ RenameHost { from = r.to, to = r.from } ]
 
-                                    else
-                                        Just (PutHost h)
-                                )
-                                before
-                                ++ Array.mapAndKeepJust
-                                    (\h ->
-                                        if Array.any (\b -> b.name == h.name) before then
-                                            Nothing
+                                            PutHost h ->
+                                                when hostWas h.name is
+                                                    Just b ->
+                                                        [ PutHost b ]
 
-                                        else
-                                            Just (DeleteHost h.name)
+                                                    Nothing ->
+                                                        meant Reason.NotSet [ DeleteHost h.name ]
+
+                                            DeleteHost name ->
+                                                when hostWas name is
+                                                    Just b ->
+                                                        [ PutHost b ]
+
+                                                    Nothing ->
+                                                        meant Reason.NotSet []
+
+                                            _ ->
+                                                []
                                     )
-                                    now
 
                         config =
                             m.config

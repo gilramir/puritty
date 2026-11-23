@@ -191,8 +191,9 @@ SUITES = [
         # TA13: a hidden window's panes sized, on each tmux; 567 since PS3:
         # what is typed stays its setting's; 573 since TA6: a binding's
         # commands each waited for, on each tmux; 579 since TB2: Shift+PgUp
-        # in copy mode is tmux's, on each tmux
-        579,
+        # in copy mode is tmux's, on each tmux; 580 since PS10: a host's
+        # change undone alone
+        580,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

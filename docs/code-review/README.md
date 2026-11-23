@@ -352,7 +352,7 @@ covered" sections. The larger gaps:
 | [PS7](13-app-picker-settings.md) | bug | confirmed | The picker sorts and filters names as lossy UTF-8, not in the host's character set |
 | [PS8](13-app-picker-settings.md) | speed | confirmed | `middle` cuts a long label one character at a time, measuring the whole string each time |
 | [PS9](13-app-picker-settings.md) | speed | confirmed | Each part of a listing re-sorts everything received so far |
-| [PS10](13-app-picker-settings.md) | bug | confirmed | Undo of a host removed or renamed rewrites its table: bookmarks, comments and unknown keys are lost, and hosts added since are deleted |
+| [PS10](13-app-picker-settings.md) | bug | confirmed | **fixed** Undo of a host removed or renamed rewrites its table: bookmarks, comments and unknown keys are lost, and hosts added since are deleted |
 | [PS11](13-app-picker-settings.md) | bug | confirmed | **fixed** After the keyboard moves the highlight down, the wheel does nothing |
 | [PS12](13-app-picker-settings.md) | bug | plausible | Writing `config.toml`: one fixed temporary name, no lock, a symlink replaced, the mode not kept |
 | [PS13](13-app-picker-settings.md) | design | confirmed | The one-line text field exists five times and they have drifted: an invisible selection, a cut that loses text, no paste |

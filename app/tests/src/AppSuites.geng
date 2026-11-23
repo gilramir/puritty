@@ -1772,6 +1772,22 @@ window =
         , { name = "a host is removed by Delete in the list, and Ctrl+Z puts it back"
           , test = \_ -> Expect.equal [ "delete build-box", "put build-box" ] (onHostsPage False [ k.down, k.down, k.down, k.delete, ctrl 'z' ]).said
           }
+        , { name = "a host renamed is renamed back by Ctrl+Z, its table kept, and a host written keeps its bookmarks (review PS10)"
+          , test =
+                \_ ->
+                    let
+                        host =
+                            Config.host "web" "web.example.com"
+
+                        file =
+                            edited "" (Schema.writeHost { host | bookmarks = [ "/srv/www", "/var/log" ] })
+                    in
+                    Expect.equal
+                        { said = [ "rename build-box to box2", "rename box2 to build-box" ], bookmarks = [ "/srv/www", "/var/log" ] }
+                        { said = (onHostsPage False ([ k.down, k.down, k.down, press 0xFF53, k.up, k.enter ] ++ Array.repeat 9 k.backspace ++ typeIn "box2" ++ [ k.enter, ctrl 'z' ])).said
+                        , bookmarks = (decoded file).hosts |> Array.first |> Maybe.map .bookmarks |> Maybe.withDefault []
+                        }
+          }
         , { name = "a host is renamed from its form's first row"
           , test =
                 \_ ->
