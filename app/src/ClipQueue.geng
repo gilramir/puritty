@@ -1,0 +1,57 @@
+module ClipQueue exposing (queued)
+
+{-| A tab's OSC 52 requests waiting to be made (`docs/phase3-select.md`
+§16, the code review's MB6): they are made while the tab is shown, so a
+tab not shown keeps them, and a program there could write the clipboard
+in a loop, each write up to 6 MB of text. Only what can still matter is
+kept: one read, a second asking what the first does; the writes before
+it that it answers; and after it the last write to each of the two
+selections, a later one standing for every one before it, as the
+clipboard would have ended so. At most five.
+
+@docs queued
+
+-}
+
+import Vt
+
+
+{-| `waiting` with `new` added in order, at most one write to PRIMARY, one
+to the clipboard and one read kept. -}
+queued : Array Vt.Clip -> Array Vt.Clip -> Array Vt.Clip
+queued waiting new =
+    Array.foldl add waiting new
+
+
+add : Vt.Clip -> Array Vt.Clip -> Array Vt.Clip
+add clip waiting =
+    let
+        primary c =
+            c.selection == 0
+
+        -- from the end: a write to the same selection after the read
+        -- waiting goes, and from the read back everything stays, since
+        -- the read answers what was written before it
+        kept =
+            Array.foldr
+                (\c acc ->
+                    if acc.read || c.text == Nothing then
+                        { read = True, clips = Array.pushFirst c acc.clips }
+
+                    else if primary c == primary clip then
+                        acc
+
+                    else
+                        { read = False, clips = Array.pushFirst c acc.clips }
+                )
+                { read = False, clips = [] }
+                waiting
+    in
+    if clip.text /= Nothing then
+        Array.pushLast clip kept.clips
+
+    else if Array.any (\c -> c.text == Nothing) waiting then
+        waiting
+
+    else
+        Array.pushLast clip waiting

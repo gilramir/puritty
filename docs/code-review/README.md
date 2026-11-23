@@ -322,7 +322,7 @@ covered" sections. The larger gaps:
 | [MB3](10-app-main-b.md) | bug | confirmed | A paste's later pieces, a pasted picture and an OSC 52 read go to whichever tab is shown when they arrive |
 | [MB4](10-app-main-b.md) | bug | confirmed | Text the input method commits skips the search bar, the folder picker and the questions, and is sent to the program |
 | [MB5](10-app-main-b.md) | speed | confirmed | Every read of a tab not shown forces an unpaced frame of the shown tab |
-| [MB6](10-app-main-b.md) | security | confirmed | OSC 52 writes of a tab not shown queue without bound, and are applied when it is next shown |
+| [MB6](10-app-main-b.md) | security | confirmed | **fixed** OSC 52 writes of a tab not shown queue without bound, and are applied when it is next shown |
 | [MB19](10-app-main-b.md) | design | confirmed | The dialogs are listed in six places, and four groups of this half are modules in waiting |
 | [TA4](11-tmuxmode-a.md) | bug | confirmed | **fixed** After the active pane or window changes, named keys go to the old pane and text to the new one |
 | [TA5](11-tmuxmode-a.md) | bug | confirmed | **fixed** A change in the status line's row count sends a resize that nothing waits for |

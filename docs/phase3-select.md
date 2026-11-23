@@ -1154,3 +1154,24 @@ scrollback (about 11 s), 255 ms in all. A Ctrl+click on a link reads its
 row's whole page (`Vt.linkAt`): 1.7 ms a click natively, measured and
 left. **Left:** the search still runs within one turn of the loop; at the
 setting's most, 10,000,000 lines, one miss is some 27 s at this rate.
+
+
+## 24. A hidden tab's OSC 52 requests are bounded (2026-11-23)
+
+The code review's MB6. §16's requests are made by the window's loop for
+the shown tab only, so a tab not shown kept each one, appended to its
+list, until it was shown: a program there writing the clipboard in a loop
+(each write up to 8 MB of base64, §16) grew it without bound, and showing
+the tab at last made every write in turn.
+
+Now `ClipQueue.queued` keeps only what can still matter: one read (a
+second asks what the first does), the writes before it, which it answers,
+and after it the last write to PRIMARY and the last to the clipboard,
+which is how the clipboard would have ended. At most five wait. A tab
+shown makes them as before; a background tab is still not able to write
+the clipboard until shown.
+
+Tested (the app's `clipboard` suite): a thousand writes alternating
+between the selections and two reads keep the read, then `999` to the
+clipboard and `1000` to PRIMARY; with the old append all 1,002 were kept.
+A write after a read stays after it, and one before stays for the read.

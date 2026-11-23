@@ -182,8 +182,9 @@ SUITES = [
         # since ST3: a remembered password given alone to the known key
         # only; 526 since TA4: keys typed behind a binding, on each tmux;
         # 532 since TA8: a closed pane forgotten, on each tmux; 538 since
-        # TB7: a version that is not one estimated, on each tmux
-        538,
+        # TB7: a version that is not one estimated, on each tmux; 540
+        # since MB6: a hidden tab's OSC 52 requests bounded
+        540,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

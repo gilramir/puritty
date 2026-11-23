@@ -11,6 +11,7 @@ in that build, so a test of a platform's default reads it from there.
 
 import Bytes
 import Chord
+import ClipQueue
 import Clock
 import Config
 import Diag
@@ -47,7 +48,42 @@ import Words
 (`native/`'s `NativeTests`). -}
 suites : Array U.Suite
 suites =
-    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, remembered, tabOrder, clock, drops, TmuxTests.tmuxMode, Explorer.explorer, PickerTests.picker ]
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, remembered, tabOrder, clock, drops, clips, TmuxTests.tmuxMode, Explorer.explorer, PickerTests.picker ]
+
+
+{-| A tab's OSC 52 requests waiting while it is not shown (the code
+review's MB6): a thousand writes keep one a selection, and reads one. -}
+clips : U.Suite
+clips =
+    let
+        write selection text =
+            { selection = selection, text = Just (Bytes.fromString text), letter = 99, bel = False }
+
+        read =
+            { selection = 1, text = Nothing, letter = 99, bel = False }
+
+        many =
+            Array.range 1 1000 |> Array.map (\i -> write (modBy 2 i) (String.fromInt i))
+
+        shown q =
+            Array.map (\c -> { selection = c.selection, text = Maybe.map Bytes.toStringLossy c.text }) q
+    in
+    run "clipboard"
+        [ { name = "a hidden tab's OSC 52 writes keep the last to each selection, and one read (review MB6)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { selection = 1, text = Nothing }, { selection = 1, text = Just "999" }, { selection = 0, text = Just "1000" } ]
+                        (shown (ClipQueue.queued (ClipQueue.queued [] [ read, read ]) many))
+          }
+        , { name = "a write after a read stays after it, so the read answers what was there before"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { selection = 1, text = Just "a" }, { selection = 1, text = Nothing }, { selection = 1, text = Just "b" } ]
+                        (shown (ClipQueue.queued [] [ write 1 "a", read, write 1 "b" ]))
+          }
+        ]
 
 
 {-| The window's clock, which starts over every 2^30 ms (`docs/rhel8-etx.md`

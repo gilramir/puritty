@@ -57,6 +57,7 @@ finding is from reading the code and its callers.
 - What: `fedTerm` appends each read's clipboard requests to the tab's `clips`. Only the loop's `clipboardRequests` empties it, and that reads `m.clips`, the shown tab's. A hidden tab's list only grows; `phase3-select.md` §16 allows a write of 8 MB of base64 (6 MB of text) each.
 - Scenario: a program on a remote host in a background tab (or `cat` of a hostile file there) emits OSC 52 writes in a loop: 6 MB kept per write, with no cap, and `++` copying the list each read, until the window runs out of memory. When the user at last shows the tab, every queued write is made in turn (`Window.select` once each), and the clipboard ends as whatever the program wrote hours ago.
 - Fix: keep at most the last write per selection (a later write replaces an earlier one) and at most one read; or run `clipboardRequests` for hidden tabs too, if a background tab is meant to be able to copy.
+- Fixed: 2026-11-23, `docs/phase3-select.md` §24. `ClipQueue.queued` keeps one read, the writes before it, and after it the last write to each selection: at most five wait. Test: the app's `clipboard` suite; with the old append a thousand writes and two reads kept all 1,002.
 
 ### MB7 · An unbracketed paste of CRLF text sends two CRs a line, and a CRLF cut between two pieces does too
 - Where: app/src/Main.geng:7358-7390 (`lineEnds`), 7416 (`lineEnds (Paste.piece bracketed text)`); vt/src/Vt/Paste.geng:64-80 (`byteOut`)
