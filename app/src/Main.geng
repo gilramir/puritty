@@ -183,6 +183,11 @@ type alias Model =
     -- text comes (docs/phase3-select.md §15)
     , toPaste : Maybe Window.Selection
     , pasting : Maybe Bool
+    -- the tab a paste, a pasted picture or an OSC 52 read under way was
+    -- asked for: its pieces go there, whichever tab is shown when they
+    -- come, and nowhere once it is gone (the code review's MA9, MB3;
+    -- docs/phase3-select.md §25)
+    , pasteTab : Maybe Int
     -- OSC 52 (docs/phase3-select.md §16): requests the core made, to be
     -- done by the loop, and a read under way, its text so far
     , clips : Array Vt.Clip
@@ -1509,6 +1514,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , toOwn = Nothing
                      , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
                      , toPaste = Nothing
+                     , pasteTab = Nothing
                      , pasting = Nothing
                      , clips = []
                      , clipRead = Nothing
@@ -7222,16 +7228,19 @@ handleOne remote ms rest ev m =
             Window.pasted
                 |> Task.andThen
                     (\text ->
-                        handle remote
-                            ms
-                            rest
-                            (when m.clipRead is
-                                Just r ->
-                                    clipReadIn more text r m
+                        toAsker more
+                            (\one ->
+                                Task.succeed
+                                    (when one.clipRead is
+                                        Just r ->
+                                            clipReadIn more text r one
 
-                                Nothing ->
-                                    meant Reason.NotOpen pasteIn more text m
+                                        Nothing ->
+                                            meant Reason.NotOpen pasteIn more text one
+                                    )
                             )
+                            m
+                            |> Task.andThen (handle remote ms rest)
                     )
 
         Window.PastedImage more ->
@@ -7251,7 +7260,7 @@ handleOne remote ms rest ev m =
                             handle remote ms rest { m | imagePaste = Gathering got }
 
                         else
-                            imagePasted (Bytes.flatten got) { m | imagePaste = NoImagePaste, turnMs = ms }
+                            toAsker False (imagePasted (Bytes.flatten got)) { m | imagePaste = NoImagePaste, turnMs = ms }
                                 |> Task.andThen (handle remote ms rest)
                     )
 
@@ -7362,7 +7371,7 @@ owned remote ms rest m =
                                                         "the clipboard"
                                                    )
                                             )
-                                            { m | toPaste = Nothing, imagePaste = NoImagePaste }
+                                            { m | toPaste = Nothing, imagePaste = NoImagePaste, pasteTab = Just m.tab.id }
                                         )
                                 )
 
@@ -7459,7 +7468,7 @@ clipboardRequests m =
                                     (\asked ->
                                         clipboardRequests
                                             (if asked then
-                                                { rest | clipRead = Just { letter = c.letter, bel = c.bel, text = Bytes.empty } }
+                                                { rest | clipRead = Just { letter = c.letter, bel = c.bel, text = Bytes.empty }, pasteTab = Just rest.tab.id }
 
                                              else
                                                 rest
@@ -7468,6 +7477,39 @@ clipboardRequests m =
 
                         else
                             clipboardRequests rest
+
+
+{-| A piece of a paste, a pasted picture or an OSC 52 read, done to the
+tab that asked for it (MA9, MB3, docs/phase3-select.md §25): the shown
+one, or a hidden one through `atTab`, its own `pasting` and `clipRead`
+with it; dropped when that tab is gone. The last piece (`more` False)
+ends it. -}
+toAsker : Bool -> (Model -> Task Error Model) -> (taken m : Model) -> Task Error Model
+toAsker more work m =
+    let
+        done next =
+            if more then
+                next
+
+            else
+                { next | pasteTab = Nothing }
+    in
+    when m.pasteTab is
+        Just id ->
+            if id == m.tab.id then
+                work m |> Task.map done
+
+            else if slotOf id m /= Nothing then
+                atTab id work m |> Task.map done
+
+            else
+                -- the tab closed while its paste came: the rest is no
+                -- other tab's
+                Task.succeed (done (logLine "paste" "the tab that asked is gone: dropped" m))
+
+        Nothing ->
+            -- a paste asked for before the tab was recorded: the shown tab
+            meant Reason.NotOpen (work m |> Task.map done)
 
 
 {-| An OSC 52 read's text, as it comes; when it is all there, the answer

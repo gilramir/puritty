@@ -1175,3 +1175,30 @@ Tested (the app's `clipboard` suite): a thousand writes alternating
 between the selections and two reads keep the read, then `999` to the
 clipboard and `1000` to PRIMARY; with the old append all 1,002 were kept.
 A write after a read stays after it, and one before stays for the read.
+
+
+## 25. A paste goes to the tab that asked for it (2026-11-23)
+
+The code review's MA9 and MB3. A paste is asked for (§15's `toPaste`)
+and its text comes back later, a large one in INCR pieces over several
+turns; each piece was handled against the model as it then was, so the
+shown tab's. Nothing recorded which tab asked. A tab whose program ended
+on the paste's first line closed, and the rest was typed into the tab
+shown next; a tab switched away from mid-paste kept `pasting = Just` (its
+closing bracket never sent) while the new tab got the rest; an OSC 52
+read (§16) whose tab was hidden before the text came was pasted into the
+other tab as typed input; and a pasted picture's pieces went the same
+way.
+
+Now the window keeps `pasteTab`, the id of the tab a paste, a picture or
+an OSC 52 read was asked for, set where each is asked. `toAsker` hands
+each piece to that tab: the shown one, or a hidden one through `atTab`,
+with its own `pasting` and `clipRead`, so its brackets close in it; a tab
+that is gone drops the rest, which the log says. The last piece clears
+it.
+
+**Tested** (`harness/tabpaste.py`, new, Linux): a 4 MB paste into tab A
+with tab B open. `closes`: A reads one byte and exits; before, B received
+1,048,579 bytes of it, now none. `switched`: B shown right after the
+paste is asked for; before, B received 2,097,154 bytes, now none and A
+all 4,194,304. Drops are not changed: a drop goes where it was dropped.

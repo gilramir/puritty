@@ -314,12 +314,12 @@ covered" sections. The larger gaps:
 | [MA6](09-app-main-a.md) | security | confirmed | **fixed** `[images] read_files` turned off (or on) does not reach a running terminal |
 | [MA7](09-app-main-a.md) | speed | confirmed | Output in a tab not shown forces a frame for every chunk read, past the 16 ms pacing |
 | [MA8](09-app-main-a.md) | bug | plausible | Work that only the timer branch does waits for as long as the shown tab keeps printing |
-| [MA9](09-app-main-a.md) | bug | plausible | A paste in flight goes to whichever tab is shown when its pieces arrive |
+| [MA9](09-app-main-a.md) | bug | plausible | **fixed** A paste in flight goes to whichever tab is shown when its pieces arrive |
 | [MA10](09-app-main-a.md) | security | plausible | The built-in ssh session's output reaches the window through a queue with no bound |
 | [MA11](09-app-main-a.md) | design | plausible | A failing call on any tab's backend ends the whole window, and skips `finish` |
 | [MA12](09-app-main-a.md) | design | confirmed | Main.geng is 10,922 lines over one 130-field record, and the shown tab's fields are kept in step with `Tab` by hand |
 | [MB2](10-app-main-b.md) | bug | confirmed | The box drawn and the dialog that takes the keys are chosen in two different orders |
-| [MB3](10-app-main-b.md) | bug | confirmed | A paste's later pieces, a pasted picture and an OSC 52 read go to whichever tab is shown when they arrive |
+| [MB3](10-app-main-b.md) | bug | confirmed | **fixed** A paste's later pieces, a pasted picture and an OSC 52 read go to whichever tab is shown when they arrive |
 | [MB4](10-app-main-b.md) | bug | confirmed | Text the input method commits skips the search bar, the folder picker and the questions, and is sent to the program |
 | [MB5](10-app-main-b.md) | speed | confirmed | Every read of a tab not shown forces an unpaced frame of the shown tab |
 | [MB6](10-app-main-b.md) | security | confirmed | **fixed** OSC 52 writes of a tab not shown queue without bound, and are applied when it is next shown |
