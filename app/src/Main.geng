@@ -6995,38 +6995,64 @@ handleOne remote ms rest ev m =
             handle remote ms rest m
 
         Window.Commit text ->
-            when m.renaming is
-                Just r ->
+            let
+                -- what the IME commits, as a key whose text it is: it goes
+                -- where keys go (the code review's MB4, docs/phase3-input.md §16)
+                typed =
+                    { action = 1, keycode = 0, mods = 0, consumed = 0, unshifted = 0, sym = 0, text = text }
+            in
+            when dialogUp m is
+                RenamingUp r ->
                     handle remote ms rest (renameTyped (Bytes.toStringLossy text) r m)
 
-                Nothing ->
-                    meant Reason.NotOpen
-                        (if m.coloring /= Nothing then
-                            -- what the IME commits is no answer to the color box
-                            handle remote ms rest m
+                PickingUp pk ->
+                    -- into the folder picker's working model's field
+                    pickerStep (Picker.key demoWith { sym = 0, unshifted = 0, mods = 0, text = Bytes.toStringLossy text } pk.picker) pk m
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                         else if ownScreenUp m then
-                            -- what the IME commits, typed into the question
-                            handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
+                ChoosingUp c ->
+                    -- into the folder chooser's path or filter
+                    chooserKey typed c m
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                         else if TmuxMode.isAsking m.tmux then
-                            -- typed into tmux's prompt that puritty asks (TM25)
-                            handle remote ms rest { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
+                NoDialog ->
+                    if ownScreenUp m then
+                        -- typed into the question
+                        handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
 
-                         else
-                            -- the key path: the text as typed, never as a paste (V46)
-                            -- one key sound for the commit (feature-plan.md §3)
-                            imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
-                                |> Task.andThen
-                                    (\_ ->
-                                        if m.config.soundKeys then
-                                            Window.sound 0 |> Task.map (\_ -> {})
+                    else if TmuxMode.isAsking m.tmux then
+                        -- typed into tmux's prompt that puritty asks (TM25)
+                        handle remote ms rest { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
 
-                                        else
-                                            Task.succeed {}
+                    else
+                        when m.search is
+                            Just bar ->
+                                -- into the search bar's query (§23)
+                                imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text ++ " into the search")
+                                    |> Task.andThen (\_ -> handle remote ms rest (searchKey typed bar m))
+
+                            Nothing ->
+                                -- the key path: the text as typed, never as a paste (V46)
+                                -- one key sound for the commit (feature-plan.md §3)
+                                meant Reason.NotOpen
+                                    (imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
+                                        |> Task.andThen
+                                            (\_ ->
+                                                if m.config.soundKeys then
+                                                    Window.sound 0 |> Task.map (\_ -> {})
+
+                                                else
+                                                    Task.succeed {}
+                                            )
+                                        |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
                                     )
-                                |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
-                        )
+
+                _ ->
+                    -- a yes-or-no question (closing, a drop, a conflict, a
+                    -- picture, control mode, a tab that did not start) or
+                    -- the color box: what the IME commits is no answer, and
+                    -- reaches nothing behind it
+                    handle remote ms rest m
 
         Window.Preedit p ->
             let

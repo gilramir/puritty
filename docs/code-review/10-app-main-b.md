@@ -40,6 +40,7 @@ finding is from reading the code and its callers.
 - What: `Window.Commit` looks at `renaming`, `coloring`, `ownScreenUp` and tmux's prompt, and otherwise does `send text`. It does not look at `m.search`, `m.choosing`, `m.picking`, `closing`, `pasteAsk`, `dropAsk`, `startFailed` or the conflict question, all of which take the keys in `Window.Key` (6585-6696). `draw` meanwhile puts the IME's window at the search field or the picker's caret (`spotOver { picker, box, search }`).
 - Scenario: a Korean or Japanese user opens the search bar (Ctrl+Shift+F) or the folder chooser's path field and types with the IME: the candidate window sits at the field, and on commit the text goes to the shell under it, not into the query; with "Close this tab?" up, committed text reaches the program the question covers.
 - Fix: route `Commit` by `dialogUp` and `m.search` as keys are: into the search query (`found`), into `Picker.key`'s text for the chooser and the working model, and dropped for the yes/no questions.
+- Fixed: 2026-11-23, `docs/phase3-input.md` §16. `Window.Commit` is routed by `dialogUp` as keys are: into the picker's and chooser's fields, into the search bar's query, dropped for the questions and the color box. Test: the IME gate's `hangul-search` on fcitx5-hangul and ibus-hangul: before, the program received 한.
 
 ### MB5 · Every read of a tab not shown forces an unpaced frame of the shown tab
 - Where: app/src/Main.geng:9649, 9656 (`behind` sets `urgent = True`), 1692-1703 (`frameAt`), 2605 (`step`), 8489-8490 and 9792-9828 (the bar rebuilt in each frame)

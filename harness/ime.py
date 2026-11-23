@@ -49,6 +49,9 @@ CASES = [
     ("hangul-backspace", KOREAN, "type:gks key:BackSpace key:BackSpace key:Return"),
     ("japanese-clauses", JAPANESE, "type:watashihanihongo key:space sleep:0.5 key:Right key:space sleep:0.5 key:Return"),
     ("chinese-pinyin", CHINESE, "type:nihao key:space"),
+    # committed with the search bar open: into its query, not to the
+    # program (the code review's MB4, docs/phase3-input.md §16)
+    ("hangul-search", KOREAN, "key:ctrl+shift+f type:gks key:Return key:Escape"),
 ]
 
 

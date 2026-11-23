@@ -659,3 +659,27 @@ Not yet: ambiguous width 2 for these panes (registered, `geng-plan.md` §6
 phase 3), OSC 52's payload in the pane's charset (with OSC 52), and the
 C§10.5 cases that need tmux, IME commits in an EUC-KR pane on RHEL8, or a
 Korean legacy program's screens (phase 6).
+
+
+## 16. What the IME commits goes where keys go (2026-11-23)
+
+The code review's MB4. `Window.Commit` looked at the rename box, the
+color box, puritty's own ssh screen and tmux's prompt, and otherwise sent
+the text to the program; the search bar, the folder chooser and picker
+and the yes-or-no questions, which all take `Window.Key`, did not take a
+commit, though the IME's window was drawn at the search field or the
+picker's caret. A Korean or Japanese query typed into the search bar went
+to the shell under it, and text committed with "Close this tab?" up
+reached the program it covers.
+
+Now a commit is routed by `dialogUp` as keys are: the rename box as
+before; the folder picker's working model and the chooser get it as a key
+whose text it is (`Picker.key`, `chooserKey`), into their path or filter;
+the questions and the color box drop it. With no dialog, puritty's own
+screen and tmux's prompt as before, then the search bar's query
+(`searchKey`, which the IME log names "into the search"), and only then
+the program.
+
+Tested: the IME gate's `hangul-search` (Ctrl+Shift+F, `gks`, Return,
+Escape) on fcitx5-hangul and ibus-hangul. Before, the program received
+`한`; now nothing, and the log says `commit 한 into the search`.

@@ -320,7 +320,7 @@ covered" sections. The larger gaps:
 | [MA12](09-app-main-a.md) | design | confirmed | Main.geng is 10,922 lines over one 130-field record, and the shown tab's fields are kept in step with `Tab` by hand |
 | [MB2](10-app-main-b.md) | bug | confirmed | The box drawn and the dialog that takes the keys are chosen in two different orders |
 | [MB3](10-app-main-b.md) | bug | confirmed | **fixed** A paste's later pieces, a pasted picture and an OSC 52 read go to whichever tab is shown when they arrive |
-| [MB4](10-app-main-b.md) | bug | confirmed | Text the input method commits skips the search bar, the folder picker and the questions, and is sent to the program |
+| [MB4](10-app-main-b.md) | bug | confirmed | **fixed** Text the input method commits skips the search bar, the folder picker and the questions, and is sent to the program |
 | [MB5](10-app-main-b.md) | speed | confirmed | Every read of a tab not shown forces an unpaced frame of the shown tab |
 | [MB6](10-app-main-b.md) | security | confirmed | **fixed** OSC 52 writes of a tab not shown queue without bound, and are applied when it is next shown |
 | [MB19](10-app-main-b.md) | design | confirmed | The dialogs are listed in six places, and four groups of this half are modules in waiting |
