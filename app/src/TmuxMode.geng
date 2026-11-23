@@ -17837,7 +17837,8 @@ selectedText s =
 
 
 {-| Shift+PgUp, PgDn, Home and End scroll the active pane's view, a page
-or to the end, as without tmux; `Nothing` for any other key. -}
+or to the end, as without tmux, unless the pane is in copy mode, whose
+view is tmux's (TM117); not used for any other key. -}
 scrollKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken s : State) -> { state : State, used : Bool }
 scrollKey k s =
     let
@@ -17850,6 +17851,12 @@ scrollKey k s =
 
         next =
             if k.action == 0 || sizes.most == 0 || Bitwise.and k.mods 15 /= 1 then
+                Nothing
+
+            else if inCopy s.active s then
+                -- copy mode's view is tmux's, which the cursor, the mark
+                -- and the selection are drawn from: the key is copy mode's
+                -- (the code review's TB2, TM117)
                 Nothing
 
             else if k.sym == 0xFF55 then

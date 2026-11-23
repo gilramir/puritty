@@ -29,7 +29,7 @@ finding rests on it.
 - What: both write `s.back` for the pane (`none { s | back = Dict.set q.id next s.back }`) whatever mode the pane is in. In copy mode `back` is owned by tmux's answer: `copyLine` sets `back = Dict.set pane (min most c.scroll) …`, and the cursor, the `[N/M]` mark and the selection spans are all drawn from `Copying` (`place.value.y + c.cy`), not from `back`.
 - Scenario: `prefix [`, then three wheel steps. The pane's text moves 9 rows; the copy cursor, the `[0/200]` mark and any selection stay where tmux has them, so the highlight covers the wrong text. The next key or line of output asks tmux (`askCopy`) and the view snaps back.
 - Fix: in copy mode turn the wheel and the scroll keys into copy-mode commands and re-ask, or ignore them; never write `back` for a pane that has a `copy` entry.
-- Fixed: In part, 2026-11-21: the wheel over a pane in copy mode is copy mode's own scroll now (TB1). Shift+PgUp still scrolls puritty's view of the pane.
+- Fixed: 2026-11-21, the wheel over a pane in copy mode is copy mode's own scroll (TB1); 2026-11-23, Shift+PgUp, PgDn, Home and End leave a pane in copy mode to tmux (`docs/tmux.md` TM117). Test: on each tmux, Shift+PgUp in copy mode is not puritty's scroll; before, it was.
 
 ### TB3 · A size sent after a status-line change is not put in the reply queue, so the replies after it go to the wrong questions
 - Where: app/src/TmuxMode.geng:4240-4253 (`notice`, `SubscriptionChanged`; first half, found tracing `resized` at 17367 and `ours` at 2623-2661)

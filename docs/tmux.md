@@ -4479,3 +4479,21 @@ both replies", on each tmux, with `prefix z` bound to `display-message
 one \; display-message two` (the fake tmux takes bindings a test adds,
 `extraKeys`). Before, on 2.7, 3.0 and 3.2a, one reply came that no
 question waited for; now none. From 3.4 tmux runs the binding, as before.
+
+
+## TM117 · Shift+PgUp in copy mode is copy mode's (2026-11-23)
+
+The code review's TB2, its second half (TM107 made the wheel copy mode's
+own scroll). Shift+PgUp, PgDn, Home and End scrolled puritty's view of
+the active pane whatever its mode. In copy mode the view is tmux's
+(`copyLine` sets it from tmux's answer) and the copy cursor, the
+`[N/M]` mark and the selection are drawn from tmux's state, so after
+Shift+PgUp the text moved and they stayed, the highlight over the wrong
+text, until the next answer snapped the view back.
+
+Now `scrollKey` leaves a pane in copy mode alone and the key goes on to
+tmux as any other key, for copy mode's table to take or not.
+
+Test: "Shift+PgUp over a pane in copy mode is not puritty's scroll", on
+each tmux: in copy mode the key is not used for puritty's scroll
+(before, it was); outside, it is, as before.

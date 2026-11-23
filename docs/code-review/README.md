@@ -336,7 +336,7 @@ covered" sections. The larger gaps:
 | [TA13](11-tmuxmode-a.md) | bug | plausible | **fixed** Layout changes of windows not shown are dropped, so their panes' terminals keep the old size |
 | [TA21](11-tmuxmode-a.md) | design | confirmed | A 17,377-line module: where it would split |
 | [TA22](11-tmuxmode-a.md) | test-gap | confirmed | What the explorer does not reach |
-| [TB2](12-tmuxmode-b.md) | bug | confirmed | The wheel and Shift+PgUp scroll puritty's view of a pane in copy mode, which tmux's copy mode does not follow |
+| [TB2](12-tmuxmode-b.md) | bug | confirmed | **fixed** The wheel and Shift+PgUp scroll puritty's view of a pane in copy mode, which tmux's copy mode does not follow |
 | [TB3](12-tmuxmode-b.md) | bug | confirmed | **fixed** A size sent after a status-line change is not put in the reply queue, so the replies after it go to the wrong questions |
 | [TB4](12-tmuxmode-b.md) | security | plausible | A popup's title is expanded twice, the second time as `pane-border-format` |
 | [TB5](12-tmuxmode-b.md) | bug | plausible | customize-mode's filter is sent through `display-message` without `%` doubled, and is longer than strftime's buffer |
