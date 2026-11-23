@@ -822,3 +822,28 @@ the mouse, keys, cursor's visibility, pen and margins as new; from the
 alternate screen); and `bench/tabs/ssh.py`, whose dropped tab now echoes
 a line and hides the cursor before `kill -9 $PPID`: after R, the old
 lines stay, the new prompt is under them, and the cursor shows.
+
+
+## TB20 · The box drawn is the dialog that answers (2026-11-23)
+
+The code review's MA4 and MB2. Each dialog is a field of its own, so two
+can be up at once: a question raised by the host (send the dropped
+files? write the pasted picture? the SFTP conflict) or a close asked
+while another is up. `dialogUp`, which the keys and the presses go by,
+takes them as the tab not starting, the drop, the conflict, the picker,
+the chooser, the picture, closing, control mode, renaming, the color box;
+`draw` took them in another order, closing second and control mode
+third. With the drop's question up and the window's close button
+pressed, the window drew "Close the window?" while Enter sent the files.
+
+Now `draw` renders the box of `dialogUp m`, so the box drawn is the one
+answered, and a dialog raised while another is up waits behind it in
+that one order (a close question after the question already up).
+
+Not measured end to end. The drop gate (`harness/drop.py`) would be the
+place: its file manager, nemo, now opens no window on gmktec7's Xvfb
+(only its 10×10 leader), so every drop case fails there before this
+change, the existing `tmux-ask-yes` among them, and the case written for
+this was taken out again. On the way, the gate's tmux cases press Enter
+at TM108's question, since their host's command is a script that runs
+`tmux -CC` (the question is right for it, and was new since TM108).

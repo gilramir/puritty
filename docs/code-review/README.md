@@ -309,7 +309,7 @@ covered" sections. The larger gaps:
 | [W4](08-win32.md) | bug | confirmed | The pop-up menu opens up and left of the pointer by the padding, so the pointer starts over its first item |
 | [W5](08-win32.md) | security | confirmed | The ssh agents' named pipes are opened as ordinary files: the server may impersonate the user, and its owner is not checked |
 | [W6](08-win32.md) | bug | plausible | A font is found by its registry name, which on a localized Windows is not the family name FreeType reads |
-| [MA4](09-app-main-a.md) | bug | confirmed | The dialog shown and the dialog the keys go to are decided by two different orders |
+| [MA4](09-app-main-a.md) | bug | confirmed | **fixed** The dialog shown and the dialog the keys go to are decided by two different orders |
 | [MA5](09-app-main-a.md) | bug | confirmed | **fixed** A settings reload reaches only the shown tab's terminal |
 | [MA6](09-app-main-a.md) | security | confirmed | **fixed** `[images] read_files` turned off (or on) does not reach a running terminal |
 | [MA7](09-app-main-a.md) | speed | confirmed | Output in a tab not shown forces a frame for every chunk read, past the 16 ms pacing |
@@ -318,7 +318,7 @@ covered" sections. The larger gaps:
 | [MA10](09-app-main-a.md) | security | plausible | The built-in ssh session's output reaches the window through a queue with no bound |
 | [MA11](09-app-main-a.md) | design | plausible | A failing call on any tab's backend ends the whole window, and skips `finish` |
 | [MA12](09-app-main-a.md) | design | confirmed | Main.geng is 10,922 lines over one 130-field record, and the shown tab's fields are kept in step with `Tab` by hand |
-| [MB2](10-app-main-b.md) | bug | confirmed | The box drawn and the dialog that takes the keys are chosen in two different orders |
+| [MB2](10-app-main-b.md) | bug | confirmed | **fixed** The box drawn and the dialog that takes the keys are chosen in two different orders |
 | [MB3](10-app-main-b.md) | bug | confirmed | **fixed** A paste's later pieces, a pasted picture and an OSC 52 read go to whichever tab is shown when they arrive |
 | [MB4](10-app-main-b.md) | bug | confirmed | **fixed** Text the input method commits skips the search bar, the folder picker and the questions, and is sent to the program |
 | [MB5](10-app-main-b.md) | speed | confirmed | Every read of a tab not shown forces an unpaced frame of the shown tab |

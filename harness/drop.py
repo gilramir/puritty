@@ -182,6 +182,14 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
             xdo(env, "windowsize", wid, 640, 700)
         for wid in xdo(env, "search", "--class", "puritty").split():
             xdo(env, "windowmove", wid, 660, 60)
+        if tmux:
+            # the host's command is a script that runs tmux -CC, which
+            # puritty asks about (docs/tmux.md TM108): started, as a user
+            # who ran it would
+            for wid in xdo(env, "search", "--class", "puritty").split():
+                xdo(env, "windowfocus", "--sync", wid)
+            xdo(env, "key", "Return")
+            time.sleep(3)
         time.sleep(1.5)
         shot = [sys.executable, str(ROOT / "probes" / "xdnd" / "shot.py")]
         subprocess.run(shot + [str(home / "before.png")], env=env)
@@ -230,6 +238,10 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
                     xdo(env, "type", "--delay", "30", k[5:].replace("HOST", str(there)))
                 elif k.startswith("sleep:"):
                     time.sleep(float(k[6:]))
+                elif k == "close-window":
+                    # the window's close button: WM_DELETE_WINDOW
+                    for wid in xdo(env, "search", "--class", "puritty").split():
+                        xdo(env, "windowquit", wid)
                 else:
                     xdo(env, "key", k)
                 time.sleep(1.2)

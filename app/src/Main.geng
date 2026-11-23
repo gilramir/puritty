@@ -8665,36 +8665,48 @@ draw ms m =
             overlaySize m
 
         -- a question asked in a box over puritty's screen (SC23)
+        -- the box of the dialog that takes the keys and the presses, the
+        -- one `dialogUp` answers, so that what is drawn is what is
+        -- answered (the code review's MA4, MB2; docs/tabs.md TB20)
         dialog =
-            if m.startFailed /= Nothing then
-                Maybe.map startFailedBox m.startFailed
+            when dialogUp m is
+                StartFailedUp ->
+                    Maybe.map startFailedBox m.startFailed
 
-            else if m.closing /= Nothing then
-                Maybe.map closeBox m.closing
+                DropAsking a ->
+                    Just (dropBox m a)
 
-            else if TmuxMode.entryAsked m.tmux then
-                Just entryBox
+                Conflicting sending ->
+                    Maybe.map (Sending.conflictBox (fromHost m.charset)) sending.asking
 
-            else if Maybe.isJust m.dropAsk then
-                Maybe.map (dropBox m) m.dropAsk
+                PickingUp _ ->
+                    -- the folder picker, drawn by `Picker.draw` below
+                    Nothing
 
-            else if sendingAsks m then
-                Maybe.andThen (\s -> Maybe.map (Sending.conflictBox (fromHost m.charset)) s.asking) m.sending
+                ChoosingUp _ ->
+                    -- and the chooser
+                    Nothing
 
-            else if Maybe.isJust m.choosing then
-                -- the folder picker, drawn by `Picker.draw` below
-                Nothing
+                PasteAsking a ->
+                    Just (pasteBox a)
 
-            else if m.pasteAsk /= Nothing then
-                Maybe.map pasteBox m.pasteAsk
+                ClosingUp c ->
+                    Just (closeBox c)
 
-            else if m.renaming /= Nothing then
-                Maybe.map renameBox m.renaming
+                EntryAsking ->
+                    Just entryBox
 
-            else if m.coloring /= Nothing then
-                Just (colorBox m)
+                RenamingUp r ->
+                    Just (renameBox r)
 
-            else if ownUp then
+                ColoringUp _ ->
+                    Just (colorBox m)
+
+                NoDialog ->
+                    shownBelow
+
+        shownBelow =
+            if ownUp then
                 Maybe.andThen dialogOf m.ssh
 
             else if tmuxOn then
