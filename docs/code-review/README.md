@@ -345,7 +345,7 @@ covered" sections. The larger gaps:
 | [TB10](12-tmuxmode-b.md) | speed | confirmed | Work done again on every frame while a mode is open or a search is marked |
 | [TB17](12-tmuxmode-b.md) | design | confirmed | The three modes are three `Maybe`s, and their kinds are bare `Int`s |
 | [TB19](12-tmuxmode-b.md) | design | confirmed | What would make modules of this half, and what each needs |
-| [PS3](13-app-picker-settings.md) | bug | confirmed | What is typed is tied to a row number, so it lands in another setting when the list changes under it |
+| [PS3](13-app-picker-settings.md) | bug | confirmed | **fixed** What is typed is tied to a row number, so it lands in another setting when the list changes under it |
 | [PS4](13-app-picker-settings.md) | bug | confirmed | **fixed** With a color scheme set, a color equal to puritty's default cannot be chosen, and the reset mark does nothing |
 | [PS5](13-app-picker-settings.md) | bug | confirmed | **fixed** Rows scrolled partly under the header still take its clicks |
 | [PS6](13-app-picker-settings.md) | bug | plausible | Two listings of one folder in flight corrupt the listing (duplicates, or a part shown as the whole) |

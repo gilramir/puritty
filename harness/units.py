@@ -188,8 +188,9 @@ SUITES = [
         # as the default; 548 since TM112: [tmux] start, on each tmux; 554
         # since TA11: a layout's panes less their scrollbars, on each tmux;
         # 560 since TA12: the key tables read again, on each tmux; 566 since
-        # TA13: a hidden window's panes sized, on each tmux
-        566,
+        # TA13: a hidden window's panes sized, on each tmux; 567 since PS3:
+        # what is typed stays its setting's
+        567,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

@@ -73,7 +73,11 @@ nothing is selected, SG20), the value it had when typing began, why what
 is there is not a value it takes, if it is not, and in quick connect
 which recent connection Up brought back (`recall`, -1 for none). -}
 type alias Typing =
-    { chars : Array Char
+    { -- the key of the setting typed into, [] for a box of no setting's:
+      -- what is typed goes to it whatever rows are listed meanwhile (the
+      -- code review's PS3, docs/settings-gui.md SG23)
+      key : Array String
+    , chars : Array Char
     , caret : Int
     , anchor : Int
     , before : Value
@@ -86,7 +90,7 @@ type alias Typing =
 {-| A box typed into anew, holding `chars`, the caret at their end. -}
 fresh : Array Char -> Typing
 fresh chars =
-    { chars = chars, caret = Array.length chars, anchor = Array.length chars, before = Unset, problem = Nothing, pick = -1, recall = -1 }
+    { key = [], chars = chars, caret = Array.length chars, anchor = Array.length chars, before = Unset, problem = Nothing, pick = -1, recall = -1 }
 
 
 type alias Model =
@@ -913,7 +917,17 @@ control k m =
 
 
 controlNotEditing : Int -> { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
-controlNotEditing letter k m =
+controlNotEditing letter k m0 =
+    let
+        -- Ctrl+Z, Ctrl+M and Ctrl+F end what is being typed as Enter
+        -- does, its change undoable, before the rows change under it (PS3)
+        m =
+            if letter == 0x7A || letter == 0x6D || letter == 0x66 then
+                endTyping m0
+
+            else
+                m0
+    in
     if letter == 0x7A then
         undo { m | typing = Nothing }
 
@@ -1381,7 +1395,7 @@ change s m =
                 chars =
                     String.toArray (Schema.toText now)
             in
-            done { m | typing = Just { chars = chars, caret = Array.length chars, anchor = Array.length chars, before = now, problem = Nothing, pick = -1, recall = -1 }, message = Nothing }
+            done { m | typing = Just { key = s.key, chars = chars, caret = Array.length chars, anchor = Array.length chars, before = now, problem = Nothing, pick = -1, recall = -1 }, message = Nothing }
 
 
 {-| A sound setting's value played as it is chosen (`docs/sounds.md` SN7):
@@ -1512,7 +1526,7 @@ typingKey k t m =
 
     else if k.sym == sym.escape then
         -- what was there before typing began, back
-        when focused m is
+        when typedOn t m is
             Just s ->
                 let
                     back =
@@ -1573,7 +1587,7 @@ typingKey k t m =
 
             Nothing ->
                 meant Reason.NotOpen
-                    when focused m is
+                    when typedOn t m is
                         Just s ->
                             let
                                 now =
@@ -1853,9 +1867,54 @@ typed t m =
         typedSetting t m
 
 
+{-| The setting what is typed belongs to: the one typing began in, by its
+key, whatever row has the focus now (PS3). -}
+typedOn : Typing -> Model -> Maybe Setting
+typedOn t m =
+    when focused m is
+        Just s ->
+            if Array.isEmpty t.key || s.key == t.key then
+                Just s
+
+            else
+                Schema.find t.key
+
+        Nothing ->
+            meant Reason.NotOpen Schema.find t.key
+
+
+{-| What was being typed ended, as Enter ends it: its value kept, and an
+undo entry when it changed (PS3). -}
+endTyping : Model -> Model
+endTyping m =
+    when m.typing is
+        Just t ->
+            when typedOn t m is
+                Just s ->
+                    let
+                        now =
+                            s.get m.config
+                    in
+                    { m
+                        | typing = Nothing
+                        , undo =
+                            if now /= t.before then
+                                Array.pushLast (Was { setting = s, value = t.before }) m.undo
+
+                            else
+                                m.undo
+                    }
+
+                Nothing ->
+                    meant Reason.NotOpen { m | typing = Nothing }
+
+        Nothing ->
+            meant Reason.NotOpen m
+
+
 typedSetting : Typing -> Model -> { model : Model, effects : Array Effect }
 typedSetting t m =
-    when focused m is
+    when typedOn t m is
         Just s ->
             if s.kind == FontFamily || s.kind == Schema.HostName then
                 -- the suggestions follow the name; it is written when chosen

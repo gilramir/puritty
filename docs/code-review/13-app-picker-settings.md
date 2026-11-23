@@ -45,6 +45,7 @@ Two facts used throughout, both checked:
 - Scenario 2: typing `250` in Cursor blink, press Ctrl+M; row 0 is Font size. Backspace gives `25`, a valid size: `font.size = 25` is written and every terminal re-fonts. Esc then runs `s.set t.before` on Font size with blink's old value and writes it through `Schema.write` with no range check: `font.size = 500` in the file, which the decoder then reports.
 - Also: Ctrl+F and Ctrl+Z while typing drop `typing` without the Enter path's undo entry, so what was written while typing cannot be undone (and Ctrl+Z undoes an older change instead).
 - Fix: keep the `Setting` (or its key) in `Typing` and write/revert through it; end typing (commit or revert) on Ctrl+M, Ctrl+F, Ctrl+Z and on a `fileRead` that removes the row; have Esc go through `Schema.fromText`-level validation or simply restore without `set` when kinds differ.
+- Fixed: 2026-11-23, `docs/settings-gui.md` SG23. `Typing.key` and `typedOn`: written, reverted and ended through the setting typed into; Ctrl+Z, Ctrl+M and Ctrl+F end typing as Enter does (`endTyping`). Test: the SettingsWindow suite: before, after Ctrl+M the typed size could not be undone.
 
 ### PS4 · With a color scheme set, a color equal to puritty's default cannot be chosen, and the reset mark does nothing
 - Where: app/src/Schema.geng:2140-2168 (`write` removes a key when `v == s.get Config.defaults`), 1110-1118 (`decode` starts from `Palettes.apply name Config.defaults`); app/src/SettingsWindow.geng:252-254 (`modified`), 1389-1401 (`set`), 1179-1196 (reset); app/src/SettingsFile.geng:86-90

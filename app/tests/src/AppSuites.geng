@@ -1261,7 +1261,26 @@ changedRow key m =
 window : U.Suite
 window =
     run "SettingsWindow"
-        [ { name = "a row scrolled partly under the header does not take the header's clicks (review PS5)"
+        [ { name = "what is typed stays the setting's it was typed into when Modified only changes the rows under it (review PS3)"
+          , test =
+                \_ ->
+                    let
+                        config =
+                            opened.config
+
+                        -- two settings modified: the font, and the size typed
+                        start =
+                            { opened | config = { config | font = "Fira Code" } }
+
+                        -- Ctrl+M ends the typing, as Enter does, so the
+                        -- size typed is undone by Ctrl+Z
+                        r =
+                            Screen.feedInputs ([ k.down, k.enter ] ++ typeIn "4" ++ [ ctrl 'm', ctrl 'z' ]) start
+                    in
+                    Expect.equal { said = [ "font.size = 114", "font.size = 11" ], typing = "(none)", font = "Fira Code" }
+                        { said = said r.effects, typing = typedText r.model, font = r.model.config.font }
+          }
+        , { name = "a row scrolled partly under the header does not take the header's clicks (review PS5)"
           , test =
                 \_ ->
                     let

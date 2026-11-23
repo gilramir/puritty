@@ -788,3 +788,26 @@ Test (the app's SettingsWindow suite): the middle of the search field and
 of the switch, the list scrolled 0 to 6 lines. Before, scrolled 2, 3 and
 6 lines, they landed on `OnRow 0`, `OnValue 0` and `OnRow 1`; now on the
 field and the switch every time.
+
+
+## SG23 · What is typed stays the setting's it was typed into (2026-11-23)
+
+The code review's PS3. What was being typed held no setting: each key
+asked `focused m`, the row with the focus, again. Under Modified only the
+rows listed depend on the settings, which typing itself changes, and
+Ctrl+M changed the list (row 0) without ending the typing, so the next
+keys went into another setting's value: a font size of 25 written while
+the cursor blink was being typed, and Esc then setting that other
+setting to blink's old value. Ctrl+F and Ctrl+Z also dropped the typing
+without the undo entry Enter makes, so what it wrote could not be
+undone.
+
+Now `Typing` keeps the key of the setting typed into, and `typedOn`
+writes, reverts (Esc) and ends (Enter) through that setting whatever row
+has the focus. Ctrl+Z, Ctrl+M and Ctrl+F end the typing as Enter does
+(`endTyping`), its change undoable, before they act.
+
+Test (the app's SettingsWindow suite): with Fira Code set, Font size
+typed to 114, then Ctrl+M and Ctrl+Z. Before, the typing went on into
+the row now first and Ctrl+Z undid nothing (`font.size = 114` alone);
+now Ctrl+Z writes `font.size = 11` back.
