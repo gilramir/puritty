@@ -181,8 +181,9 @@ SUITES = [
         # mode asked about, and in a pane no key sent, on each tmux; 520
         # since ST3: a remembered password given alone to the known key
         # only; 526 since TA4: keys typed behind a binding, on each tmux;
-        # 532 since TA8: a closed pane forgotten, on each tmux
-        532,
+        # 532 since TA8: a closed pane forgotten, on each tmux; 538 since
+        # TB7: a version that is not one estimated, on each tmux
+        538,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

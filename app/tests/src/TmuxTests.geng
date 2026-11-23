@@ -11,6 +11,7 @@ import FakeTmux exposing (World)
 import RealTmux
 import Task
 import Test.Runner.UnitNode as U
+import Tmux.Caps as Caps
 import Tmux.Syntax as Syntax
 import TmuxMode
 import Vt
@@ -1523,6 +1524,39 @@ onVersion version =
                     in
                     Expect.equal { before = [ "  terminals kept: 2 (%0 %1)" ], after = [ "  terminals kept: 1 (%0)" ] }
                         { before = kept (two {}), after = kept closed }
+          }
+        , { name = "a version that is not one is taken as the oldest tmux with what this one takes (review TB7, TM111)"
+          , test =
+                \_ ->
+                    let
+                        caps =
+                            RealTmux.commands
+                                |> Array.findFirst (\c -> c.version == version)
+                                |> Maybe.map (\found -> Caps.fromUsage found.value.lines)
+                                |> Maybe.withDefault Caps.assumed
+
+                        wanted =
+                            when version is
+                                "3.8" ->
+                                    38
+
+                                "3.6a" ->
+                                    36
+
+                                "3.4" ->
+                                    34
+
+                                "3.2a" ->
+                                    32
+
+                                "3.0" ->
+                                    30
+
+                                _ ->
+                                    27
+                    in
+                    Expect.equal { odd = wanted, plain = TmuxMode.versionFrom caps version }
+                        { odd = TmuxMode.versionFrom caps "openbsd-7.6", plain = wanted }
           }
         , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
           , test =

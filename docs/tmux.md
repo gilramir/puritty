@@ -4334,3 +4334,40 @@ tmux: two panes, the second closed by its layout. With `ForPanes` and
 `terminals kept: 2 (%0 %1)` after, on all six; now `1 (%0)`. The
 finding's other half, one record per pane in place of the parallel maps,
 is not done.
+
+
+## TM111 · A version that is not one is estimated from what tmux takes (2026-11-23)
+
+The code review's TB7: `versionOf` gives 0 for what is not a version and
+the state keeps it, and about thirty tests read `version == 0 ||
+version >= N` (0 as the newest, as before tmux has answered) while a
+handful read `version >= N` alone (0 as the oldest). OpenBSD's base tmux
+says `openbsd-7.6` for `#{version}`, so a whole session there was drawn
+half as 3.8 and half as 3.6, and customize-mode's keys were asked by
+`Caps` (`customizeAsk`) and read by version (`customizeGot`), two ways.
+
+Now the version is never 0 once tmux has answered: `versionFrom` takes
+the parsed version, or for one that does not parse, `estimated` from the
+caps `list-commands` gave (asked first, so known by then): the oldest
+recorded tmux that has all it says it takes.
+
+| mark | version |
+|---|---|
+| `new-pane` | 3.8 |
+| `list-keys -F` | 3.7 |
+| `copy-mode -d` | 3.6 |
+| `send-keys -K` | 3.4 |
+| `display-popup` | 3.2 |
+| `display-menu` | 3.0 |
+| none of them | 2.7 |
+
+The marks are each the first of the recorded `list-commands` (2.7, 3.0,
+3.2a, 3.4, 3.6a, 3.8) to have it; a tmux between two (3.3a, 3.5a) is
+taken as the older, which never asks for what it lacks. `customizeGot`
+goes by `Caps.has "list-keys" "F"`, as `customizeAsk` does. Before tmux
+answers, 0 is still the newest, as `Caps.assumed` is.
+
+Test: "a version that is not one is taken as the oldest tmux with what
+this one takes", on each tmux: its recorded `list-commands` and
+`openbsd-7.6` give 3.8, 3.6, 3.4, 3.2, 3.0 and 2.7 in turn, as its own
+version does; before, 0 on all six. The app's 538 tests pass.

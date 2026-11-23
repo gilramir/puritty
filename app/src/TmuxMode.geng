@@ -47,6 +47,7 @@ module TmuxMode exposing
     , typeInto
     , typed
     , typedOutside
+    , versionFrom
     , viewLine
     , wantedSize
     )
@@ -3108,7 +3109,7 @@ replied expect ok lines acc =
                     st.keys
             in
             if ok then
-                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs }, version = versionOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") |> lastPiece " ") } }
+                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs }, version = versionFrom st.caps (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") |> lastPiece " ") } }
 
             else
                 { acc | state = st }
@@ -6030,6 +6031,39 @@ stepTo step answers a =
 
 {-| A `#{version}` in tenths: `3.6a` 36, `3.8` 38, `next-3.9` 39; 0 for
 what is not a version. -}
+versionFrom : Caps -> String -> Int
+versionFrom caps text =
+    let
+        parsed =
+            versionOf text
+    in
+    if parsed > 0 || not caps.known then
+        parsed
+
+    else
+        estimated caps
+
+
+{-| A tmux whose `#{version}` is not one (OpenBSD's says `openbsd-7.6`),
+taken as the oldest that has what it says it takes (the code review's
+TB7, docs/tmux.md TM111): each mark the first recorded tmux to have it
+(`list-commands` of 2.7, 3.0, 3.2a, 3.4, 3.6a and 3.8, and 3.7's
+`list-keys -F`); what has none of them is 2.7. Not the newest, which
+0 was taken as by most tests and the oldest by others. -}
+estimated : Caps -> Int
+estimated caps =
+    [ { at = 38, has = Caps.known "new-pane" caps }
+    , { at = 37, has = Caps.has "list-keys" "F" caps }
+    , { at = 36, has = Caps.has "copy-mode" "d" caps }
+    , { at = 34, has = Caps.has "send-keys" "K" caps }
+    , { at = 32, has = Caps.known "display-popup" caps }
+    , { at = 30, has = Caps.known "display-menu" caps }
+    ]
+        |> Array.findFirst .has
+        |> Maybe.map (\found -> found.value.at)
+        |> Maybe.withDefault (meant Reason.NotKnown 27)
+
+
 versionOf : String -> Int
 versionOf text =
     let
@@ -12619,8 +12653,9 @@ customizeGot part text s =
                 d =
                     c.data
 
+                -- as `customizeAsk` asked: by what tmux takes (TB7)
                 newer =
-                    s.version == 0 || s.version >= 37
+                    Caps.has "list-keys" "F" s.caps
 
                 envRaw =
                     if part >= 7 && part <= 10 then
