@@ -132,6 +132,7 @@ read as the answer to the question before it, until the next attach.
 - What: puritty routes every key by its copy of the tables: which keys go straight to the pane (`nobodyBinds`), which bindings it runs itself (prompts, menus, the tree), what table the client is in.
 - Scenario: `prefix r` reloading a changed tmux.conf, `:bind -n F5 ...`, `:set -g prefix C-a`, or customize-mode's own `bind-key`: the new root binding's key keeps going to the pane by id, a key newly bound to `command-prompt` is sent to tmux, which can show a control client no prompt, and a changed prefix is not followed (before 3.4 the old prefix keeps working in puritty and the new one is typed into the pane).
 - Fix: ask `list-keys` and the prefixes again after a user-run command or a flags-0 block that names `bind-key`, `unbind-key`, `source-file` or `set` of `prefix`; cheaper, after any `ForRan` whose command is one of those.
+- Fixed: 2026-11-23, `docs/tmux.md` TM114. `changesKeys` (bind, unbind, source, if-shell, run-shell -C, set of prefix/prefix2/repeat-time); after such a command `list-keys` and the prefixes are asked again, from the prompt, a binding puritty runs, or a binding tmux runs (its block). Test: from the command prompt, on each tmux; before, nothing asked again. The binding path is read, not run.
 
 ### TA13 · Layout changes of windows not shown are dropped, so their panes' terminals keep the old size
 - Where: app/src/TmuxMode.geng:4133-4138 (`LayoutChange`), 4147-4149 (a window shown: only `windowQuery`), 4493-4511 (`sizePane`)

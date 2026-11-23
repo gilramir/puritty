@@ -1601,6 +1601,25 @@ onVersion version =
                         )
                         (widths "on")
           }
+        , { name = "a command that binds a key or sets the prefix has the key tables read again (review TA12)"
+          , test =
+                \_ ->
+                    let
+                        run line =
+                            let
+                                before =
+                                    prefixThen ":" (attached (start version))
+
+                                ran =
+                                    settle (named enterKey (typeText line before))
+                            in
+                            Array.dropFirst (Array.length before.world.heard) ran.world.heard
+                                |> Array.keepIf (\l -> String.startsWith "list-keys" l || String.contains "#{prefix}" l)
+                                |> Array.length
+                    in
+                    Expect.equal { bind = 2, prefix = 2, other = 0 }
+                        { bind = run "bind -n F5 send-keys hi", prefix = run "set -g prefix C-a", other = run "display-message hi" }
+          }
         , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
           , test =
                 \_ ->

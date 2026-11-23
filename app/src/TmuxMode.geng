@@ -127,6 +127,9 @@ type alias State =
     -- named key sent by the pane's id and text sent through the client
     -- reach the same pane (the code review's TA4, docs/tmux.md TM109)
     , settling : Settling
+    -- a binding run that may bind keys or set the prefix: the key tables
+    -- read again when its block comes (the code review's TA12, TM114)
+    , rereadKeys : Bool
     , heldKeys : Array { k : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes }, bytes : Bytes, ms : Int }
     , linesSent : Int
     -- what puritty showed of tmux when last read (`viewLine`)
@@ -832,6 +835,7 @@ idle _ =
     , expecting = []
     , unasked = 0
     , settling = Settled
+    , rereadKeys = False
     , heldKeys = []
     , linesSent = 0
     , shownView = ""
@@ -2764,6 +2768,7 @@ reply r acc =
                 acc.state.on && acc.state.starting == Nothing && not (inCopy acc.state.active acc.state) && Dict.get acc.state.active acc.state.paneModes /= Just "tree-mode"
         in
         notOurs r acc
+            |> rereadAfter
             |> (\done ->
                     if asks then
                         ask [ { command = windowQuery, expect = ForWindow } ] done
@@ -2777,6 +2782,21 @@ reply r acc =
 
     else
         ours r acc
+
+
+{-| A binding's block that may have bound keys: the key tables asked
+again (TA12, TM114). -}
+rereadAfter : (taken acc : Acc) -> Acc
+rereadAfter acc =
+    if acc.state.rereadKeys then
+        let
+            st =
+                acc.state
+        in
+        ask keysQueries { acc | state = { st | rereadKeys = False } }
+
+    else
+        acc
 
 
 {-| A binding's block read (TM109): one awaited moves on, by `next` from
@@ -5955,7 +5975,16 @@ keyRouted k bytes ms s =
             -- line, so the window is asked when its block comes (`reply`)
             let
                 asked =
-                    sendAsking [ { command = windowQuery, expect = ForWindow } ] keyed.state
+                    sendAsking
+                        ([ { command = windowQuery, expect = ForWindow } ]
+                            ++ (if changesKeys way.ran then
+                                    keysQueries
+
+                                else
+                                    []
+                               )
+                        )
+                        keyed.state
 
                 st =
                     asked.state
@@ -5970,7 +5999,7 @@ keyRouted k bytes ms s =
                 st =
                     keyed.state
             in
-            { state = { st | settling = AwaitingBlock ms }, commands = keyed.commands }
+            { state = { st | settling = AwaitingBlock ms, rereadKeys = st.rereadKeys || changesKeys way.ran }, commands = keyed.commands }
 
         else
             keyed
@@ -7687,8 +7716,51 @@ sendAsking list s =
                         else
                             l
                    )
+                -- after one that may bind keys or set the prefix, the key
+                -- tables read again (TA12, TM114)
+                |> (\l ->
+                        if Array.any (\c -> c.expect == ForRan && changesKeys c.command) list then
+                            l ++ keysQueries
+
+                        else
+                            l
+                   )
     in
     { state = expected fenced s, commands = Array.map .command fenced }
+
+
+{-| What puritty reads of tmux's keys: the tables, and the prefixes with
+the repeat time (TM24). -}
+keysQueries : Array { command : String, expect : Expect }
+keysQueries =
+    [ { command = Command.listKeys, expect = ForKeys }
+    , { command = Command.display "#{prefix} #{prefix2} #{repeat-time} #{version}", expect = ForPrefixes }
+    ]
+
+
+{-| Whether a command line may change the keys puritty routes by (TA12,
+TM114): `bind-key`, `unbind-key`, `source-file`, a command that runs
+others (`if-shell`, `run-shell -C`), or a `set-option` of `prefix`,
+`prefix2` or `repeat-time`, by name or alias. -}
+changesKeys : String -> Bool
+changesKeys line =
+    runsCommands line
+        || (Syntax.commands (Syntax.tokens line)
+                |> Array.any
+                    (\words ->
+                        let
+                            values =
+                                Array.map .value words
+                        in
+                        when Array.popFirst values is
+                            Just { first, rest } ->
+                                Array.member first [ "bind-key", "bind", "unbind-key", "unbind", "source-file", "source" ]
+                                    || (Array.member first [ "set-option", "set" ] && Array.any (\w -> Array.member w [ "prefix", "prefix2", "repeat-time" ]) rest)
+
+                            Nothing ->
+                                meant Reason.FromOutside False
+                    )
+           )
 
 
 {-| Whether a command line runs tmux commands of its own, each answered

@@ -4412,3 +4412,29 @@ terminal to its cell less the scrollbar", on each tmux: three panes, the
 third closed. Before, on 3.6a and 3.8 the two left were 39 and 40 wide
 with scrollbars as without; now 38 and 39. On the older four, which have
 no `pane-scrollbars`, the same as without.
+
+
+## TM114 · The key tables read again after a command that changes them (2026-11-23)
+
+The code review's TA12. puritty routes every key by its copy of tmux's
+tables (TM24): which go straight to the pane, which bindings it runs
+itself, which table the client is in. The tables and the prefixes were
+read once, on attach, so after `prefix r` reloading a changed tmux.conf,
+`:bind -n F5 …` or `:set -g prefix C-a`, a new root binding's key still
+went to the pane by id, a key newly bound to `command-prompt` was sent to
+tmux, and a changed prefix was not followed.
+
+Now `changesKeys` says whether a command line may change them:
+`bind-key`, `unbind-key`, `source-file`, a command that runs others
+(`if-shell`, `run-shell -C`), or `set-option` of `prefix`, `prefix2` or
+`repeat-time`, by name or alias. After such a command the user runs (the
+command prompt, a typed line, a binding puritty runs itself),
+`sendAsking` asks `list-keys` and the prefixes again (`keysQueries`); a
+binding tmux runs (from 3.4, `send-keys -K`) sets `rereadKeys`, and its
+block asks them; before 3.4 they are asked behind the binding's command.
+
+Test: "a command that binds a key or sets the prefix has the key tables
+read again", on each tmux: `bind -n F5 send-keys hi` and `set -g prefix
+C-a` from the command prompt each ask both again, `display-message hi`
+neither; before, none was asked. The fake tmux's recorded tables have no
+binding that runs `source-file`, so the binding path is read, not run.
