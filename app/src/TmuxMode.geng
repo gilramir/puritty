@@ -2176,17 +2176,6 @@ bar =
     1
 
 
-{-| A tiled pane as tmux places it inside its layout cell when
-`pane-border-status` is on (measured on 3.8, where no `%layout-change`
-says so): a pane on the window's top edge moves down a row for its title
-(`top`), one on its bottom edge gives up its last row (`bottom`); the
-others' titles are on the line between panes. A floating pane keeps its
-cell. -}
-fitted : String -> Int -> Layout.Pane -> Layout.Pane
-fitted borderStatus height p =
-    fittedTitles borderStatus height p
-
-
 {-| Where a pane's title has its `#[range=control|N]` parts, as
 `paneBorders` lays the title out (after `#[align=right]`, against the
 pane's right edge, shown when it fits): each one's N, row and columns
@@ -2492,6 +2481,12 @@ scrollbarOf s =
     }
 
 
+{-| A tiled pane as tmux places it inside its layout cell when
+`pane-border-status` is on (measured on 3.8, where no `%layout-change`
+says so): a pane on the window's top edge moves down a row for its title
+(`top`), one on its bottom edge gives up its last row (`bottom`); the
+others' titles are on the line between panes. A floating pane keeps its
+cell. -}
 fittedTitles : String -> Int -> Layout.Pane -> Layout.Pane
 fittedTitles borderStatus height p =
     if p.z /= Nothing || p.h < 2 then
@@ -4770,21 +4765,18 @@ applyLayout text s =
     when Layout.parse text is
         Ok cell ->
             let
-                boxes =
-                    Array.map (fitted (tiledBorderStatus s.status (Layout.tiled cell |> Array.map .id)) (heightOf cell)) (Layout.panes cell)
-
-                sized =
-                    sizeAll { ids = s.ids, panes = s.panes } boxes
-
                 active =
-                    when Array.findFirst .active boxes is
+                    when Array.findFirst .active (Layout.panes cell) is
                         Just a ->
                             a.value.id
 
                         Nothing ->
                             meant Reason.FromOutside s.active
             in
-            { s | layout = Just cell, ids = sized.ids, panes = sized.panes, active = active }
+            -- each pane sized as it is drawn, `fittedIn` the new layout:
+            -- its title's row and its scrollbar's columns (TM53, the code
+            -- review's TA11)
+            refit { s | layout = Just cell, active = active }
 
         Err _ ->
             meant Reason.FromOutside s

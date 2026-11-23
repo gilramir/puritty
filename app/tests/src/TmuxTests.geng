@@ -1558,6 +1558,49 @@ onVersion version =
                     Expect.equal { odd = wanted, plain = TmuxMode.versionFrom caps version }
                         { odd = TmuxMode.versionFrom caps "openbsd-7.6", plain = wanted }
           }
+        , { name = "with pane-scrollbars on, a layout change sizes each pane's terminal to its cell less the scrollbar (TM53, review TA11)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- three panes, the last closed: a %layout-change for
+                        -- the two left, each wider
+                        widths scrollbars =
+                            let
+                                three =
+                                    { made
+                                        | panes = made.panes ++ Array.map (\p -> { p | id = 1 }) made.panes ++ Array.map (\p -> { p | id = 2 }) made.panes
+                                        , options = Dict.set "pane-scrollbars" scrollbars made.options
+                                    }
+
+                                run =
+                                    settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.expectEntry True (TmuxMode.idle {})), world = three, held = [], ms = 1000 })
+
+                                c =
+                                    FakeTmux.closePane 2 run.world
+
+                                closed =
+                                    settle (deliver (Bytes.fromString (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") c.notices))) { run | world = c.world })
+                            in
+                            TmuxMode.diagnose closed.tmux
+                                |> Array.keepIf (String.startsWith "  pane %")
+                                |> Array.mapAndKeepJust (\l -> String.split ", size " l |> Array.get 1 |> Maybe.andThen (String.split "x" >> Array.first) |> Maybe.andThen String.toInt)
+
+                        off =
+                            widths "off"
+                    in
+                    Expect.equal
+                        -- pane-scrollbars is 3.6's
+                        (if Array.member version [ "3.6a", "3.8" ] then
+                            Array.map (\w -> w - 1) off
+
+                         else
+                            off
+                        )
+                        (widths "on")
+          }
         , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
           , test =
                 \_ ->

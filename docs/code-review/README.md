@@ -331,7 +331,7 @@ covered" sections. The larger gaps:
 | [TA8](11-tmuxmode-a.md) | bug | confirmed | **fixed** Panes are never taken out of `ids`/`panes`/`info`: closed panes and a left session's panes keep their terminals |
 | [TA9](11-tmuxmode-a.md) | efficiency | confirmed | Every attach asks the window, tabs, panes and modes twice, so every pane is captured twice |
 | [TA10](11-tmuxmode-a.md) | efficiency | confirmed | A pane's whole history is captured on attach and on every `%pause`, into a terminal that keeps about 1000 rows |
-| [TA11](11-tmuxmode-a.md) | bug | confirmed | `applyLayout` sizes terminals without the scrollbar's columns; only `refit` uses `fittedIn` |
+| [TA11](11-tmuxmode-a.md) | bug | confirmed | **fixed** `applyLayout` sizes terminals without the scrollbar's columns; only `refit` uses `fittedIn` |
 | [TA12](11-tmuxmode-a.md) | bug | confirmed | Key bindings and prefixes are read once, on attach |
 | [TA13](11-tmuxmode-a.md) | bug | plausible | Layout changes of windows not shown are dropped, so their panes' terminals keep the old size |
 | [TA21](11-tmuxmode-a.md) | design | confirmed | A 17,377-line module: where it would split |

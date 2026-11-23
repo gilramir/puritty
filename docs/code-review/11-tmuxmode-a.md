@@ -122,6 +122,7 @@ read as the answer to the question before it, until the next attach.
 - What: TM53 says `fittedIn` is "used for both their terminals' sizes and where they are drawn". Drawing does (`placedPanes`), and `refit` does, but every `%layout-change` and every `ForWindow` answer goes through `applyLayout`, which fits titles only.
 - Scenario: tmux's look with `pane-scrollbars on`: after any split, resize or window switch each pane's terminal is the cell's width, one or more columns wider than tmux's pane, until an option change happens to call `refit`. A full-width line then wraps a column late and the pane's picture drifts from tmux's; each flap is also a `Vt.resize` with reflow.
 - Fix: one function for a pane's box, used by `applyLayout`, `refit` and `placedPanes`; delete `fitted`.
+- Fixed: 2026-11-23, `docs/tmux.md` TM113. `applyLayout` sets the layout and calls `refit`, so `fittedIn` sizes every pane; `fitted` is gone. Test: a pane closed with pane-scrollbars on: before, on 3.6a and 3.8 the terminals were a column wider than tmux's panes.
 
 ### TA12 · Key bindings and prefixes are read once, on attach
 - Where: app/src/TmuxMode.geng:2546-2547 (the only senders of `ForKeys`/`ForPrefixes`), 5455-5461, 5506-5513

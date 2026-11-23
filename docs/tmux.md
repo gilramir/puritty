@@ -4389,3 +4389,26 @@ Test: "with [tmux] start = "always", control mode starts at once, never
 asked, and again after it ends", on each tmux: the same commands as an
 expected entry, and none asked; with the flag ignored (as before) it was
 asked both times. The app's 548 tests pass.
+
+
+## TM113 · A layout change sizes panes as they are drawn (2026-11-23)
+
+The code review's TA11. TM53 said `fittedIn`, a pane's cell less its
+title's row and, with `pane-scrollbars on`, its scrollbar's columns, was
+"used for both their terminals' sizes and where they are drawn"; drawing
+(`placedPanes`) and `refit` used it, but every `%layout-change` and every
+window answer went through `applyLayout`, which fitted titles only, by
+`fitted`, and with the border status of the layout before. Under tmux's
+look with scrollbars, each split, resize or window change made every
+pane's terminal a column wider than tmux's pane until an option change
+called `refit`, and a full-width line wrapped a column late.
+
+Now `applyLayout` sets the new layout and the active pane and calls
+`refit`, so one function, `fittedIn`, sizes and places a pane; `fitted`
+is gone.
+
+Test: "with pane-scrollbars on, a layout change sizes each pane's
+terminal to its cell less the scrollbar", on each tmux: three panes, the
+third closed. Before, on 3.6a and 3.8 the two left were 39 and 40 wide
+with scrollbars as without; now 38 and 39. On the older four, which have
+no `pane-scrollbars`, the same as without.
