@@ -1620,6 +1620,40 @@ onVersion version =
                     Expect.equal { bind = 2, prefix = 2, other = 0 }
                         { bind = run "bind -n F5 send-keys hi", prefix = run "set -g prefix C-a", other = run "display-message hi" }
           }
+        , { name = "a resize sizes the panes of windows not shown too (review TA13)"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            attached (start version)
+
+                        -- a second window, not shown, with pane %1
+                        added =
+                            let
+                                a =
+                                    FakeTmux.addWindow 1 1 first.world
+                            in
+                            settle (deliver (Bytes.fromString (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") a.notices))) { first | world = a.world })
+
+                        -- puritty's window made 100 by 31: tmux's panes 100 by 30
+                        resized =
+                            let
+                                r =
+                                    TmuxMode.resized { cols = 100, rows = 31 } added.tmux
+                            in
+                            settle { added | tmux = r.state, held = added.held ++ r.commands }
+
+                        said =
+                            TmuxMode.diagnose resized.tmux
+
+                        sizeOf pane =
+                            said
+                                |> Array.findFirst (String.startsWith ("  pane %" ++ String.fromInt pane))
+                                |> Maybe.andThen (\found -> String.split ", size " found.value |> Array.get 1)
+                                |> Maybe.andThen (String.split "," >> Array.first)
+                    in
+                    Expect.equal { shown = Just "100x30", hidden = Just "100x30" } { shown = sizeOf 0, hidden = sizeOf 1 }
+          }
         , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
           , test =
                 \_ ->

@@ -4474,7 +4474,11 @@ notice n acc =
                     { acc | state = next }
 
             else
-                { acc | state = st }
+                -- another window's, as a resize sends for each (TK10.10):
+                -- its panes' terminals sized now, so that what their
+                -- programs draw for the new size has room (the code
+                -- review's TA13, TM115)
+                { acc | state = sizeHidden l.visible st }
 
         WindowPaneChanged p ->
             if p.window == st.window then
@@ -4797,6 +4801,25 @@ applyLayout text s =
             -- its title's row and its scrollbar's columns (TM53, the code
             -- review's TA11)
             refit { s | layout = Just cell, active = active }
+
+        Err _ ->
+            meant Reason.FromOutside s
+
+
+{-| The panes of a window not shown sized to its layout, the shown one's
+left as it is (TM115). -}
+sizeHidden : String -> (taken s : State) -> State
+sizeHidden text s =
+    when Layout.parse text is
+        Ok cell ->
+            let
+                boxes =
+                    Array.map (fittedIn s (heightOf cell)) (Layout.panes cell)
+
+                sized =
+                    sizeAll { ids = s.ids, panes = s.panes } boxes
+            in
+            { s | ids = sized.ids, panes = sized.panes }
 
         Err _ ->
             meant Reason.FromOutside s

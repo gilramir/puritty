@@ -4438,3 +4438,21 @@ read again", on each tmux: `bind -n F5 send-keys hi` and `set -g prefix
 C-a` from the command prompt each ask both again, `display-message hi`
 neither; before, none was asked. The fake tmux's recorded tables have no
 binding that runs `source-file`, so the binding path is read, not run.
+
+
+## TM115 · A window not shown has its panes sized too (2026-11-23)
+
+The code review's TA13. A resize makes tmux send `%layout-change` for
+every window of the session (TK10.10), and those of windows not shown
+were dropped: their panes' output went on into terminals of the old
+size, and a program there redrawing for the new size drew into the wrong
+one, shown garbled when the window was shown, until it redrew again.
+
+Now `sizeHidden` sizes the panes a hidden window's layout names
+(`fittedIn`, `sizeAll`), making a terminal for one that has none yet, and
+leaves the shown window's layout as it is.
+
+Test: "a resize sizes the panes of windows not shown too", on each tmux:
+a second window added, puritty's window made 100 by 31. Before, its pane
+had no terminal after the resize (one made later by its output is made
+80 by 24); now 100 by 30, as the shown pane.

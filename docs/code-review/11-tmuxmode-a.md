@@ -142,6 +142,7 @@ read as the answer to the question before it, until the next attach.
 - What: a resize makes tmux send `%layout-change` for every window of the session (TK10.10); those for other windows are ignored, while their panes' `%output` keeps being fed to terminals of the old size. When such a window is shown, `applyLayout` resizes the terminal but nothing captures it again.
 - Scenario: two windows, an editor in the hidden one; puritty's window is resized. The editor redraws for the new size into a terminal of the old size. Switching to that window shows the garbled picture until the program redraws by itself.
 - Fix: keep each window's last layout and size its panes when the notification comes, or `recapture` the panes of a window when it is shown at a size other than the one their terminals had.
+- Fixed: 2026-11-23, `docs/tmux.md` TM115. A `%layout-change` of a window not shown sizes its panes (`sizeHidden`). Test: a second window and a resize, on each tmux: before, its pane had no terminal at the new size.
 
 ### TA14 · Commands queued earlier in the read that ends control mode are still written
 - Where: app/src/TmuxMode.geng:2434-2475 (`Exited` keeps `acc.commands`), 4169-4175 (`Exit` sets nothing), app/src/Main.geng:3978
