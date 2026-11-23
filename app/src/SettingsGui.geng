@@ -160,8 +160,11 @@ noClip =
 -- THE FRAME
 
 
+{-| What is drawn, the boxes a click lands in, the caret's cell, and the
+box hits are cut to while a part of the window is clipped (the list's,
+under the header: the code review's PS5). -}
 type alias Drawn =
-    { list : Array Bytes, hits : Array Hit, spot : { x : Int, y : Int } }
+    { list : Array Bytes, hits : Array Hit, spot : { x : Int, y : Int }, hitClip : Maybe { x : Int, y : Int, w : Int, h : Int } }
 
 
 draw : Bytes -> Drawn -> Drawn
@@ -171,7 +174,29 @@ draw b d =
 
 target : { x : Int, y : Int, w : Int, h : Int } -> Target -> Drawn -> Drawn
 target b t d =
-    { d | hits = Array.pushLast { x = b.x, y = b.y, w = b.w, h = b.h, target = t } d.hits }
+    when d.hitClip is
+        Just c ->
+            let
+                x =
+                    max b.x c.x
+
+                y =
+                    max b.y c.y
+
+                w =
+                    min (b.x + b.w) (c.x + c.w) - x
+
+                h =
+                    min (b.y + b.h) (c.y + c.h) - y
+            in
+            if w <= 0 || h <= 0 then
+                d
+
+            else
+                { d | hits = Array.pushLast { x = x, y = y, w = w, h = h, target = t } d.hits }
+
+        Nothing ->
+            meant Reason.NotOpen { d | hits = Array.pushLast { x = b.x, y = b.y, w = b.w, h = b.h, target = t } d.hits }
 
 
 {-| The window's frame: its list, beginning with its size in cells, the
@@ -215,7 +240,7 @@ paint lang m size preedit =
             Words.words lang
 
         start =
-            { list = [ bytes ([ 4 ] ++ u16 m.cols ++ u16 m.rows), box { x = 0, y = 0, w = w, h = h, r = 0, color = look.bg } ], hits = [], spot = { x = 0, y = 0 } }
+            { list = [ bytes ([ 4 ] ++ u16 m.cols ++ u16 m.rows), box { x = 0, y = 0, w = w, h = h, r = 0, color = look.bg } ], hits = [], spot = { x = 0, y = 0 }, hitClip = Nothing }
 
         d =
             start
@@ -799,11 +824,12 @@ rows lang m size x0 cw px body small preedit d0 =
                             meant Reason.OutOfRange (withRow)
     in
     Array.range 0 (SettingsWindow.rowCount m - 1)
-        |> Array.foldl each (d0 |> draw (clip listBox))
+        |> Array.foldl each ({ d0 | hitClip = Just listBox } |> draw (clip listBox))
         |> (\d -> Array.foldl draw d empty)
         |> suggestionsOf lang m x0 cw vx valueW fieldH rowY px body
         |> choiceList lang m vx valueW fieldH (\i -> { y = rowY i, h = heightOf i }) { top = top, bottom = bottom } px body
         |> draw noClip
+        |> (\d -> { d | hitClip = Nothing })
 
 
 {-| A note's lines: none for no note. -}

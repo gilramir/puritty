@@ -33,6 +33,7 @@ import RestoreFile exposing (TabColor(..))
 import Schema
 import Screen
 import Search
+import SettingsGui
 import SettingsWindow
 import TabOrder
 import Task exposing (Task)
@@ -1237,7 +1238,36 @@ changedRow key m =
 window : U.Suite
 window =
     run "SettingsWindow"
-        [ { name = "the first screen: Appearance's settings, the first focused, nothing searched"
+        [ { name = "a row scrolled partly under the header does not take the header's clicks (review PS5)"
+          , test =
+                \_ ->
+                    let
+                        size =
+                            { cols = 100, rows = 24, cellWidth = 9, cellHeight = 17 }
+
+                        -- the target a click at the middle of the first box
+                        -- of `wanted` lands on, the list scrolled by `lines`
+                        landsOn wanted lines =
+                            let
+                                hits =
+                                    (SettingsGui.paint Words.English { opened | scroll = lines } size "").hits
+                            in
+                            when Array.findFirst (\h -> h.target == wanted) hits is
+                                Just b ->
+                                    Array.findFirst (\h -> b.value.x + b.value.w // 2 >= h.x && b.value.x + b.value.w // 2 < h.x + h.w && b.value.y + b.value.h // 2 >= h.y && b.value.y + b.value.h // 2 < h.y + h.h) hits
+                                        |> Maybe.map (\h -> h.value.target)
+
+                                Nothing ->
+                                    Nothing
+
+                        scrolls =
+                            Array.range 0 6
+                    in
+                    Expect.equal
+                        { search = Array.map (\_ -> Just SettingsWindow.OnSearchField) scrolls, switch = Array.map (\_ -> Just SettingsWindow.OnModifiedOnly) scrolls }
+                        { search = Array.map (landsOn SettingsWindow.OnSearchField) scrolls, switch = Array.map (landsOn SettingsWindow.OnModifiedOnly) scrolls }
+          }
+        , { name = "the first screen: Appearance's settings, the first focused, nothing searched"
           , test =
                 \_ ->
                     Expect.equal

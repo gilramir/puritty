@@ -768,3 +768,23 @@ user) and give a key file and jump host further on, but disagree on
 where, and on where the installed edition keeps the file (`MobaXterm.ini`
 beside the program, under `%APPDATA%\MobaXterm`, or the registry). Not
 built until it is read against what a real MobaXterm writes.
+
+
+## SG22 · A row under the header takes none of its clicks (2026-11-23)
+
+The code review's PS5. The list is drawn clipped to its box, under the
+header with the search field and the "Modified only" switch, but each
+row's hit boxes were pushed whole, and, drawn after the header, they came
+first. On a page taller than the window, with the first row shown cut by
+two lines or more (as Down to the last row leaves it), a click on the
+search field or the switch was the row's, or its value's: the list jumped
+and a switch nobody could see was flipped.
+
+Now `Drawn` has `hitClip`, set to the list's box while the rows, the
+suggestions and the choice list are drawn: `target` cuts each box to it,
+and leaves out one that is all outside.
+
+Test (the app's SettingsWindow suite): the middle of the search field and
+of the switch, the list scrolled 0 to 6 lines. Before, scrolled 2, 3 and
+6 lines, they landed on `OnRow 0`, `OnValue 0` and `OnRow 1`; now on the
+field and the switch every time.
