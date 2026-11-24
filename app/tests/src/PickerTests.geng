@@ -163,6 +163,24 @@ cases =
                     , Picker.keptFitting (\_ -> False) 1 3999
                     ]
       }
+    , { name = "a folder of 20,000 names come 100 at a time, out of order: each part merged in, all in order at the end (review PS9)"
+      , test =
+            \_ ->
+                let
+                    named i =
+                        "f" ++ String.padLeft 5 '0' (String.fromInt i)
+
+                    part k =
+                        Array.range (k * 100) (k * 100 + 99) |> Array.map (\i -> folderNamed (named (modBy 20000 (i * 7919))))
+
+                    final =
+                        Array.foldl
+                            (\k p -> (Picker.answer (Listed { id = 1, path = Bytes.fromString "/x", entries = part k, more = k < 199 }) p).picker)
+                            opened.picker
+                            (Array.range 0 199)
+                in
+                Expect.equal (Array.map named (Array.range 0 19999)) (Array.map (\e -> Bytes.toStringLossy e.name) final.entries)
+      }
     , { name = "the folders' file read back: a path not UTF-8 as bytes, a host of a later kind passed over"
       , test =
             \_ ->

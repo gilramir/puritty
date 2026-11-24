@@ -2305,3 +2305,27 @@ drew the picker with twenty folders of 4,000-character names: the three
 took 129 ms before and 9 ms now. That case is not kept: natively
 `Text.width` asks the renderer, which has no font in the test runner, so
 every name fit and none was cut on Linux and Windows.
+
+## FT36 · A listing's parts merged in, not sorted again (2026-11-24)
+
+The code review's PS9. A folder's listing comes in parts, one for each
+READDIR answer, and `listed` sorted everything received so far again at
+each part: `sorted (before ++ l.entries)`. `Array.sortBy` makes each key
+once a call, so every entry's key (its name decoded, lowered and joined
+to its kind and whether it is hidden) was made again at every part, and
+the sort, a bottom-up merge sort that only stops early on an array
+already wholly in order, compared N log N times a part. A folder of N
+names in parts of k cost N/k such sorts.
+
+Now the cache keeps each entry with its key (`Listing.keys`, `Keyed`),
+made once when its part came; a part is sorted alone and merged into what
+came before in one pass (`mergedIn`, `mergeFrom`, into an
+`Array.Builder`), an entry before an equal one of a later part as the
+stable sort had it. What is shown is the same.
+
+**Measured** (app suite, new): 20,000 folder names in 200 parts of 100,
+out of order, the picker going to the folder: in order at the end, and
+the test took 2,216 ms on node before; with the keys kept but the whole
+still sorted with `Array.sortWith`, 938 ms; merged, 189 ms. Each part
+still copies what came before into the new array and draws the rows
+again (`highlightName`), a pass each, not a sort.

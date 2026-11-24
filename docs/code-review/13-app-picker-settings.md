@@ -103,6 +103,7 @@ Two facts used throughout, both checked:
 - What: a folder of N names arriving k at a time is sorted N/k times, each over everything so far: O(N²/k · log N) key comparisons, the keys rebuilt as strings (per element at best, per comparison if `sortBy` does not cache them). `highlightName` then rebuilds `rows` and scans it for each part (542-544, 444-451).
 - Scenario: the path is hot per READDIR answer. A mail spool or build-output folder of 50,000 entries at ~100 a part is 500 sorts averaging 25,000 entries each, on the update loop, while the terminal's own output waits. FT32's point 6 ("a remote listing never blocks") is what this breaks.
 - Fix: keep the cached entries sorted and merge each (sorted) part in, O(N) a part; store the sort key with the entry when it arrives.
+- Fixed: 2026-11-24, `docs/sftp.md` FT36. The cache keeps each entry's sort key; a part is sorted alone and merged into what came before in one pass. Test: 20,000 names in 200 parts, out of order: 2,216 ms on node before, 189 ms now, in the same order. Each part still copies the whole and rebuilds the rows once (a pass, not a sort).
 
 ### PS10 · Undo of a host removed or renamed rewrites its table: bookmarks, comments and unknown keys are lost, and hosts added since are deleted
 - Where: app/src/SettingsWindow.geng:1414-1446 (`HostsWere`), 238-240 (`fileRead` leaves `undo` as it is); app/src/Schema.geng:1812-1903 (`hostFields` has no `bookmarks`), 1909-1918 (`writeHost`), 1373-1385 (`bookmarks` is read)

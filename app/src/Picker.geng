@@ -44,6 +44,7 @@ host. Names are the host's bytes; the caller says how its character set
 reads and writes them (`With`).
 -}
 
+import Array.Builder as Builder exposing (Builder)
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Int64
@@ -140,7 +141,13 @@ type Focus
 
 
 type alias Listing =
-    { entries : Array Entry, complete : Bool }
+    { entries : Array Entry, keys : Array Keyed, complete : Bool }
+
+
+{-| An entry with its sort key (`sortKey`), made once when its part came
+(review PS9). -}
+type alias Keyed =
+    { key : String, value : Entry }
 
 
 type alias Picker =
@@ -353,10 +360,36 @@ plain with path =
 
 
 {-| Folders first, then files; each by name with case not counted, hidden
-ones (`.name`) last. -}
-sorted : Array Entry -> Array Entry
-sorted entries =
-    Array.sortBy sortKey entries
+ones (`.name`) last: a part of a listing sorted and merged into what came
+before it, already in order with its keys, in one pass, each key made once
+(review PS9). -}
+mergedIn : Array Keyed -> Array Entry -> Array Keyed
+mergedIn before part =
+    mergeFrom before
+        (Array.sortBy .key (Array.map (\e -> { key = sortKey e, value = e }) part))
+        0
+        0
+        (Builder.empty (Array.length before + Array.length part))
+
+
+{-| Two runs in order merged: of equal keys, `a`'s first. -}
+mergeFrom : Array Keyed -> Array Keyed -> Int -> Int -> (taken out : Builder Keyed) -> Array Keyed
+mergeFrom a b i j out =
+    when Array.get i a is
+        Nothing ->
+            meant Reason.NoMore (Builder.toArray (Builder.append (Array.dropFirst j b) out))
+
+        Just x ->
+            when Array.get j b is
+                Nothing ->
+                    meant Reason.NoMore (Builder.toArray (Builder.append (Array.dropFirst i a) out))
+
+                Just y ->
+                    if y.key < x.key then
+                        mergeFrom a b i (j + 1) (Builder.pushLast y out)
+
+                    else
+                        mergeFrom a b (i + 1) j (Builder.pushLast x out)
 
 
 sortKey : Entry -> String
@@ -500,17 +533,20 @@ listed l p =
                                 []
 
                             else
-                                c.entries
+                                c.keys
 
                         Nothing ->
                             meant Reason.NotYet []
 
+                keys =
+                    mergedIn before l.entries
+
                 all =
-                    sorted (before ++ l.entries)
+                    Array.map .value keys
 
                 cached =
                     { p
-                        | cache = Dict.set key0 { entries = all, complete = not l.more } p.cache
+                        | cache = Dict.set key0 { entries = all, keys = keys, complete = not l.more } p.cache
                         , waiting =
                             if l.more then
                                 p.waiting
@@ -554,7 +590,7 @@ listed l p =
                             else
                                 let
                                     first =
-                                        entered l.path { entries = all, complete = not l.more } g.select cached
+                                        entered l.path { entries = all, keys = keys, complete = not l.more } g.select cached
                                 in
                                 { first
                                     | going =
