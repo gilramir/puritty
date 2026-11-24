@@ -123,6 +123,11 @@ static char *narrow(const wchar_t *w) {
 typedef struct {
     char *file, *family, *style;
     int index, color, mono;
+    /* the face's code points as sorted ranges, lo and hi, both included,
+     * read from its charmap the first time it is asked (W2); `known` 0
+     * until then */
+    uint32_t *ranges;
+    int nranges, known;
 } Entry;
 
 static Entry *entries;
@@ -147,8 +152,12 @@ static void add_entry(const char *file, int index, FT_Face f) {
         centries = centries ? centries * 2 : 256;
         entries = realloc(entries, (size_t) centries * sizeof *entries);
     }
-    entries[nentries++] = (Entry) {copy(file), copy(f->family_name ? f->family_name : ""), copy(f->style_name ? f->style_name : ""),
-                                   index, FT_HAS_COLOR(f) ? 1 : 0, FT_IS_FIXED_WIDTH(f) ? 1 : 0};
+    entries[nentries++] = (Entry) {.file = copy(file),
+                                   .family = copy(f->family_name ? f->family_name : ""),
+                                   .style = copy(f->style_name ? f->style_name : ""),
+                                   .index = index,
+                                   .color = FT_HAS_COLOR(f) ? 1 : 0,
+                                   .mono = FT_IS_FIXED_WIDTH(f) ? 1 : 0};
 }
 
 static void scan_file(const char *path) {
@@ -379,15 +388,52 @@ static int hangul(uint32_t cp) {
            (cp >= 0xAC00 && cp <= 0xD7FF);
 }
 
+/* An entry's code points, read once from its face's charmap (the one
+ * FT_Get_Char_Index reads): a face opened once, not at every question,
+ * so a code point no face has costs a search of each, not a file opened
+ * for each of the hundreds a Windows has (W2). A face that cannot be
+ * opened covers nothing. */
+static void entry_coverage(Entry *E) {
+    E->known = 1;
+    FT_Face f;
+    if (FT_New_Face(ftlib, E->file, E->index, &f) != 0) return;
+    int cap = 0;
+    FT_UInt g;
+    for (FT_ULong cp = FT_Get_First_Char(f, &g); g != 0; cp = FT_Get_Next_Char(f, cp, &g)) {
+        if (cp > 0x10FFFF) break;
+        if (E->nranges > 0 && E->ranges[2 * E->nranges - 1] + 1 == (uint32_t) cp) {
+            E->ranges[2 * E->nranges - 1] = (uint32_t) cp;
+            continue;
+        }
+        if (E->nranges == cap) {
+            cap = cap ? cap * 2 : 64;
+            uint32_t *r = realloc(E->ranges, (size_t) cap * 2 * sizeof *r);
+            if (!r) break;
+            E->ranges = r;
+        }
+        E->ranges[2 * E->nranges] = E->ranges[2 * E->nranges + 1] = (uint32_t) cp;
+        E->nranges++;
+    }
+    FT_Done_Face(f);
+}
+
+static int entry_has(const Entry *E, uint32_t cp) {
+    int lo = 0, hi = E->nranges - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (cp < E->ranges[2 * mid]) hi = mid - 1;
+        else if (cp > E->ranges[2 * mid + 1]) lo = mid + 1;
+        else return 1;
+    }
+    return 0;
+}
+
 /* Whether an entry's face has every code point of the cluster. */
 static int entry_covers(int e, const uint32_t *cps, int n) {
-    FT_Face f;
-    if (FT_New_Face(ftlib, entries[e].file, entries[e].index, &f) != 0) return 0;
-    int all = 1;
-    for (int i = 0; i < n && all; i++)
-        if (!ignorable(cps[i]) && FT_Get_Char_Index(f, cps[i]) == 0) all = 0;
-    FT_Done_Face(f);
-    return all;
+    if (!entries[e].known) entry_coverage(&entries[e]);
+    for (int i = 0; i < n; i++)
+        if (!ignorable(cps[i]) && !entry_has(&entries[e], cps[i])) return 0;
+    return 1;
 }
 
 static int try_family(const char *family, const uint32_t *cps, int n, int color) {

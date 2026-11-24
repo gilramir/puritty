@@ -1189,3 +1189,39 @@ running `lines.cmd` (30 lines, then `cmd /k`), minimized and restored with
 `ShowWindow` (no keys sent), the desktop pictured before and after. 0.2.0's
 exe kept only the prompt, cut at the window's left edge; the one built
 with the fix kept all 30 lines and the prompt.
+
+## WS32 · A face's code points read once (2026-11-24)
+
+The code review's W2. `entry_covers`, which answers whether a font entry
+has a cluster's code points, opened the face (`FT_New_Face`), asked
+`FT_Get_Char_Index` and closed it, every time. A fallback question tries
+the listed families, and when none has the code point, `scan_everything`
+lists every face the registry names and `entry_covers` was asked of each:
+a code point no font has opened every font file on the machine, inside
+`pt_frame`, under the paint lock, so the window stopped answering.
+
+Now each entry keeps its code points as sorted ranges, read from its
+charmap (`FT_Get_First_Char`, `FT_Get_Next_Char`, the charmap
+`FT_Get_Char_Index` reads) the first time it is asked, and a question is
+a binary search a face. The first miss still lists and opens every face
+once, on the draw's thread (not moved off it here); after that a miss
+costs no file. With X3's cache (renderer.md R22) each code point is asked
+once.
+
+**Measured** on beelink1 (Windows 11, 544 files in `C:\Windows\Fonts`),
+core-pixels with the system's fonts (no `PURITTY_FONT_DIRS`), Consolas,
+plane 15 Private Use Area code points no font has, drawn twice; the time
+is the text library's own count of the fallback questions:
+
+| code points | before | after |
+|---|---|---|
+| 50 | 3,453 ms | 233 ms |
+| 500 | 32,461 ms | 264 ms |
+
+About 65 ms a code point before, every one; after, some 230 ms for the
+first and 0.06 ms for each after it. A line of 26 scripts and symbols
+(Hangul, Han, kana, Thai, Devanagari, Greek, Cyrillic, emoji, Ethiopic,
+Cherokee, Georgian, Tifinagh, Javanese, Mongolian, math, runes, Gothic,
+Tibetan, Meitei) chose the same 17 faces in the same order before and
+after. The pixel gate on beelink1 passes 39 of 55 both ways, the same
+16 cases failing by the same pixel counts (R22).

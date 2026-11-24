@@ -304,7 +304,7 @@ covered" sections. The larger gaps:
 | [X8](07-x11-text.md) | efficiency | confirmed | `pt_zoom` clears 10 MB of tables per loaded face on every zoom step |
 | [X9](07-x11-text.md) | speed | confirmed | **fixed** `isMaximized` makes four synchronous round trips, and `Main` calls it on every `Resized` |
 | [X10](07-x11-text.md) | bug | plausible | Focus events from a window manager's key grabs are reported as focus changes |
-| [W2](08-win32.md) | speed | confirmed | Every code point no listed family covers opens every installed font face, inside the draw, under the paint lock |
+| [W2](08-win32.md) | speed | confirmed | **fixed** Every code point no listed family covers opens every installed font face, inside the draw, under the paint lock |
 | [W3](08-win32.md) | bug | plausible | A capture taken from the window forgets the held buttons without telling the program; the native menu does this every time |
 | [W4](08-win32.md) | bug | confirmed | The pop-up menu opens up and left of the pointer by the padding, so the pointer starts over its first item |
 | [W5](08-win32.md) | security | confirmed | The ssh agents' named pipes are opened as ordinary files: the server may impersonate the user, and its owner is not checked |
