@@ -4617,3 +4617,35 @@ Measured on tmux 3.8 (devbox's): a pane in a directory named
 `#{b:pane_current_path}` each way, then `display -p
 '#{T:pane-border-format}'`, as puritty's subscription asks. With `-F`,
 `a0b`: the name expanded again. Without it, `a#{session_name}b`.
+
+
+## TM122 · customize-mode's filter is asked with list-panes (2026-11-24)
+
+The code review's TB5. The filter (`f`) is one format over every row
+(`Customize.filterFormat`: each row's values written in, `#{?FILTER,1,0}`
+a row), several hundred rows long. It went to tmux through `display-message
+-p`, which gives its whole format to strftime first, into a buffer of
+8192 bytes, and answers the empty string when it does not fit. Any `%` in
+a value written in (`status-right`'s `%H:%M`, the default bindings' `%%`)
+made a filter that names `#{option_value}` or `#{key_command}` come back
+empty: "no matches", and every row shown. A `%` of the filter's own was
+changed by strftime before it was compared.
+
+Measured on tmux 3.8 with a format of that shape, 300 rows and one `%H`,
+10,523 bytes: `display-message -p` answered the empty string, and so did
+the same with every `%` doubled. Doubling does not help, since the
+strftime buffer is the limit.
+
+Now `Customize.filterQuery` asks `list-panes -t PANE -F
+'#{?#{==:#{pane_id},PANE},=ROWS,}'`. `list-panes -F` expands its format
+with no strftime. Every pane of the window gets a line, but only this
+pane's takes the branch with the rows, and tmux expands only the branch
+it takes. `Customize.filterAnswers` reads the line that starts with `=`.
+Measured the same way: this pane's line held all 301 answers (`=` then
+301 `1`s, the `%H` row compared as written), and the window's other pane
+gave an empty line.
+
+Tested: the tmux package's Customize suite, "the filter is asked with
+list-panes, for this pane only, and its line read back". 147 of 147.
+FakeTmux has no customize-mode, so the app's tests do not run the
+filter.

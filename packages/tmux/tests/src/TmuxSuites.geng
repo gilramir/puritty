@@ -1329,6 +1329,26 @@ customize =
         act t keyName name =
             Customize.act t data keyName [] (entryNamed name t)
 
+        filterCase =
+            { name = "the filter is asked with list-panes, for this pane only, and its line read back: display-message gave it to strftime, and past 8 KB answered nothing (review TB5)"
+            , test =
+                \_ ->
+                    let
+                        rows =
+                            all view t38 |> Array.takeFirst 3
+
+                        query =
+                            Customize.filterQuery t38 data "#{==:#{option_name},status}" rows
+                    in
+                    Expect.equal
+                        { list = True, display = False, only = True, read = "101" }
+                        { list = String.startsWith "list-panes -t '%5' -F " query
+                        , display = String.contains "display-message" query
+                        , only = String.contains "#{?#{==:#{pane_id},%5},=" query
+                        , read = Customize.filterAnswers [ "", "=101", "" ]
+                        }
+            }
+
         commandsOf a =
             when a is
                 Customize.Run cs ->
@@ -1355,7 +1375,8 @@ customize =
             Array.foldl (\p acc -> Dict.update p.row (\had -> Just (Maybe.withDefault "" had ++ p.text)) acc) Dict.empty pieces |> Dict.values
     in
     run "Customize"
-        [ { name = "3.8's table: status is a choice of six, on by default"
+        [ filterCase
+        , { name = "3.8's table: status is a choice of six, on by default"
           , test =
                 \_ ->
                     Expect.equal

@@ -25,7 +25,9 @@ module Tmux.Customize exposing
     , emptyData
     , entries
     , envOf
+    , filterAnswers
     , filterFormat
+    , filterQuery
     , help
     , keyFormat
     , lines
@@ -1839,6 +1841,29 @@ filterFormat t d filter rows =
                 "#{?" ++ filled ++ ",1,0}"
             )
         |> String.join ""
+
+
+{-| The filter (`f`) asked of tmux: `list-panes -t PANE -F`, with
+`filterFormat` expanded for this pane only and every other pane's line
+empty (tmux expands only the branch of `#{?}` it takes). Not
+`display-message`, which gives its whole format to strftime first, into
+8192 bytes, and answers nothing when it does not fit: a filter over a few
+hundred rows, with a `%` in any value written in, came back empty, and a
+`%` of the filter's own was changed before it was compared (the code
+review's TB5, puritty `docs/tmux.md` TM122). `list-panes -F` expands its
+format with no strftime. -}
+filterQuery : Table -> Data -> String -> Array Entry -> String
+filterQuery t d filter rows =
+    Command.listPanesTarget d.paneId ("#{?#{==:#{pane_id}," ++ literal d.paneId ++ "},=" ++ filterFormat t d filter rows ++ ",}")
+
+
+{-| `filterQuery`'s answer: this pane's line, a `1` or `0` a row. -}
+filterAnswers : Array String -> String
+filterAnswers fromTmux =
+    fromTmux
+        |> Array.findFirst (String.startsWith "=")
+        |> Maybe.map (\found -> String.dropFirst 1 found.value)
+        |> Maybe.withDefault (meant Reason.FromOutside "")
 
 
 {-| A value written into a format as itself. -}
