@@ -58,6 +58,7 @@ not by a run.
 - What: `pt_open`/`pt_refont` accept any face `FT_New_Face` opens. For a non-scalable face (an `.otb` bitmap font such as Terminus, which the FreeType sfnt driver opens and fontconfig reports as `TrueType`, so `puritty_x11_fonts` lists it) `FT_Set_Char_Size` fails unless a strike matches exactly, the size metrics stay 0, and `pt_cw`, `pt_ch` come out 0. Nothing checks them.
 - Scenario: the user names such a font; `puritty_x11_open` creates a 0-wide window and the first ConfigureNotify runs `size_in`, an integer division by `pt_cw == 0`: SIGFPE. With `setFont` at run time the same happens in `refit`.
 - Fix: in `pt_open`/`pt_refont` treat `pt_cw <= 0 || pt_ch <= 0` as "cannot be used" (fall back as for an unreadable font); for a non-scalable non-color face pick the nearest strike with `FT_Select_Size`, as the color path already does.
+- Fixed: 2026-11-24, `docs/renderer.md` R23. A face with only bitmap strikes takes the nearest strike (`FT_Select_Size`), and the cell is at least a pixel each way. Test: `harness/bitmapfont.py`, Terminus at 9, 11, 20 points: before, 11 and 20 opened 662 by 10 and died at a resize (SIGFPE); now all live. A bitmap font is drawn at the strike of the file fontconfig gives (12 px for Terminus).
 
 ### X6 · A stale event time makes a copy fail silently: `SetSelectionOwner` is never verified
 - Where: packages/x11/src/Ext/puritty_x11.c:2003-2017 (`puritty_x11_select`), 792 (`last_time`)

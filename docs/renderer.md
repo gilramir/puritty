@@ -1062,3 +1062,34 @@ review measured around a millisecond. With 3,000 distinct code points
 16 cases failing by the same pixel counts, with the driver built from the
 code before it: those failures are older than R22 and not looked into
 here.
+
+## R23. A font of bitmaps only makes a cell (2026-11-24, the code review's X5)
+
+`size_face` sized every face but a color one with `FT_Set_Char_Size`,
+unchecked. A face FreeType cannot scale, only bitmap strikes (Terminus's
+`.otb` files, which fontconfig lists as TrueType, so the font list offers
+them), fails that call unless a strike is the size exactly, and keeps no
+size: the cell was 0 px high. The window opened 662 by 10 pixels (80
+columns of nothing), and its first resize divided the window's height by
+the cell's: SIGFPE.
+
+Now a face with no outlines and some strikes takes the strike nearest the
+size asked for (`FT_Select_Size`), as the color path does for its
+bitmaps; and the cell is never less than a pixel either way, so a face
+that gives no metrics still cannot divide by zero.
+
+**What a bitmap font is drawn at**: the strike its file has. Terminus
+ships one strike a file, and fontconfig, asked for the family without a
+pixel size, gives the 12 px file, so Terminus is drawn at 12 px (6 by 12
+cells) whatever size is set. Asking fontconfig with the pixel size would
+pick the nearest file; that changes matching for every font, which the
+pixel gate's pins hold, and is not done here.
+
+**Tested** by `harness/bitmapfont.py`, new: puritty on Xvfb with
+Terminus (from the pixel gate's pinned nixpkgs) at 9, 11 and 20 points,
+each window resized. Before: 9 points (12 px, the strike) opened at 502
+by 298 and lived; 11 and 20 opened at 662 by 10 and died at the resize
+(exit −8, SIGFPE). Now all three open at 502 by 298 and live.
+
+**Gates**: the pixel gate 55 of 55 on Linux; on beelink1 39 of 55, the
+16 older failures of R22.

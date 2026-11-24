@@ -188,7 +188,20 @@ static void size_face(Face *F) {
         return;
     }
     F->scale = 1.0;
-    FT_Set_Char_Size(F->ft, 0, points0 * 64, (FT_UInt) dpi0, (FT_UInt) dpi0);
+    if (!FT_IS_SCALABLE(F->ft) && F->ft->num_fixed_sizes > 0) {
+        /* bitmaps only (Terminus's .otb): FT_Set_Char_Size fails unless a
+         * strike is the size exactly, and leaves no metrics (X5); the
+         * strike nearest the size asked for, as xterm and fontconfig's
+         * clients take it */
+        long want = (long) points0 * dpi0 * 64 / 72, best = 0;
+        for (int i = 1; i < F->ft->num_fixed_sizes; i++) {
+            long d = labs(F->ft->available_sizes[i].y_ppem - want), b = labs(F->ft->available_sizes[best].y_ppem - want);
+            if (d < b) best = i;
+        }
+        FT_Select_Size(F->ft, (FT_Int) best);
+    } else {
+        FT_Set_Char_Size(F->ft, 0, points0 * 64, (FT_UInt) dpi0, (FT_UInt) dpi0);
+    }
     if (!F->primary) {
         FT_UInt gi = FT_Get_Char_Index(F->ft, 0x6C34);
         if (gi && FT_Load_Glyph(F->ft, gi, FT_LOAD_NO_HINTING) == 0) {
@@ -1024,6 +1037,10 @@ static void primary_metrics(void) {
         pt_cw = (int) (face->glyph->advance.x >> 6);
     pt_ch = (int) (face->size->metrics.height >> 6);
     pt_ascent = (int) (face->size->metrics.ascender >> 6);
+    /* a face that gave no metrics at all still makes a cell: the window's
+     * sizes are divided by it (X5) */
+    if (pt_cw < 1) pt_cw = 1;
+    if (pt_ch < 1) pt_ch = 1;
     long below = -FT_MulFix(face->underline_position, face->size->metrics.y_scale) >> 6;
     long thick = FT_MulFix(face->underline_thickness, face->size->metrics.y_scale) >> 6;
     line_thick = thick < 1 ? 1 : (int) thick;
