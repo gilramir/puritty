@@ -1225,3 +1225,16 @@ Cherokee, Georgian, Tifinagh, Javanese, Mongolian, math, runes, Gothic,
 Tibetan, Meitei) chose the same 17 faces in the same order before and
 after. The pixel gate on beelink1 passes 39 of 55 both ways, the same
 16 cases failing by the same pixel counts (R22).
+
+## WS33 · The events gate built again (2026-11-24)
+
+`harness/events.py` (WS19) had stopped building: its window program
+(`harness/events/src/Main.geng`) gave `Window.open` no `padding` (R20,
+2026-11-17) and named none of the events added since (`PastedImage`,
+`DragOver`, `DragLeft`, `Dropped`, `MenuChosen`, `Rescaled`, `Note`). It
+now opens with no padding, as the pixel gate's window does, and writes a
+line for each. Two pins moved: in `pointer-all` and `pointer-basic` every
+pointer position is one pixel up and left of the pin, all 27 lines and
+nothing else, since R21 (2026-11-19) shares the pixels past the last cell
+between the two sides (the 354 by 211 window has 3 and 2 spare); they are
+pinned again. 13 of 13 cases pass on beelink1.
