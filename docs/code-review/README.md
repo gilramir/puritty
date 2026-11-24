@@ -284,7 +284,7 @@ covered" sections. The larger gaps:
 | [SC7](04-ssh-core.md) | inaccuracy | confirmed | **fixed** `ssh_config` keywords the client does not act on are dropped without a word, including ones that restrict what it may do |
 | [SC8](04-ssh-core.md) | bug | confirmed | **fixed** keyboard-interactive is tried once per connection, so one mistyped answer ends the login |
 | [ST1](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A batch whose SFTP stream breaks is reported as a success: `Finished` overwrites `Broken` |
-| [ST2](05-ssh-session-transfer.md) | security | plausible | The shell fallback's quoting is only right for POSIX-style login shells: fish misreads `\'`, csh/tcsh refuse the newline |
+| [ST2](05-ssh-session-transfer.md) | security | plausible | **fixed** The shell fallback's quoting is only right for POSIX-style login shells: fish misreads `\'`, csh/tcsh refuse the newline |
 | [ST3](05-ssh-session-transfer.md) | security | confirmed | **fixed** A remembered password is given without asking to a host whose key is not the known one |
 | [ST4](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A dropped folder is walked through its symlinks: a link to `/` or to a parent uploads far more than was dropped, or never finishes |
 | [ST5](05-ssh-session-transfer.md) | security | plausible | **fixed** A hostile SFTP server can crash the client with one `SSH_FXP_NAME`: `entries` and `skipExtended` recurse once per element, not in a loop |

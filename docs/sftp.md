@@ -1206,10 +1206,11 @@ choices, conflicts and events, so that the app drives both the same way.
 Where `Transfer` is told one channel's bytes, this one asks the caller
 to open, write, end and close `exec` channels (`Channel`: `Open`,
 `Write`, `Eof`, `Close`, each with a reference from a base the caller
-gives) and is told their events. Every command is `sh -c '…'`, so the
-login shell does not matter (zsh's ran them in the gate), each name in
-single quotes with `'` written `'\''`. (As first built, a name that was
-not UTF-8 failed its job, since a command was text; FT19 made it bytes.)
+gives) and is told their events. Every command is `sh -c '…'`, each
+name in single quotes with `'` written `'\''`. (As first built, a name that was
+not UTF-8 failed its job, since a command was text; FT19 made it bytes.
+That the login shell does not matter, as this said, was so only for
+POSIX-style shells; FT34 made it so for fish and tcsh.)
 
 - **One command looks at every target first**: `test -d`, `test -e`, the
   size from `ls -lnd` (fields, not the name, under `set -f`), and the
@@ -2222,3 +2223,54 @@ found two more in the picker: `tailLabel` added 1 to `n` before testing
 `n` against the path's names (the test now comes first), and the filter's
 width summed `Text.width`, which it cannot bound, with a pixel size (each
 now through `little`). `scripts/checks.sh`: 0 new, 0 gone.
+
+
+## FT34 · The shell's commands are the same to every login shell (2026-11-24)
+
+The code review's ST2. sshd runs a command as `$SHELL -c COMMAND`, so the
+account's login shell parses each command before `sh` does. FT18's
+commands were `sh -c '<script>'`, the script holding each name in single
+quotes, then quoted again. That is read one way by POSIX shells only:
+
+- fish reads `\'` and `\\` inside single quotes as escapes, so the
+  doubly quoted `'\''` of a name with a quote put the rest of the
+  script outside the quotes.
+- csh and tcsh refuse a newline inside quotes, and every look script has
+  one.
+
+Run here (below), every upload failed under both. fish failed with a
+parse error; tcsh with "Unmatched '".
+
+Now the command is fixed, and the script travels on the channel's input:
+
+    sh -c 'eval "$(dd bs=1 count=N 2>/dev/null)"'
+
+Inside its single quotes there is no quote, backslash, newline or `!`,
+so sh, bash, zsh, fish, csh and tcsh all hand `sh` the same string, and
+no name is in it. `ShellTransfer.underSh` makes it from the script's
+length, and `openCommand` writes the script first when the channel
+starts, before an upload's bytes. `dd bs=1` reads a byte at a time,
+exactly the script's length, so nothing after it is taken, and the bytes
+after it are the script's own input, as they were.
+
+**Tested:** `shell-transfer.py` can now run a case under another login
+shell. sshd's `ForceCommand fish -c "$SSH_ORIGINAL_COMMAND"`, handed to
+the account's own shell, passes the client's command whole to fish, as
+a fish login shell would get it. fish 4.9.3 and tcsh 6.24.16 come from
+nixpkgs. The new cases:
+
+- `quotes-and-backslashes`: `it's.txt`, `a';echo INJECTED;'`,
+  `back\slash` and `ends\`.
+- The same with fish and with tcsh as the login shell.
+- FT18's `odd-names` with fish and with tcsh.
+
+| case | before | now |
+|---|---|---|
+| `quotes-and-backslashes` (sh-like login shell) | all four uploaded | the same |
+| `quotes-and-backslashes-fish` | broken: fish's parse error | all four uploaded, bytes and times the same |
+| `quotes-and-backslashes-tcsh` | broken: "Unmatched '" | all four uploaded |
+| `odd-names-fish` | broken: fish's parse error | all three uploaded |
+| `odd-names-tcsh` | broken: "Unmatched '" | all three uploaded |
+
+26 of 26 pass. The 21 cases already pinned did not move, the 5 MB upload
+among them.

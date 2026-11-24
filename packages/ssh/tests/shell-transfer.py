@@ -85,6 +85,33 @@ def locale_check(name, charmap, keys, korean):
     return "\n".join(lines[lines.index("started") + 1:]) + "\n"
 
 
+def c_quotes_and_backslashes(l, r):
+    # a quote, a quote meant to end the quoting (its echo would show), a
+    # backslash, and one at the end: what fish reads inside single quotes
+    # as escapes, and a name tcsh would be handed with newlines around it
+    names = ["it's.txt", "a';echo INJECTED;'", "back\\slash", "ends\\"]
+    for n in names:
+        transfer.put(l / n, n.encode() + b"\n", transfer.OLD)
+    args = []
+    for n in names:
+        args += ["up", l / n, r, n]
+    return args
+
+
+def nix_shell(name):
+    """A shell from nixpkgs, for a host whose login shell is not sh-like."""
+    out = subprocess.run(["nix", "build", "--impure", "--no-link", "--print-out-paths", f"nixpkgs#{name}"],
+                         capture_output=True, text=True, check=True)
+    return out.stdout.split()[0] + "/bin/" + name
+
+
+def login_shell(name):
+    """sshd's lines that run every command as that login shell would:
+    sshd hands ForceCommand to the account's own shell, which passes
+    $SSH_ORIGINAL_COMMAND on whole, as one word, to the other (ST2)."""
+    return lambda: [f'ForceCommand {nix_shell(name)} -c "$SSH_ORIGINAL_COMMAND"']
+
+
 def c_not_allowed(l, r):
     transfer.put(l / "a.txt", b"a\n")
     return ["up", l / "a.txt", r, "a.txt"]
@@ -96,6 +123,13 @@ CASES = [(name, setup, True, []) for name, setup in transfer.CASES if name != "r
     ("large", c_large, True, []),
     ("not-allowed", c_not_allowed, False, []),
     ("host-has-sftp", c_not_allowed, True, [f"Subsystem sftp {SFTP_SERVER}"]),
+    ("quotes-and-backslashes", c_quotes_and_backslashes, True, []),
+    # the same names, and odd-names, under fish and tcsh as the login shell
+    # (the code review's ST2, docs/sftp.md FT34)
+    ("quotes-and-backslashes-fish", c_quotes_and_backslashes, True, login_shell("fish")),
+    ("quotes-and-backslashes-tcsh", c_quotes_and_backslashes, True, login_shell("tcsh")),
+    ("odd-names-fish", c_odd_names, True, login_shell("fish")),
+    ("odd-names-tcsh", c_odd_names, True, login_shell("tcsh")),
 ]
 # the EUC-KR and CP949 cases again, the host's commands run in a locale of
 # that character set, as on a host set up in it
@@ -113,13 +147,13 @@ def run_case(name, setup, allow, extra, keys):
     before = WORK / f"{name}.before"
     shutil.rmtree(before, ignore_errors=True)
     shutil.copytree(d, before, symlinks=True)
-    server = sshd.Server(extra)
+    server = sshd.Server(extra() if callable(extra) else extra)
     kh = WORK / f"known_hosts.{name}"
     pub = (sshd.WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
     kh.write_text(f"[127.0.0.1]:{server.port} {' '.join(pub)}\n")
     try:
         out = subprocess.run([str(CLIENT), "session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--identity", keys["ed"],
-                              "--known-hosts", str(kh), "--strict", "yes", "--exec", "read x",
+                              "--known-hosts", str(kh), "--strict", "yes", "--exec", "cat" if callable(extra) else "read x",
                               "--upload", *(["--allow-shell"] if allow else []), *args],
                              capture_output=True, text=True, errors="backslashreplace", timeout=120, preexec_fn=lambda: os.umask(0o002))
     finally:

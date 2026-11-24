@@ -131,6 +131,7 @@ type alias Run =
     , waiting : Int
     , ended : Bool
     , names : Array Bytes
+    , script : Bytes
     }
 
 
@@ -169,7 +170,7 @@ start options jobs =
         finish (startNext { st | phase = Moving })
 
     else
-        finish (openCommand -1 (underSh (lookScript jobs)) [] (Int64.fromInt 0) st)
+        finish (openCommand -1 (lookScript jobs) [] (Int64.fromInt 0) st)
 
 
 sizeOf : Job -> Int64
@@ -218,8 +219,8 @@ onChannel c st =
 
 
 openCommand : Int -> Bytes -> Array Bytes -> Int64 -> State -> State
-openCommand job command names size st =
-    onChannel (Open { ref = st.ref, command = command })
+openCommand job script names size st =
+    onChannel (Open { ref = st.ref, command = underSh script })
         { st
             | ref = st.ref + 1
             , run =
@@ -238,6 +239,7 @@ openCommand job command names size st =
                     , waiting = 0
                     , ended = False
                     , names = names
+                    , script = script
                     }
         }
 
@@ -291,10 +293,19 @@ quoteFrom from at b pieces =
         quoteFrom from (at + 1) b pieces
 
 
-{-| The script run by `sh`, whatever the login shell is. -}
+{-| The command that runs a script under `sh`, whatever the login shell
+is. The login shell parses the command first (sshd runs `$SHELL -c
+COMMAND`), and shells do not agree on quoting: fish reads `\'` and `\\`
+inside single quotes as escapes, csh and tcsh refuse a newline inside
+them. So the command holds no name and nothing any of them reads two
+ways: in its single quotes no quote, backslash, newline or `!`. `sh`
+reads the script itself from the command's input, exactly its length
+(`dd bs=1`, a byte a read, so nothing after it is taken), and the bytes
+after it, an upload's, are the script's input (the code review's ST2,
+puritty `docs/sftp.md` FT34). -}
 underSh : Bytes -> Bytes
 underSh script =
-    Bytes.flatten [ Bytes.fromString "sh -c ", quoted script ]
+    Bytes.fromString ("sh -c 'eval \"$(dd bs=1 count=" ++ String.fromInt (Bytes.length script) ++ " 2>/dev/null)\"'")
 
 
 joined : Bytes -> Bytes -> Bytes
@@ -471,7 +482,8 @@ onEvent event run st =
                 onChannel (Close run.ref) { st | run = Just { run | started = True } }
 
             else
-                fill { run | started = True } st
+                -- the script first, then what it reads (`underSh`)
+                fill { run | started = True } (onChannel (Write { ref = run.ref, bytes = run.script }) st)
 
         Connection.Output bytes ->
             { st | run = Just { run | out = Array.pushLast bytes run.out } }
@@ -891,7 +903,7 @@ startNext st0 =
             failJob i "SFTP is turned off on this host, and a download needs it" st
 
         Just (MakeDir m) ->
-            openCommand i (underSh (makeDirScript m.path)) [] (Int64.fromInt 0) st
+            openCommand i (makeDirScript m.path) [] (Int64.fromInt 0) st
 
         Just (Upload u) ->
             upload i u st
@@ -902,13 +914,13 @@ upload i u st =
     let
         byPart names =
             openCommand i
-                (underSh (newFileScript { dir = u.dir, name = u.name, size = u.size, mtime = u.mtime, names = names }))
+                (newFileScript { dir = u.dir, name = u.name, size = u.size, mtime = u.mtime, names = names })
                 names
                 u.size
                 st
 
         inPlace =
-            openCommand i (underSh (inPlaceScript { dir = u.dir, name = u.name, size = u.size, mtime = u.mtime })) [ u.name ] u.size st
+            openCommand i (inPlaceScript { dir = u.dir, name = u.name, size = u.size, mtime = u.mtime }) [ u.name ] u.size st
     in
     when Dict.get i st.theirs is
         Just AFolder ->
