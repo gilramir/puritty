@@ -896,3 +896,16 @@ there, and gave up 5 ms after the probe, before tmux could answer.
 nothing is in doubt, so nothing is asked. A program writing into the
 terminal in the middle of one of tmux's lines spoils that line, which no
 rule can mend; `wall` writes whole lines, and tmux's are short.
+
+## TK15 · A name looked for in a list is a comparison (2026-11-24)
+
+TA12 (`docs/tmux.md` TM114) put `changesKeys` in `TmuxMode`, which asks
+whether a command line the user typed binds, unbinds, sources a file or
+sets a prefix: `Array.member first [ "bind-key", "bind", … ]`. Those
+literals are tmux command names compared with what was typed, not
+commands made, but `scripts/tmux-commands.py` passed `Array.member` only
+right before a literal, so the unit gate's `tmux-commands` failed on the
+two lines from TA12 on (found 2026-11-24, at the code review's PS8). The
+check now takes a literal inside a list after `Array.member X [` as a
+comparison too. It still names the two lines on the tree before the
+change, and none now.

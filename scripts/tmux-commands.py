@@ -34,7 +34,9 @@ words = names
 MODES = {"copy-mode", "copy-mode-vi", "view-mode", "clock-mode", "customize-mode", "tree-mode",
          "buffer-mode", "client-mode"}
 literal = re.compile(r'"((?:[^"\\]|\\.)*)"')
-comparing = re.compile(r'(==|/=|== Just|startsWith|endsWith|contains|\bhas|Caps\.has|Caps\.known|Dict\.get|Dict\.member|Array\.member)\s*\(?\s*$')
+comparing = re.compile(r'(==|/=|== Just|startsWith|endsWith|contains|\bhas|Caps\.has|Caps\.known|Dict\.get|Dict\.member|Array\.member)\s*\(?\s*$'
+                       # a name looked for in a list of them, `Array.member first [ "bind-key", "bind" ]`
+                       r'|Array\.member\s+[\w.]+\s*\[\s*("(?:[^"\\]|\\.)*"\s*,\s*)*$')
 
 
 def strays():
