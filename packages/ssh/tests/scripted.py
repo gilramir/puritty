@@ -239,6 +239,16 @@ class Server:
             c.send(bytes([2]) + string(b"before the KEXINIT"))
         self.exchange(c, client_version, True)
         if case == "not-strict-gcm":
+            # the client's first packet under AES-GCM, which this server
+            # cannot read: whatever of it has not been read yet is taken
+            # raw before closing, since a close with bytes unread is a
+            # reset, not the end the pin holds
+            sock.settimeout(1)
+            try:
+                while sock.recv(65536):
+                    pass
+            except TimeoutError:
+                pass
             return
         request = c.read()
         assert request[0] == 5, request
