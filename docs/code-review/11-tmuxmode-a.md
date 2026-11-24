@@ -114,6 +114,7 @@ read as the answer to the question before it, until the next attach.
 - What: the capture asks from the first line of history; the terminal it is fed to has a scrollback budget sized for 1000 plain rows, whatever the user's scrollback setting or tmux's `history-limit`.
 - Scenario: `history-limit 50000`, eight panes: an attach moves several megabytes per pane (twice, by the finding above) to keep a fiftieth. Worse for flow control: `%pause` means puritty fell five seconds behind on a pane, and the answer is to ask for that pane's entire history again, on the same slow link, each time it is paused.
 - Fix: ask `-S -N` with N from the terminal's budget (and make the budget the user's scrollback setting, which TM53 already says it is); after a `%pause` the screen and a few hundred lines are enough.
+- Fixed: 2026-11-23, `docs/tmux.md` TM119. Captures ask `-S -1000` (`TmuxMode.historyRows`, the terminal's budget). The budget as the user's scrollback setting is left. Test: TmuxTests "a pane is captured with as much history as its terminal keeps": before, `-S - -E -`.
 
 ### TA11 · `applyLayout` sizes terminals without the scrollbar's columns; only `refit` uses `fittedIn`
 - Where: app/src/TmuxMode.geng:4443 (`fitted`), 4469 (`fittedIn`), 1987-1989 (`fitted` is only `fittedTitles`), docs/tmux.md TM53

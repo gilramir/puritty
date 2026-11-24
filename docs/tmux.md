@@ -4519,3 +4519,39 @@ Test: "text from tmux drawn in the window has its control characters as
 spaces", on each tmux: `status-left` set to `L ESC(0 qq ESC(B` under
 tmux's look. Before, the status line showed `L──`, DEC's line drawing
 chosen; now `L (0qq (B`.
+
+
+## TM119 · A capture asks for as much history as the terminal keeps (2026-11-23)
+
+The code review's TA10. `recapture` asked `capture-pane -p -e -J -S - -E
+-`: the pane's whole history, on attach and again after every `%pause`,
+into a terminal whose scrollback budget is 1,000 rows
+(`Vt.scrollbackBytesFor`). With `history-limit 50000`, an attach moved
+fifty times what was kept. After a `%pause`, which means puritty is
+already five seconds behind on that pane, it asked for all of it again
+on the same slow link.
+
+Now `TmuxMode.historyRows` (1000) is both the terminal's budget and what
+a capture asks for: `-S -1000`. `Command.capture` takes the number of
+history lines. Making the budget the user's own scrollback setting, as
+TM53 says it is, is left. It is a change to every pane's terminal, not to
+what is asked.
+
+A history capture fed whole is also deep work for node: on the old
+question, the test below with 1,500 lines of history overflowed node's
+stack in `Vt.Parse` (geng-lang's open item for top-level tail-call
+groups, from VPN1), and even 1,100 did with the new one. The shipped
+build is native and is not affected. The test uses 300 lines.
+
+Tested: TmuxTests "a pane is captured with as much history as its
+terminal keeps", on all six versions. Before, both captures asked `-S -
+-E -`; now `-S -1000 -E -`. `tmux-questions.txt` names the new questions,
+and `record-tmux.py` recorded them again from tmux 3.8 (devbox), and
+3.6a, 3.4, 3.2a, 3.0 and 2.7 built by `tmux-versions/releases.sh` on
+gmktec7. `RealTmux.geng` changed only in the 13 questions' text. The
+answers are the same, the pane's 200 lines all being within 1,000.
+
+`releases.sh` also rewrote `corpus/tmux/VERSION` for the five versions it
+built: much shorter `answers.txt`, and `variables.txt` deleted because
+`variables.py` wants the 2.8 tarball. Those files were restored. The
+binaries were all that was needed.

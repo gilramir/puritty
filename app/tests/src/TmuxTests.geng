@@ -1704,6 +1704,22 @@ onVersion version =
                     in
                     Expect.equal { drawn = True, lines = False } { drawn = String.contains "L (0qq (B" status, lines = String.contains "─" status }
           }
+        , { name = "a pane is captured with as much history as its terminal keeps, not all of tmux's (review TA10)"
+          , test =
+                \_ ->
+                    let
+                        run =
+                            attached (FakeTmux.world { version = version, cols = 80, rows = 24, lines = numbered 300 })
+
+                        captures =
+                            run.world.heard |> Array.mapAndFlatten (String.split " ; ") |> Array.keepIf (String.startsWith "capture-pane -p -e -J")
+                    in
+                    Expect.equal { some = True, whole = [], bounded = True }
+                        { some = not (Array.isEmpty captures)
+                        , whole = Array.keepIf (String.contains "-S - ") captures
+                        , bounded = Array.all (String.contains "-S -1000 -E -") captures
+                        }
+          }
         , { name = "the size sent when the status line's rows change waits for its reply: no reply comes that no question waited for (review TA5, TB3)"
           , test =
                 \_ ->

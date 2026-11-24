@@ -193,8 +193,9 @@ SUITES = [
         # commands each waited for, on each tmux; 579 since TB2: Shift+PgUp
         # in copy mode is tmux's, on each tmux; 580 since PS10: a host's
         # change undone alone; 586 since TB6: tmux's text drawn inert, on
-        # each tmux
-        586,
+        # each tmux; 592 since TA10: a capture asks for the history kept,
+        # on each tmux
+        592,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
