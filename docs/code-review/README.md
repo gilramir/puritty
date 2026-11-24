@@ -348,7 +348,7 @@ covered" sections. The larger gaps:
 | [PS3](13-app-picker-settings.md) | bug | confirmed | **fixed** What is typed is tied to a row number, so it lands in another setting when the list changes under it |
 | [PS4](13-app-picker-settings.md) | bug | confirmed | **fixed** With a color scheme set, a color equal to puritty's default cannot be chosen, and the reset mark does nothing |
 | [PS5](13-app-picker-settings.md) | bug | confirmed | **fixed** Rows scrolled partly under the header still take its clicks |
-| [PS6](13-app-picker-settings.md) | bug | plausible | Two listings of one folder in flight corrupt the listing (duplicates, or a part shown as the whole) |
+| [PS6](13-app-picker-settings.md) | bug | plausible | **fixed** Two listings of one folder in flight corrupt the listing (duplicates, or a part shown as the whole) |
 | [PS7](13-app-picker-settings.md) | bug | confirmed | **fixed** The picker sorts and filters names as lossy UTF-8, not in the host's character set |
 | [PS8](13-app-picker-settings.md) | speed | confirmed | **fixed** `middle` cuts a long label one character at a time, measuring the whole string each time |
 | [PS9](13-app-picker-settings.md) | speed | confirmed | **fixed** Each part of a listing re-sorts everything received so far |

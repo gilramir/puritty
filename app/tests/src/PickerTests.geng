@@ -219,6 +219,29 @@ cases =
                 Expect.equal { order = [ alpha, zeta ], alphaShown = True, zetaShown = False }
                     { order = Array.map .name shown.entries, alphaShown = String.contains "alpha" drawn, zetaShown = String.contains "Zeta" drawn }
       }
+    , { name = "a folder refreshed while its listing comes: the two listings' parts interleave, and what is shown is the second's whole (review PS6)"
+      , test =
+            \_ ->
+                let
+                    part id names more p =
+                        (Picker.answer with (Listed { id = id, path = Bytes.fromString "/x", entries = Array.map folderNamed names, more = more }) p).picker
+
+                    firstPart =
+                        part 1 [ "a", "b" ] True opened.picker
+
+                    -- Ctrl+R: the folder asked for again, as request 2
+                    again =
+                        (press 0x72 0x72 2 firstPart).picker
+
+                    final =
+                        again
+                            |> part 2 [ "a", "b" ] True
+                            |> part 1 [ "c" ] False
+                            |> part 2 [ "c" ] False
+                in
+                Expect.equal { names = [ "a", "b", "c" ], complete = True }
+                    { names = Array.map (\e -> Bytes.toStringLossy e.name) final.entries, complete = final.complete }
+      }
     , { name = "the folders' file read back: a path not UTF-8 as bytes, a host of a later kind passed over"
       , test =
             \_ ->

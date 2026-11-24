@@ -2351,3 +2351,25 @@ and the demo's `With` for the demo.
 `A1` as `Zeta` and `B2` as `alpha`, neither UTF-8, listing `A1` then
 `B2`: before, they stayed in that order and a filter `alp` showed
 neither; now `B2` sorts first and `alp` shows `alpha` and not `Zeta`.
+
+## FT38 · Two listings of one folder kept apart (2026-11-24)
+
+The code review's PS6. A listing's parts were merged into the cache's
+entry for its folder whenever that entry was not yet complete, whichever
+request they came for, and either request's end marked it complete. Two
+listings of one folder at once (Ctrl+R while it lists, a bookmark or a
+crumb pressed twice, a typed path's peek beside a going) interleaved:
+names twice, then, after the first ended, the second's next part began
+from nothing, and the folder was shown and kept as that last part alone,
+"complete".
+
+Now each request's parts are kept by its id (`Picker.parts`), merged
+there, and the cache's entry and the shown rows are written from that
+request's own listing; a request's parts are dropped when it ends or
+fails. The cache holds whichever listing of the folder wrote last, each
+whole or marked incomplete.
+
+**Tested** (app suite, new): `/x` listed as `a b` (more to come),
+Ctrl+R (request 2), request 2's `a b`, request 1's `c` (its end), request
+2's `c` (its end). Before, the picker showed `c` alone, complete; now
+`a b c`, complete.

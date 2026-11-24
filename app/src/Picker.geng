@@ -163,6 +163,9 @@ type alias Picker =
     -- has come, and the row to highlight when it has
     , going : Maybe { id : Int, started : Bool, select : Maybe Bytes }
     , waiting : Dict Int Purpose
+    -- each listing's parts so far, by its request: two listings of one
+    -- folder can come at once, and each is its own (review PS6)
+    , parts : Dict Int (Array Keyed)
     , nextId : Int
     -- every folder listed, by its path's bytes in hex
     , cache : Dict String Listing
@@ -202,6 +205,7 @@ open o =
             , complete = False
             , going = Nothing
             , waiting = Dict.empty
+            , parts = Dict.empty
             , nextId = 1
             , cache = Dict.empty
             , highlight = -1
@@ -518,7 +522,7 @@ answer with a p =
 channel closed), said in the box; nothing more is answered. -}
 trouble : String -> Picker -> Picker
 trouble why p =
-    { p | problem = Just why, going = Nothing, waiting = Dict.empty }
+    { p | problem = Just why, going = Nothing, waiting = Dict.empty, parts = Dict.empty }
 
 
 {-| A part of a listing, `more` while more is to come. -}
@@ -530,14 +534,12 @@ listed with l p =
                 key0 =
                     keyOf l.path
 
+                -- this listing's own parts, not another's of the same
+                -- folder (review PS6)
                 before =
-                    when Dict.get key0 p.cache is
-                        Just c ->
-                            if c.complete then
-                                []
-
-                            else
-                                c.keys
+                    when Dict.get l.id p.parts is
+                        Just soFar ->
+                            soFar
 
                         Nothing ->
                             meant Reason.NotYet []
@@ -557,6 +559,12 @@ listed with l p =
 
                             else
                                 Dict.remove l.id p.waiting
+                        , parts =
+                            if l.more then
+                                Dict.set l.id keys p.parts
+
+                            else
+                                Dict.remove l.id p.parts
                     }
             in
             when purpose is
@@ -626,7 +634,7 @@ failed f p =
         Just purpose ->
             let
                 p1 =
-                    { p | waiting = Dict.remove f.id p.waiting }
+                    { p | waiting = Dict.remove f.id p.waiting, parts = Dict.remove f.id p.parts }
             in
             when purpose is
                 Go _ ->
