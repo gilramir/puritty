@@ -142,6 +142,27 @@ cases =
     , { name = "a tmux pane's drop label: a last name too long by itself loses its middle"
       , test = \_ -> Expect.equal " Drop into /…/customer…-11-20-final " (TmuxMode.dropLabel 36 (TmuxMode.Folder (Bytes.fromString "/srv/customer-portal-deployment-2026-11-20-final")))
       }
+    , { name = "a tmux pane's drop label: a name of 4,000 characters loses its middle, found in a few tries (review PS8)"
+      , test =
+            \_ ->
+                Expect.equal (" Drop into /…/" ++ String.repeat 16 "s" ++ "…" ++ String.repeat 28 "e" ++ " ")
+                    (TmuxMode.dropLabel 60 (TmuxMode.Folder (Bytes.fromString ("/" ++ String.repeat 2000 "s" ++ String.repeat 2000 "e"))))
+      }
+    , { name = "a tmux pane's drop label: of 1,500 names the last that fit, found in a few tries (review PS8)"
+      , test =
+            \_ ->
+                Expect.equal " Drop into /…/n/n/n/n/n/n/n/n/n/n/n/n/n/n/n/n/n/n/n/n/n/end "
+                    (TmuxMode.dropLabel 60 (TmuxMode.Folder (Bytes.fromString (String.repeat 1500 "/n" ++ "/end"))))
+      }
+    , { name = "a name cut in its middle keeps the most that fit, found by halves (review PS8)"
+      , test =
+            \_ ->
+                Expect.equal [ 1234, 3999, 1 ]
+                    [ Picker.keptFitting (\keep -> keep <= 1234) 1 3999
+                    , Picker.keptFitting (\_ -> True) 1 3999
+                    , Picker.keptFitting (\_ -> False) 1 3999
+                    ]
+      }
     , { name = "the folders' file read back: a path not UTF-8 as bytes, a host of a later kind passed over"
       , test =
             \_ ->

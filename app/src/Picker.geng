@@ -19,6 +19,7 @@ module Picker exposing
     , dropTarget
     , failed
     , folderOf
+    , keptFitting
     , key
     , listed
     , made
@@ -1868,23 +1869,38 @@ middle size width s =
         s
 
     else
-        middleFrom size width s (String.count s - 1)
+        middleCut s (keptFitting (\keep -> Text.width size (middleCut s keep) <= width) 1 (String.count s - 1))
 
 
-middleFrom : Int -> Int -> String -> Int -> String
-middleFrom size width s keep =
+{-| `s` with its middle left out, `keep` of its characters kept: two in
+five of them from its start, the rest from its end. -}
+middleCut : String -> Int -> String
+middleCut s keep =
     let
         head =
             keep // 5 * 2
-
-        cut =
-            String.takeFirst head s ++ "…" ++ String.takeLast (keep - head) s
     in
-    if keep <= 1 || Text.width size cut <= width then
-        cut
+    String.takeFirst head s ++ "…" ++ String.takeLast (keep - head) s
+
+
+{-| The most kept, from `lo` to `hi`, for which `fits` holds, by halves:
+a few measures of a long name, not one for each character it loses
+(review PS8); `lo` when none does. -}
+keptFitting : (Int -> Bool) -> Int -> Int -> Int
+keptFitting fits lo hi =
+    if lo >= hi then
+        lo
 
     else
-        middleFrom size width s (keep - 1)
+        let
+            mid =
+                (lo + hi + 1) // 2
+        in
+        if fits mid then
+            keptFitting fits mid hi
+
+        else
+            keptFitting fits lo (mid - 1)
 
 
 {-| The breadcrumb's segments: `/` or `~` first, each with its path. -}

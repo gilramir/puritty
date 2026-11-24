@@ -2274,3 +2274,34 @@ nixpkgs. The new cases:
 
 26 of 26 pass. The 21 cases already pinned did not move, the 5 MB upload
 among them.
+
+## FT35 · A long name cut in a few measures (2026-11-24)
+
+The code review's PS8. The picker's `middle`, which leaves out the middle
+of a name or a path too wide for its place, tried one character fewer at
+a time from the whole length down, measuring the whole cut string each
+time: a name of L characters cost up to L measures of L characters. It
+runs for each row's name and link target, each place, the status line and
+the title, at every frame. A tmux pane's drop label (`TmuxMode.dropLabel`,
+FT23) had the same loop twice: its last names dropped one at a time, then
+the last name's characters one at a time, at every pointer motion of a
+drag.
+
+Now each is a search by halves for the most kept that fits (`keptFitting`
+in `Picker`, `mostFitting` in `TmuxMode`), as the settings window's `fit`
+is. A width that grows with what is kept gives the same answer as before.
+
+The drop label also had a bug: a path of one name (`/name`) too long to
+fit started from no last names at all, and `/…/` fit, so the label said
+`Drop into /…/` and nothing of the name. Now one name is cut in its
+middle, as the last of several is.
+
+**Tested** (app suite, three new): the search itself (`keptFitting`, the
+most that fit of 3,999, all, none); the drop label of a 4,000-character
+name (`/…/` and 16 of its first characters, `…`, 28 of its last at 60
+cells; before, `/…/` alone); and of a path of 1,500 names, the 21 last
+that fit with the final one. **Measured** on node with a third case that
+drew the picker with twenty folders of 4,000-character names: the three
+took 129 ms before and 9 ms now. That case is not kept: natively
+`Text.width` asks the renderer, which has no font in the test runner, so
+every name fit and none was cut on Linux and Windows.

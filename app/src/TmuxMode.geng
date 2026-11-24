@@ -17720,46 +17720,58 @@ pathFitting fits whole =
     let
         names =
             String.split "/" whole |> Array.keepIf (\n -> n /= "")
-    in
-    namesFitting fits names (Array.length names - 1)
 
-
-namesFitting : (String -> Bool) -> Array String -> Int -> String
-namesFitting fits names n =
-    let
-        tried =
+        lastNames n =
             "/…/" ++ String.join "/" (Array.takeLast n names)
+
+        -- the most last names that fit, by halves (review PS8); a path of
+        -- one name has that one to cut
+        most =
+            mostFitting (\n -> fits (lastNames n)) 1 (max 1 (Array.length names - 1))
+
+        name =
+            String.join "" (Array.takeLast 1 names)
     in
-    if n <= 1 then
-        if fits tried then
-            tried
-
-        else
-            middleFitting fits (String.join "" (Array.takeLast 1 names)) (String.count tried)
-
-    else if fits tried then
-        tried
+    if most > 1 || fits (lastNames 1) then
+        lastNames most
 
     else
-        namesFitting fits names (n - 1)
+        middleFitting fits name
 
 
 {-| A name too long, as `/…/`, its start, `…` and its end, the longest that
 fits; its end kept the longer, where dates and versions are. -}
-middleFitting : (String -> Bool) -> String -> Int -> String
-middleFitting fits name keep =
+middleFitting : (String -> Bool) -> String -> String
+middleFitting fits name =
     let
-        start =
-            keep // 5 * 2
-
-        tried =
+        tried keep =
+            let
+                start =
+                    keep // 5 * 2
+            in
             "/…/" ++ String.takeFirst start name ++ "…" ++ String.takeLast (keep - start) name
     in
-    if keep <= 2 || fits tried then
-        tried
+    tried (mostFitting (\keep -> fits (tried keep)) 2 (String.count name))
+
+
+{-| The most, from `lo` to `hi`, for which `fits` holds, by halves: a few
+measures, not one for each name or character dropped; `lo` when none
+does. -}
+mostFitting : (Int -> Bool) -> Int -> Int -> Int
+mostFitting fits lo hi =
+    if lo >= hi then
+        lo
 
     else
-        middleFitting fits name (keep - 1)
+        let
+            mid =
+                (lo + hi + 1) // 2
+        in
+        if fits mid then
+            mostFitting fits mid hi
+
+        else
+            mostFitting fits lo (mid - 1)
 
 
 {-| The drag left the window, or was dropped: no mark. -}

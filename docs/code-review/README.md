@@ -350,7 +350,7 @@ covered" sections. The larger gaps:
 | [PS5](13-app-picker-settings.md) | bug | confirmed | **fixed** Rows scrolled partly under the header still take its clicks |
 | [PS6](13-app-picker-settings.md) | bug | plausible | Two listings of one folder in flight corrupt the listing (duplicates, or a part shown as the whole) |
 | [PS7](13-app-picker-settings.md) | bug | confirmed | The picker sorts and filters names as lossy UTF-8, not in the host's character set |
-| [PS8](13-app-picker-settings.md) | speed | confirmed | `middle` cuts a long label one character at a time, measuring the whole string each time |
+| [PS8](13-app-picker-settings.md) | speed | confirmed | **fixed** `middle` cuts a long label one character at a time, measuring the whole string each time |
 | [PS9](13-app-picker-settings.md) | speed | confirmed | Each part of a listing re-sorts everything received so far |
 | [PS10](13-app-picker-settings.md) | bug | confirmed | **fixed** Undo of a host removed or renamed rewrites its table: bookmarks, comments and unknown keys are lost, and hosts added since are deleted |
 | [PS11](13-app-picker-settings.md) | bug | confirmed | **fixed** After the keyboard moves the highlight down, the wheel does nothing |
