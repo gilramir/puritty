@@ -495,6 +495,18 @@ query cmd t =
 not (KG5, `LoadingImage`'s `init` and `complete`). -}
 loaded : Command -> Bytes -> Result String { width : Int, height : Int, rgba : Bool, pixels : Bytes }
 loaded cmd data =
+    loadedWithin maxSize cmd data
+
+
+{-| `loaded`, for a store that holds at most `limit` bytes: a raw load
+whose declared size is past it is "ENOMEM" before it is inflated. A raw
+load's inflating stops one byte past its declared size, and one whose
+dimensions are wrong is not inflated at all, so a small stream cannot
+make the terminal inflate 400 MiB for an image it then refuses (the code
+review's VI4, `docs/images.md` IM37). Ghostty inflates to 400 MiB first;
+its answers differ only for a stream that is corrupt or too long. -}
+loadedWithin : Int -> Command -> Bytes -> Result String { width : Int, height : Int, rgba : Bool, pixels : Bytes }
+loadedWithin limit cmd data =
     let
         f =
             key 0x66 cmd
@@ -514,14 +526,56 @@ loaded cmd data =
 
     else
         -- compressed data inflated first, then a PNG decoded, both in the
-        -- core (`docs/images.md` IM4), held to Ghostty's 400 MB
+        -- core (`docs/images.md` IM4), held to Ghostty's 400 MB; raw pixels
+        -- to their declared size (IM37)
         let
+            width =
+                key 0x73 cmd
+
+            height =
+                key 0x76 cmd
+
             inflated =
-                if has 0x6F cmd then
-                    Result.mapError (\_ -> "EINVAL: decompression failed") (Inflate.zlib maxSize data)
+                if format == 100 then
+                    if has 0x6F cmd then
+                        Result.mapError (\_ -> "EINVAL: decompression failed") (Inflate.zlib maxSize data)
+
+                    else
+                        Ok data
+
+                else if width < 1 || height < 1 || width > 10000 || height > 10000 then
+                    -- what `sized` answers, the stream not read
+                    Ok Bytes.empty
 
                 else
-                    Ok data
+                    let
+                        declared =
+                            width
+                                * height
+                                * (if format == 24 then
+                                    3
+
+                                   else
+                                    4
+                                  )
+                    in
+                    if declared > limit then
+                        Err "ENOMEM: out of memory"
+
+                    else if has 0x6F cmd then
+                        Result.mapError
+                            (\why ->
+                                if why == "too large" then
+                                    -- longer than declared: `sized`'s answer
+                                    "EINVAL: invalid data"
+
+                                else
+                                    "EINVAL: decompression failed"
+                            )
+                            (Inflate.zlib (declared + 1) data)
+
+                    else
+                        Ok data
         in
         when inflated is
             Ok raw ->
@@ -767,8 +821,11 @@ finishLoad kv data quiet t =
 
         store =
             t.images.shown
+
+        limit =
+            t.images.limit
     in
-    when loaded cmd data is
+    when loadedWithin limit cmd data is
         Err why ->
             meant Reason.FromOutside respond quiet { r | message = why } t
 

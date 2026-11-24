@@ -56,6 +56,43 @@ suite =
                     in
                     Expect.equal { replies = [], images = False } { replies = replies off, images = images }
           }
+        , { name = "a raw zlib load is held to its declared size, not inflated past it, and answered as Ghostty answers (review VI4)"
+          , test =
+                \_ ->
+                    let
+                        load params payload =
+                            "\u{001B}_G" ++ params ++ ";" ++ payload ++ "\u{001B}\\"
+
+                        -- 1600 zero bytes deflated, 20 by 20 RGBA
+                        rgba20 =
+                            "eNpjYBgFo2AUjIJRMApIBwAGQAAB"
+
+                        fed =
+                            feed
+                                (String.join ""
+                                    [ -- 100 bytes for a 2 by 2 RGB's 12
+                                      load "a=T,f=24,s=2,v=2,o=z,i=1" "eNpjYKA9AAAAZAAB"
+                                    , load "a=T,f=24,s=2,v=2,o=z,i=2" "eNpjYEAAAAAMAAE="
+                                    , load "a=T,f=32,v=2,o=z,i=3" "eNpjYEAFAAAQAAE="
+                                    , load "a=T,f=32,s=20000,v=2,o=z,i=4" "eNpjYEAFAAAQAAE="
+                                    -- past the store's 1000 bytes
+                                    , load "a=T,f=32,s=20,v=20,o=z,i=5" rgba20
+                                    -- a query is not held to the store
+                                    , load "a=q,f=32,s=20,v=20,o=z,i=6" rgba20
+                                    ]
+                                )
+                                (Vt.withImageLimit 1000 (term 10 5))
+                    in
+                    Expect.equal
+                        [ "\u{001B}_Gi=1;EINVAL: invalid data\u{001B}\\"
+                        , "\u{001B}_Gi=2;OK\u{001B}\\"
+                        , "\u{001B}_Gi=3;EINVAL: dimensions required\u{001B}\\"
+                        , "\u{001B}_Gi=4;EINVAL: dimensions too large\u{001B}\\"
+                        , "\u{001B}_Gi=5;ENOMEM: out of memory\u{001B}\\"
+                        , "\u{001B}_Gi=6;OK\u{001B}\\"
+                        ]
+                        (replies fed)
+          }
         , { name = "replies come oldest first and a take empties them"
           , test =
                 \_ ->

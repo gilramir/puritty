@@ -106,6 +106,7 @@ Facts the findings lean on, all read from the tree:
   flattened); make the per-decoder cap account for working storage (e.g. refuse when planes
   plus output exceed the limit); for `o=z` raw formats, cap inflation at `s*v*bpp` when `s`
   and `v` are given rather than at 400 MiB.
+- Fixed: In part, 2026-11-23, `docs/images.md` IM37. Measured: decoders cost 2.4 to 5 times the pixels, not 10. A raw Kitty load is inflated only to its declared size; wrong dimensions and a size past the store are answered before inflating: a 389 KB load declaring 10000 by 10000 peaked at 941 MB, now 11 MB. Left for Gilbert: JPEG/GIF up to 320 MB of pixels peak at 1.4-1.6 GB (rewrite to bytes, or a working budget that refuses some).
 
 ### VI5 · A Sixel or iTerm2 image drawn over an older one never frees it: animations pile up to the limit
 - Where: vt/src/Vt/Kitty.geng:1199-1268 (`placeShown`)

@@ -1292,3 +1292,62 @@ gnuplot for one picture, and the script offered too.
   in headless Chromium, dark and light, and at a phone's width.
 - The features after it changed sides: the template alternates them by
   their place, and this one is second (Gilbert: fine).
+
+
+## IM37 · A raw Kitty load is inflated only to its declared size (2026-11-23)
+
+The code review's VI4, in part. Each decoder's limit is on the pixels it
+makes, but its working storage is several times that. The review's
+figure was ten times; measured here it is 2.4 to 5. Measured with
+`harness/dump/core-dump` built with the app's limits (320 MB, Sixel and
+iTerm2 on), peak RSS by `/usr/bin/time`:
+
+| input | its bytes | pixels | peak |
+|---|---|---|---|
+| Kitty `f=32,o=z`, 5000 by 5000 | 130 KB | 100 MB | 263 MB |
+| Kitty `f=32,o=z`, 10000 by 10000, past the 320 MB limit | 389 KB | 400 MB | 941 MB, then refused |
+| Kitty `f=32,o=z`, declared 100 by 100, 400 MB of zeros | 389 KB | | 959 MB, then refused |
+| iTerm2 JPEG, 4000 by 3000 | 189 KB | 48 MB | 241 MB |
+| iTerm2 JPEG, 10000 by 8000 | 1.25 MB | 320 MB | 1.36 GB |
+| iTerm2 GIF, 4000 by 3000 | 9.7 KB | 48 MB | 234 MB |
+| iTerm2 GIF, 10000 by 8000 | 59 KB | 320 MB | 1.60 GB |
+
+The two refused Kitty loads are pure waste. Ghostty inflates a load to
+its 400 MiB before checking its size, and so did the core. Now
+`Kitty.loadedWithin` does three things for a raw load (`f=24` or `f=32`):
+
+- Wrong dimensions (none, or past 10,000) are answered as `sized`
+  answers them, without inflating.
+- A declared size past the store's limit is `ENOMEM`, as `addImage`
+  answers it, without inflating. `a=q` is not held to the store, as
+  before.
+- Inflating stops one byte past the declared size. A stream that goes
+  past it is `EINVAL: invalid data`, `sized`'s answer for a wrong length.
+
+Ghostty's answers differ only for a stream that is corrupt or too long:
+Ghostty may say "decompression failed" where the core now gives the size
+answer. PNG (`f=100`) is as before: its size is in its header.
+
+With these, the 10000-by-10000 load peaks at 11 MB and the 100-by-100
+bomb at 12 MB, both answered at once. The 5000-by-5000 load is
+unchanged (263 to 272 MB over runs).
+
+**Left, for Gilbert:** an image inside the limit still costs up to five
+times its pixels while it is decoded. A JPEG or GIF of 320 MB of pixels,
+from a file of 59 KB to 1.25 MB, peaks at 1.4 to 1.6 GB. There are two
+ways:
+
+- Decode into bytes rather than builders of words. That is a rewrite of
+  `Vt.Jpeg`, `Vt.Gif`, `Vt.Png` and `Vt.Inflate`, and refuses nothing.
+- Hold each decode to a working budget, which refuses images the limit
+  now takes. At five times, a 1 GB budget refuses past 200 MB of pixels:
+  50 megapixels, larger than most cameras' photos, smaller than the
+  10000-by-8000 the dimensions allow.
+
+Tested: vt's Replies suite, "a raw zlib load is held to its declared
+size": six loads answered as before the change, each as Ghostty answers
+it (longer than declared, exact, no width, too wide, past the store, a
+query past the store). The replay gate's core side passes 357 of 357. It
+could not be held to Ghostty on gmktec7: `vendor/ghostty` there is at
+Ghostty's main branch (`d8619f1bc`), not v1.4.0, and the oracle's
+patches do not apply (the six that did were reversed).

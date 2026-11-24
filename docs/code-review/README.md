@@ -266,7 +266,7 @@ covered" sections. The larger gaps:
 | [VP8](01-vt-parser-screen.md) | speed | confirmed | **fixed** `composeStyled` interns a style for every pane cell on every frame |
 | [VS2](02-vt-scrollback-view-input.md) | security | confirmed | **fixed** OSC 99 parts with `d=0` grow a pending notification without bound, each part copied onto the last |
 | [VS3](02-vt-scrollback-view-input.md) | bug | confirmed | **fixed** A selection that starts on the right half of a wide character leaves that character out of the copy |
-| [VI4](03-vt-images.md) | security | confirmed | Decoders peak at roughly ten times the pixel bytes, so the 320 MB limit admits multi-GB spikes from small inputs |
+| [VI4](03-vt-images.md) | security | confirmed | **in part** Decoders peak at roughly ten times the pixel bytes, so the 320 MB limit admits multi-GB spikes from small inputs |
 | [VI5](03-vt-images.md) | bug | confirmed | **fixed** A Sixel or iTerm2 image drawn over an older one never frees it: animations pile up to the limit |
 | [VI6](03-vt-images.md) | bug | confirmed | **fixed** An image refused for memory is answered even when the program gave no id |
 | [VI7](03-vt-images.md) | speed | confirmed | **fixed** Eviction sorts every image once per victim, with a scan of all placements inside the comparison |
