@@ -60,10 +60,11 @@ type alias Reader =
     }
 
 
-{-| A command's reply being read: `%begin`'s number and flags, its lines
-so far, and their bytes. -}
+{-| A command's reply being read: `%begin`'s time, number and flags, which
+its `%end` or `%error` repeats, its lines so far, and their bytes. -}
 type alias Block =
-    { number : Int
+    { time : String
+    , number : Int
     , flags : Int
     , lines : Array Bytes
     , size : Int
@@ -282,7 +283,7 @@ bounded result =
                     open
 
                 Nothing ->
-                    meant Reason.NotOpen { number = 0, flags = 0, lines = [], size = 0 }
+                    meant Reason.NotOpen { time = "", number = 0, flags = 0, lines = [], size = 0 }
     in
     if r.inside && (Bytes.length r.held > heldMost || Bytes.length stray > heldMost || reply.size > replyMost) then
         { reader = { r | inside = False, held = Bytes.empty, block = Nothing, stray = Nothing }
@@ -461,7 +462,12 @@ line bytes block events =
         Just open ->
             when guard bytes is
                 Just g ->
-                    if g.number == open.number && (g.kind == "%end" || g.kind == "%error") then
+                    -- the guard that closes it repeats `%begin`'s time,
+                    -- number and flags: a line a pane's program put in a
+                    -- value (a folder's name with a newline) must match
+                    -- all three, the time to the second (the code review's
+                    -- TP2, puritty `docs/tmux.md` TM123)
+                    if g.time == open.time && g.number == open.number && g.flags == open.flags && (g.kind == "%end" || g.kind == "%error") then
                         { block = Nothing
                         , events = Array.pushLast (Reply { number = open.number, flags = open.flags, ok = g.kind == "%end", lines = open.lines }) events
                         }
@@ -477,7 +483,7 @@ line bytes block events =
                 when guard bytes is
                     Just g ->
                         if g.kind == "%begin" then
-                            { block = Just { number = g.number, flags = g.flags, lines = [], size = 0 }, events = events }
+                            { block = Just { time = g.time, number = g.number, flags = g.flags, lines = [], size = 0 }, events = events }
 
                         else
                             -- an `%end` with no `%begin`: nothing to close
@@ -488,7 +494,7 @@ line bytes block events =
 
 
 {-| `%begin`, `%end` or `%error`, with their time, number and flags. -}
-guard : Bytes -> Maybe { kind : String, number : Int, flags : Int }
+guard : Bytes -> Maybe { kind : String, time : String, number : Int, flags : Int }
 guard bytes =
     if Bytes.length bytes > 64 || byteAt 0 bytes /= 0x25 then
         Nothing
@@ -499,11 +505,11 @@ guard bytes =
                 String.split " " (Bytes.toStringLossy bytes)
         in
         when words is
-            [ kind, _, number, flags ] ->
+            [ kind, time, number, flags ] ->
                 if kind == "%begin" || kind == "%end" || kind == "%error" then
                     when { n = String.toInt number, f = String.toInt flags } is
                         { n = Just nv, f = Just fv } ->
-                            Just { kind = kind, number = nv, flags = fv }
+                            Just { kind = kind, time = time, number = nv, flags = fv }
 
                         _ ->
                             Nothing

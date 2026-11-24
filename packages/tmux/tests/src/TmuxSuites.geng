@@ -317,6 +317,17 @@ control =
                     Expect.equal { exited = True, outside = 20 * 65536, inside = False }
                         { exited = Array.member Exited fed.events, outside = outsideBytes, inside = Control.isInside fed.reader }
           }
+        , { name = "a reply is closed only by an %end that repeats its %begin's time, number and flags: a pane's folder name with a newline cannot close it early (review TP2)"
+          , test =
+                \_ ->
+                    let
+                        -- the folder's name `x`, newline, `%end 1 5 1`, newline,
+                        -- `y`, as tmux writes it raw in a reply
+                        fed =
+                            Control.feed (Bytes.fromString "\u{001B}P1000p%begin 1795505656 5 1\r\n/home/x\r\n%end 1 5 1\r\ny\r\n%end 1795505656 5 1\r\n") (Control.expect True Control.reader)
+                    in
+                    Expect.equal [ Entered, Reply { number = 5, flags = 1, ok = True, lines = [ Bytes.fromString "/home/x", Bytes.fromString "%end 1 5 1", Bytes.fromString "y" ] } ] fed.events
+          }
         , { name = "a reply that does not end is held to 64 MiB, past which control mode is left and its lines are the terminal's (review TP3)"
           , test =
                 \_ ->

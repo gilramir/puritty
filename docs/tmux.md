@@ -4649,3 +4649,37 @@ Tested: the tmux package's Customize suite, "the filter is asked with
 list-panes, for this pane only, and its line read back". 147 of 147.
 FakeTmux has no customize-mode, so the app's tests do not run the
 filter.
+
+
+## TM123 · A reply closes only on its own %end (2026-11-24)
+
+The rest of the code review's TP2 that can be closed in the reader. tmux
+writes a value a pane's program chose (`#{pane_current_path}`,
+`#{pane_current_command}`, a window's name) raw in a reply, newlines and
+all. Measured on tmux 3.8: in a directory named `x`, newline, `%end 1 1
+1`, newline, `y`, a control client's `display -p
+'#{pane_current_path}'` reply holds the line `%end 1 1 1`. `Control.line`
+closed a reply on any `%end` or `%error` with its number. A pane's
+program that guessed the number closed the reply early, and the lines
+after it were read as notifications (`%output` for another pane,
+`%exit`).
+
+tmux has no way to escape that newline: `#{q:}` keeps it on every 3.x
+here, a `#{s/…/…/}` pattern cannot hold `[[:cntrl:]]` (its colon ends
+the modifier) and reads `\n` as `n`, and 2.7 has no `s/`. So the reader
+holds the guard to more. tmux's `%end` and `%error` repeat their
+`%begin`'s time, number and flags. In `corpus/tmux/` every one of them,
+in all six versions' `lines.txt`, matches a `%begin` exactly. `Block` now
+keeps `%begin`'s time and flags, and a guard closes it only when all
+three match. To close a reply early, a folder's name must now name the
+second at which puritty asked, which its program cannot see.
+
+Left: a value's newline still adds lines inside the reply. A row puritty
+reads from a reply (a tree mode's `P` row) can be forged that way, and
+shows in that list. That needs the reply's rows held to what was asked,
+query by query.
+
+Tested: the tmux package's Control suite, "a reply is closed only by an
+%end that repeats its %begin's time, number and flags". Before, the
+reply closed at the forged `%end 1 5 1` and `y` became a stray line; now
+the reply holds all three lines. 148 of 148.
