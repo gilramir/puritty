@@ -2387,6 +2387,26 @@ geng_cancel puritty_win32_pasted(geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+/* DRIVES */
+
+/* The type of the drive a path begins with, as GetDriveTypeW gives it
+ * (2 removable, 3 fixed, 4 a network drive, 5 optical, 6 a RAM disk; 0
+ * and 1 none), or -1 for a path that does not begin with a drive letter
+ * and a separator. Only the letter's root is asked, so nothing of the
+ * path is opened (code review VI11). */
+geng_cancel puritty_win32_drive_type(void *path_bytes, geng_wait *wait) {
+    char *path = string_of(path_bytes);
+    int32_t t = -1;
+    if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' &&
+        (path[2] == '\\' || path[2] == '/')) {
+        wchar_t root[4] = {(wchar_t) path[0], L':', L'\\', 0};
+        t = (int32_t) GetDriveTypeW(root);
+    }
+    free(path);
+    geng_succeed(wait, geng_slot_I4(t));
+    return (geng_cancel) {0};
+}
+
 /* THE LOCALE */
 
 /* The user's first language as Windows names it (`ko`, `en-US`,

@@ -49,7 +49,44 @@ import Words
 (`native/`'s `NativeTests`). -}
 suites : Array U.Suite
 suites =
-    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, remembered, tabOrder, clock, drops, clips, TmuxTests.tmuxMode, Explorer.explorer, PickerTests.picker ]
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, remembered, tabOrder, clock, drops, clips, drives, TmuxTests.tmuxMode, Explorer.explorer, PickerTests.picker ]
+
+
+{-| Whether a picture's path is on a drive of this machine, asked before
+it is opened (the code review's VI11, `docs/images.md` IM38): on Windows
+Windows' own answer, which the Windows run of these suites asks; on Linux
+every absolute path. -}
+drives : U.Suite
+drives =
+    U.suite
+        { name = "drives"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "a path on this machine's system drive is local; one with no drive letter, on Windows, is not (review VI11)"
+                (\_ ->
+                    (if Platform.pathSeparator == "\\" then
+                        [ "C:\\Windows\\win.ini", "c:/Windows/win.ini", "\\Windows\\win.ini", "Windows\\win.ini" ]
+
+                     else
+                        [ "/etc/hostname", "/tmp/x.png" ]
+                    )
+                        |> Array.map Platform.localDrive
+                        |> Task.sequence
+                        |> Task.map
+                            (Expect.equal
+                                (if Platform.pathSeparator == "\\" then
+                                    [ True, True, False, False ]
+
+                                 else
+                                    [ True, True ]
+                                )
+                            )
+                )
+            ]
+        }
 
 
 {-| A tab's OSC 52 requests waiting while it is not shown (the code

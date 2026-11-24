@@ -195,8 +195,9 @@ SUITES = [
         # change undone alone; 586 since TB6: tmux's text drawn inert, on
         # each tmux; 592 since TA10: a capture asks for the history kept,
         # on each tmux; 598 since TB4: a popup's title expanded once, on
-        # each tmux
-        598,
+        # each tmux; 599 since VI11: a picture's drive asked before it is
+        # opened
+        599,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

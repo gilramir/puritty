@@ -1,0 +1,26 @@
+module Drives exposing (isLocal)
+
+{-| What kind of drive a path is on, as Windows says (`GetDriveTypeW`).
+
+@docs isLocal
+
+-}
+
+import Bytes exposing (Bytes)
+import Task exposing (Task)
+
+
+{-| Whether a path begins with a drive letter, `X:\`, of a drive on this
+machine: a fixed, removable or optical drive, or a RAM disk. A network
+drive, a letter with no drive, and a path that does not begin with a
+letter are not. Asked before a file a remote program names is opened, so
+that a mapped share is never touched for it (the code review's VI11,
+puritty `docs/images.md` IM38). -}
+isLocal : String -> Task x Bool
+isLocal path =
+    driveTypeExtern (Bytes.fromString path)
+        |> Task.map (\t -> t == 2 || t == 3 || t == 5 || t == 6)
+
+
+@extern(c, "puritty_win32_drive_type")
+driveTypeExtern : Bytes -> Task x Int

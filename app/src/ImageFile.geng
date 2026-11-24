@@ -21,6 +21,7 @@ import Os.Env
 import Os.Error exposing (Error)
 import Os.File as File
 import Os.Path as Path exposing (Path)
+import Platform
 import Reason
 import Task exposing (Task)
 
@@ -51,9 +52,26 @@ read fs want =
         Task.succeed (Err "EPERM: that folder is not read")
 
     else
-        Task.map2 (\real temps -> { real = real, temps = temps }) (File.realPath fs path) (temporaryFolders fs)
-            |> Task.andThen (\found -> checked fs want found.real found.temps)
-            |> Task.onError (\e -> Task.succeed (Err (inKittyWords e)))
+        -- on Windows a mapped network drive is a share by another name,
+        -- and a local link may lead to one: neither is opened (IM38)
+        Platform.localDrive want.path
+            |> Task.andThen
+                (\local ->
+                    if not local then
+                        Task.succeed (Err "EPERM: that folder is not read")
+
+                    else
+                        Task.map2 (\real temps -> { real = real, temps = temps }) (File.realPath fs path) (temporaryFolders fs)
+                            |> Task.andThen
+                                (\found ->
+                                    if Links.shared (Path.toString found.real) then
+                                        Task.succeed (Err "EPERM: that folder is not read")
+
+                                    else
+                                        checked fs want found.real found.temps
+                                )
+                            |> Task.onError (\e -> Task.succeed (Err (inKittyWords e)))
+                )
 
 
 checked : File.Permission -> Want -> Path -> Array Path -> Task Error (Result String Bytes)

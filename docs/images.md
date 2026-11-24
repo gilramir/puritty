@@ -1351,3 +1351,33 @@ query past the store). The replay gate's core side passes 357 of 357. It
 could not be held to Ghostty on gmktec7: `vendor/ghostty` there is at
 Ghostty's main branch (`d8619f1bc`), not v1.4.0, and the oracle's
 patches do not apply (the six that did were reversed).
+
+
+## IM38 · A picture's file on Windows must be on a drive of this machine (2026-11-24)
+
+The rest of the code review's VI11. KG9's first fix (2026-11-22) refuses
+a path that begins with two separators (`\\host\share`, `\\?\`, `\\.\`)
+before it is opened. A mapped network drive is a share by another name:
+`Z:\x.png` with `Z:` mapped makes Windows sign in to that server as the
+user, as `\\host\share` would.
+
+Now, before `realPath` opens anything, `ImageFile.read` asks
+`Platform.localDrive`. On Windows this is the win32 package's
+`Drives.isLocal`, `GetDriveTypeW` on the path's drive letter's root only.
+A fixed, removable or optical drive, or a RAM disk, is local. A network
+drive, a letter with no drive, and a path without a drive letter (`\x`,
+which is on the current drive, whatever that is) are refused, `EPERM`.
+On Linux every absolute path is local, network mounts being the
+system's to make. After `realPath`, a resolved path that begins with two
+separators is refused too, so a local link that leads to a share is not
+read. Opening the link to resolve it may still reach the share. A remote
+program cannot make such a link on this machine.
+
+The setting's text (`[images] read_files`, English and Korean) now says
+what KG9 says: the answers tell a program which files exist.
+
+Tested: the app's `drives` suite, run on Linux and, through `units.py`,
+on Windows (beelink1). On Windows: `C:\Windows\win.ini` and
+`c:/Windows/win.ini` are local; `\Windows\win.ini` and `Windows\win.ini`
+are not. On Linux: `/etc/hostname` and `/tmp/x.png` are local. A mapped
+network drive was not made on beelink1 to try.

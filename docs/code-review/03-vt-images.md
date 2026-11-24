@@ -244,6 +244,7 @@ Facts the findings lean on, all read from the tree:
 - Fix: on Windows refuse paths that are not `X:\...` on a local fixed drive (no `\\`), before
   `realPath`; say in KG9 and the setting's text that replies reveal which files exist.
 - Fixed: In part, 2026-11-22. `ImageFile.read` refuses a path beginning with two separators (`Links.shared`: `\\host\share`, `//host`, `\\?\`, `\\.\`) before `realPath` opens it, on every platform. Not done: a Windows path that is not on a local fixed drive by other means (a mapped network drive letter), and the setting's text saying the replies reveal which files exist (KG9 says it now). Test: "a picture's file named by a share or a device path is refused".
+- Fixed: 2026-11-24, the rest: `docs/images.md` IM38. On Windows a path must begin with a drive letter of a local drive (`GetDriveTypeW`, win32 `Drives.isLocal`, `Platform.localDrive`) before it is opened; a resolved path to a share is refused; the setting's text says the answers reveal which files exist. Test: the app's `drives` suite on Linux and Windows. A mapped network drive was not tried.
 
 ### VI12 · JPEG: green is one too high on every YCbCr pixel
 - Where: vt/src/Vt/Jpeg.geng:1289
