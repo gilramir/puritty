@@ -1012,3 +1012,53 @@ put 5 and 16. On beelink1 (Windows 11, 150%), maximized: the text 22 px
 from the left and from the right (16 and half the spare), and 13 px under
 the title bar (8 and half the spare), where R20 put 16 and the whole
 spare at the bottom.
+
+## R22. The fallback caches grow (2026-11-24, the code review's X3)
+
+A cluster no loaded face covers asks the platform (fontconfig's
+`FcFontMatch` with a charset) for a face, and the answer, a face or none,
+is kept by the cluster's first code point. That cache was a fixed table of
+4,096 slots, and nothing was ever taken out but at `pt_refont`. Past 4,096
+distinct code points it found neither the key nor an empty slot, asked the
+platform again, and wrote the answer over the key's home slot, so the
+cache forgot one it had and the next draw asked again. A program that
+prints more code points that no font has than that (the Private Use Areas
+alone have 137,468) paid a platform match for each such cluster on every
+draw, on the window's thread. The interface's two tables had the same
+shape: `ui_fcache` (1,024 code points) and `ui_keys` (8,192 uploaded
+interface glyphs, where a full table uploaded the glyph again on every
+draw).
+
+**The change:** the three are one kind of table (`Table` in
+`packages/text/src/Ext/puritty_text.c`), open addressed and doubled when
+half full, so a lookup ends at its key or at an empty slot and what was
+asked once is not asked again. The terminal's cache is still emptied by
+`pt_refont`, the interface glyphs' with every glyph (`ui_reset`, at the
+glyph budget). The fallback tables hold one 12-byte slot per key asked,
+each of which cost a platform match, at most half full: every code
+point asked for both color and text, 2,228,224 keys, would be 2^23 slots,
+96 MiB, after as many matches. A table that cannot grow (no memory) puts a new key in its home
+slot, as before.
+
+**Measured** with `harness/fallbacks.py`, new: core-pixels draws 6,000
+distinct code points of plane 15's Private Use Area, which none of the
+pixel gate's fonts has, on a 160 by 50 screen, four times with the screen
+cleared between, and holds the text library's counts (`X11_STATS`):
+
+| | clusters | fontconfig queries |
+|---|---|---|
+| before | 29,040 | 19,392 |
+| after | 29,040 | 6,000 |
+
+With the probe that preceded it (80 by 75, 6,000 code points, four draws):
+17,424 queries taking 561 ms before, 6,000 taking 195 ms after; the whole
+draw time 591 ms and 200 ms. The gate's fontconfig has a handful of fonts,
+so a match is 0.03 ms here; on a desktop with hundreds of fonts the code
+review measured around a millisecond. With 3,000 distinct code points
+(under the old limit) both ask 3,000 times.
+
+**Gates:** the pixel gate passes 55 of 55 on Linux. On beelink1
+(`--windows`) it passes 39 of 55 with this change and 39 of 55, the same
+16 cases failing by the same pixel counts, with the driver built from the
+code before it: those failures are older than R22 and not looked into
+here.

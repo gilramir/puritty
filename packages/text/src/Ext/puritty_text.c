@@ -232,11 +232,62 @@ static int load_face(const char *file, int index, int is_primary) {
     return nfaces++;
 }
 
+/* A table from a nonzero 32-bit key to an id and a value, open
+ * addressed, doubled when half full, so a lookup always ends at the key or
+ * an empty slot and nothing asked once is asked again (X3). Where it
+ * cannot grow, a full table's new entry takes its key's home slot. */
+typedef struct { uint32_t key, id; int value; } Slot;
+typedef struct { Slot *slot; unsigned size, used; } Table;
+
+static Slot *table_get(const Table *t, uint32_t key) {
+    if (t->size == 0) return NULL;
+    unsigned h = (key * 2654435761u) & (t->size - 1);
+    for (unsigned k = 0; k < t->size; k++) {
+        Slot *s = &t->slot[(h + k) & (t->size - 1)];
+        if (s->key == key) return s;
+        if (s->key == 0) return NULL;
+    }
+    return NULL;
+}
+
+static void table_put(Table *t, uint32_t key, uint32_t id, int value) {
+    if ((t->used + 1) * 2 > t->size) {
+        unsigned size = t->size ? t->size * 2 : 1024;
+        Slot *slot = calloc(size, sizeof *slot);
+        if (slot) {
+            for (unsigned i = 0; i < t->size; i++)
+                if (t->slot[i].key) {
+                    unsigned j = (t->slot[i].key * 2654435761u) & (size - 1);
+                    while (slot[j].key) j = (j + 1) & (size - 1);
+                    slot[j] = t->slot[i];
+                }
+            free(t->slot);
+            t->slot = slot;
+            t->size = size;
+        }
+    }
+    if (t->size == 0) return;
+    unsigned h = (key * 2654435761u) & (t->size - 1);
+    for (unsigned k = 0; k < t->size; k++) {
+        Slot *s = &t->slot[(h + k) & (t->size - 1)];
+        if (s->key == key || s->key == 0) {
+            if (s->key == 0) t->used++;
+            *s = (Slot) {key, id, value};
+            return;
+        }
+    }
+    t->slot[h] = (Slot) {key, id, value};
+}
+
+static void table_clear(Table *t) {
+    free(t->slot);
+    *t = (Table) {0};
+}
+
 /* A cache from a cluster's first code point to the face the platform
  * gave it, so that the platform is asked once a code point; -1 where it
  * found none. */
-#define FCACHE 4096
-static struct { uint32_t cp; int face; } fcache[FCACHE];
+static Table fcache;
 
 static int fallback(const uint32_t *cps, int n) {
     int color = emoji(cps, n);
@@ -248,12 +299,8 @@ static int fallback(const uint32_t *cps, int n) {
     for (int i = 0; i < n && !key; i++)
         if (!ignorable(cps[i])) key = cps[i];
     if (color) key |= 0x40000000;
-    unsigned h = (key * 2654435761u) % FCACHE;
-    for (unsigned k = 0; k < FCACHE; k++) {
-        unsigned j = (h + k) % FCACHE;
-        if (fcache[j].cp == key + 1) return fcache[j].face;
-        if (fcache[j].cp == 0) { h = j; break; }
-    }
+    const Slot *known = table_get(&fcache, key + 1);
+    if (known) return known->value;
     double t0 = ns();
     st.fc_queries++;
     int face = -1;
@@ -269,8 +316,7 @@ static int fallback(const uint32_t *cps, int n) {
         free(file);
     }
     if (face < 0) st.fc_failed++;
-    fcache[h].cp = key + 1;
-    fcache[h].face = face;
+    table_put(&fcache, key + 1, 0, face);
     st.fc_ns += ns() - t0;
     return face;
 }
@@ -1094,7 +1140,7 @@ int pt_refont(const char *font, const char *lang, int points, int dpi, long cap)
         memset(&faces[f], 0, sizeof faces[f]);
     }
     nfaces = 0;
-    memset(fcache, 0, sizeof fcache);
+    table_clear(&fcache);
     free(lang_name);
     lang_name = NULL;
     language = NULL;
@@ -1156,12 +1202,11 @@ static int ui_clipped;
 
 /* An interface glyph's id: from bit 30, numbered as they are uploaded, a
  * table from (face, size, glyph) to the id, forgotten with every glyph. */
-#define UI_KEYS 8192
-static struct { uint32_t key, id; int advance; } ui_keys[UI_KEYS];
+static Table ui_keys;
 static uint32_t ui_next = 0x40000000u;
 
 static void ui_reset(void) {
-    memset(ui_keys, 0, sizeof ui_keys);
+    table_clear(&ui_keys);
     ui_next = 0x40000000u;
 }
 
@@ -1216,18 +1261,13 @@ static int ui_covers(int f, uint32_t cp) {
 
 /* The interface face for a code point: the first that has it, else the
  * platform's fallback for it in the window's language, else the first. */
-#define UI_FCACHE 1024
-static struct { uint32_t cp; int face; } ui_fcache[UI_FCACHE];
+static Table ui_fcache;
 
 static int ui_face_for(uint32_t cp) {
     for (int f = 0; f < n_ui_faces; f++)
         if (!ui_faces[f].named && ui_covers(f, cp)) return f;
-    unsigned h = (cp * 2654435761u) % UI_FCACHE;
-    for (unsigned k = 0; k < UI_FCACHE; k++) {
-        unsigned j = (h + k) % UI_FCACHE;
-        if (ui_fcache[j].cp == cp + 1) return ui_fcache[j].face;
-        if (ui_fcache[j].cp == 0) { h = j; break; }
-    }
+    const Slot *known = table_get(&ui_fcache, cp + 1);
+    if (known) return known->value;
     int face = 0, index = 0;
     char *file = pt_fallback_file(&cp, 1, 0, lang_name, &index);
     if (file) {
@@ -1235,8 +1275,7 @@ static int ui_face_for(uint32_t cp) {
         if (f >= 0 && ui_covers(f, cp)) face = f;
         free(file);
     }
-    ui_fcache[h].cp = cp + 1;
-    ui_fcache[h].face = face;
+    table_put(&ui_fcache, cp + 1, 0, face);
     return face;
 }
 
@@ -1268,14 +1307,10 @@ static int ui_named(const uint8_t *name, int n) {
 
 static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
     uint32_t key = ((uint32_t) f << 26) ^ ((uint32_t) px << 18) ^ (g + 1u);
-    unsigned h = (key * 2654435761u) % UI_KEYS;
-    for (unsigned k = 0; k < UI_KEYS; k++) {
-        unsigned j = (h + k) % UI_KEYS;
-        if (ui_keys[j].key == key) {
-            *advance = ui_keys[j].advance;
-            return ui_keys[j].id;
-        }
-        if (ui_keys[j].key == 0) { h = j; break; }
+    const Slot *known = table_get(&ui_keys, key);
+    if (known) {
+        *advance = known->value;
+        return known->id;
     }
     FT_Face ft = ui_faces[f].ft;
     if (FT_Load_Glyph(ft, g, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) return 0;
@@ -1293,9 +1328,7 @@ static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
     pt_glyph_add(id, &glyph);
     glyph_bytes += stride * (long) b->rows;
     free(data);
-    ui_keys[h].key = key;
-    ui_keys[h].id = id;
-    ui_keys[h].advance = glyph.advance;
+    table_put(&ui_keys, key, id, glyph.advance);
     *advance = glyph.advance;
     return id;
 }
@@ -1375,12 +1408,8 @@ static void ui_fill(uint32_t rgb, int x, int y, int w, int h) {
  * 4 by 4 samples. Uploaded once a radius and quarter. */
 static uint32_t ui_corner(int r, int q) {
     uint32_t key = 0x80000000u | ((uint32_t) r << 2) | (uint32_t) q;
-    unsigned h = (key * 2654435761u) % UI_KEYS;
-    for (unsigned k = 0; k < UI_KEYS; k++) {
-        unsigned j = (h + k) % UI_KEYS;
-        if (ui_keys[j].key == key) return ui_keys[j].id;
-        if (ui_keys[j].key == 0) { h = j; break; }
-    }
+    const Slot *known = table_get(&ui_keys, key);
+    if (known) return known->id;
     int stride = (r + 3) & ~3;
     uint8_t *data = calloc((size_t) (stride * r + 1), 1);
     for (int i = 0; i < r; i++)
@@ -1399,8 +1428,7 @@ static uint32_t ui_corner(int r, int q) {
     PtGlyph glyph = {.width = r, .height = r, .stride = stride, .left = 0, .top = r, .advance = r, .data = data};
     pt_glyph_add(id, &glyph);
     free(data);
-    ui_keys[h].key = key;
-    ui_keys[h].id = id;
+    table_put(&ui_keys, key, id, r);
     return id;
 }
 
