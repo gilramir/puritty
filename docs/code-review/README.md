@@ -299,7 +299,7 @@ covered" sections. The larger gaps:
 | [X3](07-x11-text.md) | speed | confirmed | **fixed** The fallback cache is a fixed 4,096-slot table with no full case: past that, every uncovered cluster costs a fontconfig match on every draw |
 | [X4](07-x11-text.md) | bug | plausible | **fixed** Dead keys and the Compose key produce nothing when no XIM server runs |
 | [X5](07-x11-text.md) | bug | plausible | A primary font FreeType cannot size leaves the cell 0 by 0, and the first resize divides by zero |
-| [X6](07-x11-text.md) | bug | plausible | A stale event time makes a copy fail silently: `SetSelectionOwner` is never verified |
+| [X6](07-x11-text.md) | bug | plausible | **fixed** A stale event time makes a copy fail silently: `SetSelectionOwner` is never verified |
 | [X7](07-x11-text.md) | speed | confirmed | **fixed** A keymap change re-fetches the whole keymap synchronously once per XKB event, inside `drain` (so inside `draw`) |
 | [X8](07-x11-text.md) | efficiency | confirmed | `pt_zoom` clears 10 MB of tables per loaded face on every zoom step |
 | [X9](07-x11-text.md) | speed | confirmed | **fixed** `isMaximized` makes four synchronous round trips, and `Main` calls it on every `Resized` |

@@ -1227,3 +1227,28 @@ then `xclip -o`. Before: 8 of 9 saw `INCR`, the ninth was refused, and
 xclip read nothing. Now: 9 of 9, and xclip reads all 320,000 bytes. Built
 once with the eviction of the stalest turned off, it gave the same: the
 `DestroyNotify` path frees the slots by itself.
+
+## 27. A copy checks that it took the selection (2026-11-24)
+
+The code review's X6. A copy set the window as the selection's owner at
+the time of the window's last input event (`last_time`), as ICCCM 2.1
+asks, and took for granted that it was. The server ignores a claim
+older than the current owner's, and a copy a program asks for (OSC 52)
+can come with no input event since another program took the clipboard:
+the user copies elsewhere, comes back by the keyboard (focus events have
+no time), and a program in the terminal copies. puritty then held its
+text as the clipboard's while the server kept the other owner, and a
+paste anywhere gave the old text.
+
+Now `puritty_x11_select` asks who owns the selection after claiming it
+(GetSelectionOwner, as ICCCM says to). If it is not the window, it claims
+again at `CurrentTime`, the server's time at that moment, which X has no
+request to read; if that fails too, the window tells the core it lost the
+selection (record 10, as a SelectionClear does). The question is one
+round trip a copy, waited for: a copy is not a frame, so the window's
+promise that a draw never waits on the server holds.
+
+**Tested** by `harness/stalecopy.py`, new: puritty on Xvfb is clicked,
+then xclip takes the clipboard with `other`, then the tab's program
+copies `mine` with OSC 52. Before, the clipboard read `other`; now
+`mine`, twice.

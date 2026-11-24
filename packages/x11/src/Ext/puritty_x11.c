@@ -2138,6 +2138,13 @@ static void xdnd_message(xcb_client_message_event_t *m) {
     }
 }
 
+static xcb_window_t selection_owner(xcb_atom_t selection) {
+    xcb_get_selection_owner_reply_t *r = xcb_get_selection_owner_reply(conn, xcb_get_selection_owner(conn, selection), NULL);
+    xcb_window_t w = r ? r->owner : XCB_NONE;
+    free(r);
+    return w;
+}
+
 /* The window owns PRIMARY (0) or CLIPBOARD (1) with this text, from the
  * time of the last event the window had (ICCCM 2.1). */
 geng_cancel puritty_x11_select(int32_t which, void *text, geng_wait *wait) {
@@ -2149,7 +2156,21 @@ geng_cancel puritty_x11_select(int32_t which, void *text, geng_wait *wait) {
         sel[which].len = (size_t) t->length;
         sel[which].time = last_time;
         sel[which].owned = 1;
-        xcb_set_selection_owner(conn, window, which ? a_clipboard : XCB_ATOM_PRIMARY, last_time);
+        xcb_atom_t atom_of = which ? a_clipboard : XCB_ATOM_PRIMARY;
+        xcb_set_selection_owner(conn, window, atom_of, last_time);
+        /* the server lets go a claim older than the owner's own (ICCCM
+         * 2.1 says to ask after): a copy a program asks for (OSC 52) can
+         * come with no input event since another program took it. Then
+         * the claim again, at the server's time now, which X has no way
+         * to ask for (X6); one round trip a copy. */
+        if (selection_owner(atom_of) != window) {
+            xcb_set_selection_owner(conn, window, atom_of, XCB_CURRENT_TIME);
+            if (selection_owner(atom_of) != window) {
+                sel[which].owned = 0;
+                uint8_t r[2] = {10, (uint8_t) which};
+                record(r, 2);
+            }
+        }
         xcb_flush(conn);
     }
     geng_succeed(wait, geng_slot_I4(0));
