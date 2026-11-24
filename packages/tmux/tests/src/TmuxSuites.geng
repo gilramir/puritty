@@ -317,6 +317,42 @@ control =
                     Expect.equal { exited = True, outside = 20 * 65536, inside = False }
                         { exited = Array.member Exited fed.events, outside = outsideBytes, inside = Control.isInside fed.reader }
           }
+        , { name = "a reply that does not end is held to 64 MiB, past which control mode is left and its lines are the terminal's (review TP3)"
+          , test =
+                \_ ->
+                    let
+                        -- lines of 1 MiB less one, each under the held line's bound
+                        piece =
+                            Bytes.fromString (String.repeat 1048575 "x" ++ "\n")
+
+                        fed =
+                            Array.foldl
+                                (\_ acc ->
+                                    let
+                                        r =
+                                            Control.feed piece acc.reader
+                                    in
+                                    { reader = r.reader, events = acc.events ++ r.events }
+                                )
+                                (Control.feed (Bytes.fromString "\u{001B}P1000p%begin 1 1 1\n") (Control.expect True Control.reader))
+                                (Array.range 1 65)
+
+                        outsideBytes =
+                            Array.foldl
+                                (\e n ->
+                                    when e is
+                                        Outside b ->
+                                            n + Bytes.length b
+
+                                        _ ->
+                                            n
+                                )
+                                0
+                                fed.events
+                    in
+                    Expect.equal { exited = True, outside = 65 * 1048576, inside = False }
+                        { exited = Array.member Exited fed.events, outside = outsideBytes, inside = Control.isInside fed.reader }
+          }
         , { name = "an entry not expected is asked, and what follows it is held until answered (TM108, the code review's TA3)"
           , test =
                 \_ ->

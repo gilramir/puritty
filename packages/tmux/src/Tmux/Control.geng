@@ -60,12 +60,13 @@ type alias Reader =
     }
 
 
-{-| A command's reply being read: `%begin`'s number and flags, and its
-lines so far. -}
+{-| A command's reply being read: `%begin`'s number and flags, its lines
+so far, and their bytes. -}
 type alias Block =
     { number : Int
     , flags : Int
     , lines : Array Bytes
+    , size : Int
     }
 
 
@@ -245,6 +246,22 @@ heldMost =
     1048576
 
 
+{-| The most bytes one reply may hold before its `%end`. The largest
+replies puritty asks for are a paste buffer's (`show-buffer`) and a
+pane's capture, which asks for at most 1000 rows of history (puritty
+`docs/tmux.md` TM119). Past it control mode is left as for `heldMost`, the
+reply's lines the terminal's (the code review's TP3, puritty
+`docs/tmux.md` TM120). -}
+replyMost : Int
+replyMost =
+    67108864
+
+
+newline : Bytes
+newline =
+    Bytes.fromString "\n"
+
+
 bounded : { reader : Reader, events : Array Event } -> { reader : Reader, events : Array Event }
 bounded result =
     let
@@ -258,10 +275,18 @@ bounded result =
 
                 Nothing ->
                     meant Reason.NotOpen Bytes.empty
+
+        reply =
+            when r.block is
+                Just open ->
+                    open
+
+                Nothing ->
+                    meant Reason.NotOpen { number = 0, flags = 0, lines = [], size = 0 }
     in
-    if r.inside && (Bytes.length r.held > heldMost || Bytes.length stray > heldMost) then
+    if r.inside && (Bytes.length r.held > heldMost || Bytes.length stray > heldMost || reply.size > replyMost) then
         { reader = { r | inside = False, held = Bytes.empty, block = Nothing, stray = Nothing }
-        , events = result.events ++ [ Exited, Outside (Bytes.flatten [ stray, r.held ]) ]
+        , events = result.events ++ [ Exited, Outside (Bytes.flatten (Array.mapAndFlatten (\l -> [ l, newline ]) reply.lines ++ [ stray, r.held ])) ]
         }
 
     else
@@ -442,17 +467,17 @@ line bytes block events =
                         }
 
                     else
-                        { block = Just { open | lines = Array.pushLast bytes open.lines }, events = events }
+                        { block = Just { open | lines = Array.pushLast bytes open.lines, size = open.size + Bytes.length bytes }, events = events }
 
                 Nothing ->
-                    meant Reason.NotKnown { block = Just { open | lines = Array.pushLast bytes open.lines }, events = events }
+                    meant Reason.NotKnown { block = Just { open | lines = Array.pushLast bytes open.lines, size = open.size + Bytes.length bytes }, events = events }
 
         Nothing ->
             meant Reason.NotOpen
                 when guard bytes is
                     Just g ->
                         if g.kind == "%begin" then
-                            { block = Just { number = g.number, flags = g.flags, lines = [] }, events = events }
+                            { block = Just { number = g.number, flags = g.flags, lines = [], size = 0 }, events = events }
 
                         else
                             -- an `%end` with no `%begin`: nothing to close

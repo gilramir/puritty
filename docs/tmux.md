@@ -4555,3 +4555,29 @@ answers are the same, the pane's 200 lines all being within 1,000.
 built: much shorter `answers.txt`, and `variables.txt` deleted because
 `variables.py` wants the 2.8 tarball. Those files were restored. The
 binaries were all that was needed.
+
+
+## TM120 · A reply is held to 64 MiB (2026-11-23)
+
+The rest of the code review's TP3. The first part (2026-11-22) bounded a
+line not yet ended, and the lines in doubt, at 1 MiB (`Control.heldMost`):
+past it control mode is left as `ESC \` leaves it, and the bytes are the
+terminal's. A reply's lines were not bounded. After `ESC P 1000 p` and
+`%begin`, any program's output, or a server that is not tmux, could send
+lines that never reach `%end`, and every one was kept.
+
+Now `Block` counts its bytes, and past `Control.replyMost`, 64 MiB, the
+reply is dropped the same way: `Exited`, then the reply's lines (each
+with its newline), the lines in doubt and the held line, as `Outside`.
+The largest replies puritty asks for are a paste buffer (`show-buffer`)
+and a capture, now at most 1000 rows of history (TM119), so 64 MiB is
+far past anything tmux sends it.
+
+Still as it was: a line not yet ended is copied whole on each read until
+it ends or reaches 1 MiB. That costs at most about 8 MB of copying per
+line in 64 KiB reads, and is bounded.
+
+Tested: the tmux package's Control suite, "a reply that does not end is
+held to 64 MiB": 65 lines of 1 MiB after `%begin`. Before, all were held,
+control mode on; now control mode is left at the 65th, and 65 MiB is the
+terminal's. 146 of 146.
