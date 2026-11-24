@@ -302,7 +302,7 @@ covered" sections. The larger gaps:
 | [X6](07-x11-text.md) | bug | plausible | A stale event time makes a copy fail silently: `SetSelectionOwner` is never verified |
 | [X7](07-x11-text.md) | speed | confirmed | **fixed** A keymap change re-fetches the whole keymap synchronously once per XKB event, inside `drain` (so inside `draw`) |
 | [X8](07-x11-text.md) | efficiency | confirmed | `pt_zoom` clears 10 MB of tables per loaded face on every zoom step |
-| [X9](07-x11-text.md) | speed | confirmed | `isMaximized` makes four synchronous round trips, and `Main` calls it on every `Resized` |
+| [X9](07-x11-text.md) | speed | confirmed | **fixed** `isMaximized` makes four synchronous round trips, and `Main` calls it on every `Resized` |
 | [X10](07-x11-text.md) | bug | plausible | Focus events from a window manager's key grabs are reported as focus changes |
 | [W2](08-win32.md) | speed | confirmed | Every code point no listed family covers opens every installed font face, inside the draw, under the paint lock |
 | [W3](08-win32.md) | bug | plausible | A capture taken from the window forgets the held buttons without telling the program; the native menu does this every time |

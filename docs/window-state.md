@@ -198,3 +198,30 @@ closed: `normal 100 29`; the next opened at 900×493, 100×29 cells. On
 beelink1 (Windows 11, its own `LOCALAPPDATA`): opened 708×501, maximized
 and closed: `maximized 80 24`; the next opened maximized (`IsZoomed`,
 2575×1407), restored and closed: `normal 80 24`; the next opened normal.
+
+## WP10 · A resize asks one question, not four (2026-11-24)
+
+The code review's X9. `isMaximized` on X11 interned `_NET_WM_STATE`,
+`_NET_WM_STATE_MAXIMIZED_VERT` and `_HORZ` each time it was asked, a
+blocking reply each, and then read the window's `_NET_WM_STATE`, a fourth;
+`Main` asks it at every `Window.Resized` (WP9). Dragging an edge over
+`ssh -X` waited four round trips a step before the relayout.
+
+Now the three atoms are interned at open with the selection's atoms
+(`selection_atoms`, all the requests sent before any reply is waited for)
+and `puritty_x11_maximized` reads only the property. The property is still
+read at each resize, not followed from PropertyNotify: `Main` keeps the
+window's size as its normal size when the answer says not maximized, and
+a window manager may set `_NET_WM_STATE` after the ConfigureNotify, so an
+answer cached from events could be the old state and keep a maximized
+size as the normal one. Read when asked, it is as late as it can be.
+
+**Tested** by `harness/maximized.py`, new: puritty on Xvfb through a
+proxy that counts the X requests it sends, resized six times by
+`xdotool windowsize`. From the first resize on, before: 18
+`_NET_WM_STATE` InternAtom requests and 6 GetProperty; now:
+0 InternAtom and 6 GetProperty, in each of three runs; the build before
+fails the gate. Under Xvfb with openbox, `wmctrl` maximized the window,
+restored it, maximized it again and closed it: `window.txt` says
+`maximized 80 24`, the normal size kept as WP9 has it. The window gates
+(sshwindow 33, pointer 56, tabpaste 2, reload 20, keymaps) pass.

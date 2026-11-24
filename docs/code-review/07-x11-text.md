@@ -94,6 +94,7 @@ not by a run.
 - What: `puritty_x11_maximized` interns `_NET_WM_STATE`, `_NET_WM_STATE_MAXIMIZED_VERT` and `_HORZ` with a blocking reply each, on every call, then reads the property with a fourth blocking reply. `Main`'s `Window.Resized` branch calls `Window.isMaximized` first.
 - Scenario: dragging the window's edge sends a Resized for each new size in cells; each costs four network round trips on the UI thread before the relayout. Over `ssh -X` (the case the README is about) a resize drag stutters by 4 × RTT a step.
 - Fix: intern the three atoms once at open (with the other atoms, pipelined as `selection_atoms` does). Track the state from PropertyNotify on `_NET_WM_STATE` (the mask already has PropertyChange) and answer from that, or read it with a polled reply.
+- Fixed: 2026-11-24, `docs/window-state.md` WP10. The three `_NET_WM_STATE` atoms are interned at open with the selection's atoms; `isMaximized` reads only the property (kept read when asked, since an answer cached from PropertyNotify could be older than the ConfigureNotify). Test: `harness/maximized.py`, a request-counting proxy, six resizes: before, 18 InternAtom and 6 GetProperty; now 0 and 6.
 
 ### X10 · Focus events from a window manager's key grabs are reported as focus changes
 - Where: packages/x11/src/Ext/puritty_x11.c:1011-1023

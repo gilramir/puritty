@@ -1078,6 +1078,9 @@ static void drain(void) {
 
 /* THE ROWS */
 
+/* the window manager's state, interned with the selection's atoms */
+static xcb_atom_t a_wm_state, a_max_vert, a_max_horz;
+
 static xcb_atom_t atom(const char *name) {
     xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(conn, xcb_intern_atom(conn, 0, (uint16_t) strlen(name), name), NULL);
     xcb_atom_t a = r ? r->atom : XCB_ATOM_NONE;
@@ -1458,9 +1461,8 @@ geng_cancel puritty_x11_maximized(int32_t want, geng_wait *wait) {
         if (want >= 0) start_maximized = want;
         now = start_maximized;
     } else {
-        xcb_atom_t state = atom("_NET_WM_STATE");
-        xcb_atom_t vert = atom("_NET_WM_STATE_MAXIMIZED_VERT");
-        xcb_atom_t horz = atom("_NET_WM_STATE_MAXIMIZED_HORZ");
+        /* interned once, at open (X9): a Resized asks this each time */
+        xcb_atom_t state = a_wm_state, vert = a_max_vert, horz = a_max_horz;
         if (want >= 0) {
             xcb_client_message_event_t ev = {0};
             ev.response_type = XCB_CLIENT_MESSAGE;
@@ -1594,11 +1596,14 @@ static int xfer_slot(void) {
 }
 
 static void selection_atoms(void) {
-    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE", "image/png"};
-    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr, &a_paste, &a_png};
-    xcb_intern_atom_cookie_t ck[8];
-    for (int i = 0; i < 8; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
-    for (int i = 0; i < 8; i++) {
+    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE",
+                           "image/png", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"};
+    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr,
+                         &a_paste, &a_png, &a_wm_state, &a_max_vert, &a_max_horz};
+    enum { N = sizeof names / sizeof names[0] };
+    xcb_intern_atom_cookie_t ck[N];
+    for (int i = 0; i < N; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
+    for (int i = 0; i < N; i++) {
         xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(conn, ck[i], NULL);
         *out[i] = r ? r->atom : XCB_ATOM_NONE;
         free(r);
