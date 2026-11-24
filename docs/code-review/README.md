@@ -305,8 +305,8 @@ covered" sections. The larger gaps:
 | [X9](07-x11-text.md) | speed | confirmed | **fixed** `isMaximized` makes four synchronous round trips, and `Main` calls it on every `Resized` |
 | [X10](07-x11-text.md) | bug | plausible | **fixed** Focus events from a window manager's key grabs are reported as focus changes |
 | [W2](08-win32.md) | speed | confirmed | **fixed** Every code point no listed family covers opens every installed font face, inside the draw, under the paint lock |
-| [W3](08-win32.md) | bug | plausible | A capture taken from the window forgets the held buttons without telling the program; the native menu does this every time |
-| [W4](08-win32.md) | bug | confirmed | The pop-up menu opens up and left of the pointer by the padding, so the pointer starts over its first item |
+| [W3](08-win32.md) | bug | plausible | **fixed** A capture taken from the window forgets the held buttons without telling the program; the native menu does this every time |
+| [W4](08-win32.md) | bug | confirmed | **fixed** The pop-up menu opens up and left of the pointer by the padding, so the pointer starts over its first item |
 | [W5](08-win32.md) | security | confirmed | The ssh agents' named pipes are opened as ordinary files: the server may impersonate the user, and its owner is not checked |
 | [W6](08-win32.md) | bug | plausible | A font is found by its registry name, which on a localized Windows is not the family name FreeType reads |
 | [MA4](09-app-main-a.md) | bug | confirmed | **fixed** The dialog shown and the dialog the keys go to are decided by two different orders |

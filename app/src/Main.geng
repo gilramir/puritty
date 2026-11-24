@@ -3680,10 +3680,25 @@ spawnSelf args m =
 -- THE MENU (docs/settings.md ST9, ST26)
 
 
-{-| Ctrl and the right button: the menu. -}
+{-| Ctrl and the right button: the menu, on the press, or on the release
+where the platform's menus open then (`Platform.menuOnRelease`, docs/settings.md
+ST40). -}
 isMenuClick : Window.PointerEvent -> Bool
 isMenuClick p =
-    p.action == 0 && p.button == 2 && Bitwise.and p.mods 15 == 2
+    p.button == 2
+        && Bitwise.and p.mods 15 == 2
+        && p.action == (if Platform.menuOnRelease then
+                            1
+
+                        else
+                            0
+                       )
+
+
+{-| The press of a menu click opened on its release: nothing else. -}
+isMenuPress : Window.PointerEvent -> Bool
+isMenuPress p =
+    Platform.menuOnRelease && p.button == 2 && Bitwise.and p.mods 15 == 2 && p.action == 0
 
 
 {-| The menu opened at a cell: the settings window, the host list, a
@@ -7247,6 +7262,9 @@ handleOne remote ms rest ev m =
                                                     _ ->
                                                         if isMenuClick p then
                                                             openMenu p m |> Task.andThen (\next -> handle remote ms rest next)
+
+                                                        else if isMenuPress p then
+                                                            handle remote ms rest m
 
                                                         else if
                                                             isZoomStep p

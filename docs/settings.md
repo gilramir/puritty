@@ -1242,3 +1242,42 @@ change; now 600, and no temporary left. And with the test holding
 `config.toml.lock`: nothing written and why, and once let go, the change
 written with `config.toml`, `.bak` and `.lock` beside it, and nothing
 else; this one runs on Windows too.
+
+## ST40 · The Windows menu at the pointer, on the release (2026-11-24)
+
+The code review's W3 and W4, checked on beelink1 (Windows 11, 150%) in
+Gilbert's desktop session.
+
+**W4.** ST26's native menu was put at the numbers Geng was given for the
+pointer, as client coordinates; since R20 those are from the cells'
+corner, so the menu opened up and left of the pointer by the gap, with
+the pointer already over its first item. `WM_APP_MENU` now opens it at
+`GetCursorPos`, where Windows' own context menus open.
+
+**W3.** Ctrl and the right button opened the menu on the press;
+`TrackPopupMenu` then takes the pointer while the button is down, and a
+button held before (a selection being dragged) has its release go to the
+menu: `WM_CAPTURECHANGED` cleared the window's own record of the buttons
+and told Geng nothing, so Geng's `held` kept the button for good (motion
+taken as a drag, no hover shapes). Now:
+
+- on Windows the menu opens on the release (`Platform.menuOnRelease`,
+  `isMenuClick`), as Windows' context menus do, and the press is let go
+  (`isMenuPress`); on Linux, where puritty draws its own menu as X's open
+  on the press, nothing changes;
+- when another window takes the pointer with buttons down, the window
+  tells a release of each at the last pointer position, as X's grab would
+  have delivered it.
+
+**Tested** with `harness/events/app.ps1` and a case (the left button
+pressed and dragged, Ctrl+right pressed and let go, `menuat`, a new
+`drive.exe` action that says where a shown menu is and where the pointer
+is, the left button let go while the menu is up, Escape, a log mark).
+Before: the menu at 819,656 with the pointer at 835,664 (16 and 8 px up
+and left), and the mark said `buttons held 2`. Now: no menu while the
+button is down, then the menu at 417,246 with the pointer at 417,246,
+the log has `release left`, and the mark says `buttons held 0`.
+
+The events gate (WS19, built again in WS33) passes 13 of 13 on beelink1
+with the change; on Linux the pointer gate 56 of 56, the menu still on the
+press.

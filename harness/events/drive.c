@@ -33,6 +33,8 @@
  *   cursor S       fails unless the pointer shown is S: ibeam, arrow
  *   shot FILE      the screen around the window, as a BMP (a look for a
  *                  person; the gate does not hold it)
+ *   menuat         says where a pop-up menu shown is and where the pointer
+ *                  is, on the screen, or that none is shown
  *   mode ...       the probe's (harness/events.py), passed over here */
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
@@ -214,6 +216,23 @@ static int layout(const char *name) {
 
 /* The screen around the window, 400 pixels past each edge, as a BMP: a
  * copy of what is shown, which takes no focus. */
+/* Where a pop-up menu is shown (its window class, #32768) and where the
+ * pointer is, both as Windows has them: whether a menu opens at the
+ * pointer (the code review's W4). */
+static int menu_at(void) {
+    HWND menu = FindWindowW(L"#32768", NULL);
+    POINT c;
+    GetCursorPos(&c);
+    if (!menu || !IsWindowVisible(menu)) {
+        fprintf(stderr, "menuat: no menu shown, pointer at %ld,%ld\n", c.x, c.y);
+        return 1;
+    }
+    RECT r;
+    GetWindowRect(menu, &r);
+    fprintf(stderr, "menuat: menu at %ld,%ld, pointer at %ld,%ld\n", r.left, r.top, c.x, c.y);
+    return 1;
+}
+
 static int shot(const char *path) {
     RECT r;
     GetWindowRect(target, &r);
@@ -280,6 +299,7 @@ static int act(char *line) {
     if (strcmp(line, "layout") == 0) return layout(arg);
     if (strcmp(line, "sleep") == 0) return Sleep((DWORD) atoi(arg)), 1;
     if (strcmp(line, "shot") == 0) return shot(arg);
+    if (strcmp(line, "menuat") == 0) return menu_at();
     if (strcmp(line, "cursor") == 0) return cursor_is(arg);
     if (strcmp(line, "mode") == 0) return 1;
     fprintf(stderr, "drive: no action %s\n", line);

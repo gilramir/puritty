@@ -1581,7 +1581,18 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         button(h, m == WM_XBUTTONDOWN, GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? 8 : 9, lp);
         return TRUE;
     case WM_CAPTURECHANGED:
-        if ((HWND) lp != h) buttons_held = 0;
+        /* another window took the pointer with buttons down (a menu, a
+         * switcher, a prompt): their releases go to it, so each is told
+         * here, where the pointer was last, as X's grab would have
+         * delivered it (W3) */
+        if ((HWND) lp != h) {
+            for (int b = 1; b < 16 && buttons_held; b++)
+                if (buttons_held & (1 << b)) {
+                    buttons_held &= ~(1 << b);
+                    if (last_x != INT32_MIN) pointer_record(1, b, last_x, last_y);
+                }
+            buttons_held = 0;
+        }
         return 0;
     case WM_MOUSEMOVE: {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
@@ -1633,8 +1644,15 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         HMENU menu = CreatePopupMenu();
         fill_menu(menu, menu_items, 1, 1);
         LeaveCriticalSection(&menu_lock);
-        POINT at = {(LONG) (short) LOWORD(lp), (LONG) (short) HIWORD(lp)};
-        ClientToScreen(h, &at);
+        /* at the pointer, as Windows' own context menus open: the
+         * numbers Geng was given are from the cells' corner, not the
+         * window's (R20), so they put it up and left of it (W4) */
+        POINT at;
+        if (!GetCursorPos(&at)) {
+            at.x = (LONG) (short) LOWORD(lp);
+            at.y = (LONG) (short) HIWORD(lp);
+            ClientToScreen(h, &at);
+        }
         SetForegroundWindow(h);
         UINT cmd = (UINT) TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, at.x, at.y, 0, h, NULL);
         PostMessageW(h, WM_NULL, 0, 0);
