@@ -4988,3 +4988,41 @@ times from a pane in new colors, the last colors drawn (failed before).
 **Not done:** the app's selection is dropped once by a compaction under it
 (its row hashes change).
 
+
+## VC73 · APC, PM and SOS text read as UTF-8: a divergence from Ghostty (2026-11-24)
+
+The code review's VP9, Gilbert's choice (2026-11-24: "Let's do the
+correct thing. We can diverge from Ghostty"). The parser took any byte
+from 0x80 to 0x9F inside an APC, PM or SOS string as a C1 control: the
+string was dropped there and the byte dispatched, as Ghostty's 8-bit
+DEC table has it. In UTF-8 those bytes are parts of characters:
+`printf '\e_한글\e\\'` (한 is ED 95 9C) ended the APC at 0x95, printed
+U+FFFD for 0x9C, then `글`.
+
+What is correct for a terminal whose input is UTF-8: an 8-bit C1 byte
+cannot occur on its own in UTF-8, where 0x80-0xBF are continuation bytes;
+a C1 control comes as its 7-bit form (ESC \ for ST) or as a code point.
+xterm in UTF-8 decodes before it parses. Ghostty itself decodes UTF-8
+outside strings, and ignores the C1 code points that decoding gives,
+"matching xterm" (`stream.zig`), and keeps 0x80-0xFF as an OSC's text; only
+its APC, PM and SOS strings still go through the 8-bit table
+(`parse_table.zig`, `sos_pm_apc_string`, which also drops 0xA0-0xFF from
+an APC's payload). puritty already read OSC and a DCS's payload as text.
+
+Now APC, PM and SOS do too (`apcEnd`, `apcString`, `ignoreString`): a
+byte from 0x80 is the string's, and only ESC (with `\`, ST), CAN or SUB
+end it; a raw 0x9C is text, as in an OSC. Kitty's graphics, the APC the
+core acts on, are base64 ASCII and read as before.
+
+**Tested**: the vt suite, new (232): `\e_한`, then in the next read
+`글\e\\ok `, `\e^p한` CAN `ab `, `\eXs✓\e\\cd`, as `ok ab cd`; before,
+`�글ok �ab ` and `�cd` on the next row. The replay corpus, a new case
+`apc-utf8-text`, and three cases that put a raw 0x9B, 0x9C or 0x9D in such
+a string (`apc-aborted`, `c1-anywhere`, `c1-edges`) now divergent: each
+has `divergence.txt`, its `ghostty.txt` the `expected.txt` both sides
+agreed on before, and `expected.txt` the core's, where the string runs to
+the next ESC. 358 of 358 pass on the core's side, whole and a byte a read.
+`apc-utf8-text`'s `ghostty.txt` is to be pinned where the oracle builds
+(nene): `./harness/replay.py -f apc-utf8-text --update --side ghostty`.
+The fuzzer (`vt-fuzz`, the core alone) ran 736,528 inputs in 5 minutes
+with none found; `vt-diff`, against Ghostty, needs the oracle.

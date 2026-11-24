@@ -91,6 +91,7 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - What: OSC and a DCS's payload take bytes 0x80-0xFF as text, but APC, SOS and PM treat any byte 0x80-0x9F as a C1 control: the string is abandoned and the byte dispatched (`c1 ... (Kitty.apcDispatch False kept)`). In a UTF-8 terminal those bytes are continuation bytes of ordinary characters. xterm in UTF-8 mode decodes first and does not see them as C1.
 - Scenario: `printf '\e_한글\e\\'` (screen's hardstatus form, with any Korean, Hebrew, or symbol text: `한` is ED 95 9C, `✓` is E2 9C 93). At 0x95 the APC is dropped and the parser is in the ground state; 0x9C prints U+FFFD and `글` prints as text, so the screen shows `�글`. The same in a PM or SOS string.
 - Fix: this is Ghostty's behaviour and so "by design", but it is wrong for a terminal whose input is UTF-8: in APC/SOS/PM treat 0x80-0x9F as payload (as OSC does), ending only on ESC, CAN and SUB. If parity with the oracle matters more, record it as a known divergence from xterm.
+- Fixed: 2026-11-24, `docs/vt-core.md` VC73, a divergence from Ghostty by Gilbert's choice. APC, PM and SOS text is read as UTF-8, as an OSC's: only ESC, CAN or SUB end it. Test: vt suite, `\e_한글\e\\ok` and the rest: before `�글ok …`; now `ok ab cd`. Replay: apc-utf8-text new, apc-aborted, c1-anywhere and c1-edges now divergent with ghostty.txt pinned from their old agreed dumps.
 
 ### VP10 · XTRESTORE of a mode never saved builds a whole new terminal to read one default
 - Where: `vt/src/Vt/Modes.geng:385-401` (`restoreMode`)

@@ -960,7 +960,8 @@ sixelString bytes n i t =
 
 
 {-| A C1 control as an 8-bit byte, outside the ground state and the
-strings that take high bytes as text (OSC, a DCS's payload): Ghostty's
+strings that take high bytes as text (OSC, a DCS's payload, APC, SOS and
+PM): Ghostty's
 "anywhere" transitions. It starts CSI, OSC, DCS or SOS/PM/APC, ends what
 was being parsed at ST, and otherwise is the ESC sequence it stands for
 (0x85 is ESC E). In the ground state such a byte is UTF-8's. -}
@@ -990,8 +991,10 @@ c1 bytes n i b t =
 
 {-| An APC (`docs/images-kitty.md` KG1): each read's run of it up to a
 control kept as a slice, as `oscClip` keeps an OSC 52's, at most
-`Kitty.apcMax` bytes; ESC or ST ends it and it is done, CAN, SUB or
-another C1 abort it. -}
+`Kitty.apcMax` bytes; ESC ends it and it is done, CAN or SUB abort it.
+Bytes from 0x80 are its text, as in an OSC: in UTF-8 they are parts of
+characters, never C1 controls (review VP9, where Ghostty's 8-bit table
+differs). -}
 apcString : Bytes -> Int -> (i : Int where 0 <= i) -> (taken t : Term) -> Term
 apcString bytes n i t =
     let
@@ -1030,22 +1033,9 @@ apcString bytes n i t =
             else
                 escape bytes n (j + 1) done
 
-        else if b == 0x9C then
-            let
-                done =
-                    Kitty.apcDispatch True kept
-            in
-            if waiting done then
-                hold (Bytes.slice (j + 1) n bytes) done
-
-            else
-                resume bytes n (j + 1) done
-
-        else if b == 0x18 || b == 0x1A then
-            resume bytes n (j + 1) (Kitty.apcDispatch False kept)
-
         else
-            c1 bytes n (j + 1) b (Kitty.apcDispatch False kept)
+            -- CAN or SUB, the only others `apcEnd` stops at
+            resume bytes n (j + 1) (Kitty.apcDispatch False kept)
 
 
 {-| Whether a Kitty command waits for the embedder to read its file
@@ -1070,7 +1060,8 @@ hold bytes t =
         { t | images = { im | held = Array.pushLast bytes im.held } }
 
 
-{-| Where an APC's run ends: ESC, CAN, SUB or a C1, or `n`. -}
+{-| Where an APC's run ends: ESC, CAN or SUB, or `n`. Bytes from 0x80 are
+its text, UTF-8's, as an OSC's are (review VP9). -}
 apcEnd : Bytes -> (i : Int where 0 <= i) -> Int -> (r : Int where i <= r)
 apcEnd bytes i n =
     if i >= n then
@@ -1081,7 +1072,7 @@ apcEnd bytes i n =
             b =
                 byteAt bytes i
         in
-        if b == 0x1B || b == 0x18 || b == 0x1A || (b >= 0x80 && b < 0xA0) then
+        if b == 0x1B || b == 0x18 || b == 0x1A then
             i
 
         else
@@ -1105,10 +1096,8 @@ ignoreString bytes n i t =
         else if b == 0x18 || b == 0x1A then
             resume bytes n (i + 1) t
 
-        else if b >= 0x80 && b < 0xA0 then
-            c1 bytes n (i + 1) b t
-
         else
+            -- bytes from 0x80 are UTF-8 text, not C1 controls (review VP9)
             ignoreString bytes n (i + 1) t
 
 

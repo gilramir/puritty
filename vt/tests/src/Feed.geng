@@ -25,6 +25,23 @@ suite =
                         [ "screen 10x2 main", "cursor 2,0", "history 0", "0 |hi|", "1 ||" ]
                         (lines (feed "hi" (term 10 2)))
           }
+        , { name = "APC, PM and SOS strings of UTF-8 text are swallowed whole, a read ending inside one too; only ESC \\, CAN or SUB end them (review VP9, a divergence from Ghostty)"
+          , test =
+                \_ ->
+                    -- 한 is ED 95 9C and ✓ E2 9C 93: bytes Ghostty's 8-bit
+                    -- table takes as C1 controls inside these strings
+                    Expect.equal
+                        [ "screen 10x2 main", "cursor 8,0", "history 0", "0 |ok ab cd|", "1 ||" ]
+                        (lines
+                            (feed "\u{001B}Xs✓\u{001B}\\cd"
+                                (feed "\u{001B}^p한\u{0018}ab "
+                                    (feed "글\u{001B}\\ok "
+                                        (feed "\u{001B}_한" (term 10 2))
+                                    )
+                                )
+                            )
+                        )
+          }
         , { name = "CR and LF start the next row"
           , test =
                 \_ ->

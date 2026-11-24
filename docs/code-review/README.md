@@ -368,7 +368,7 @@ covered" sections. The larger gaps:
 
 | id | kind | confidence | finding |
 |---|---|---|---|
-| [VP9](01-vt-parser-screen.md) | bug | confirmed | A C1 byte inside an APC, SOS or PM string ends it, so UTF-8 text in such a string is cut and its tail printed |
+| [VP9](01-vt-parser-screen.md) | bug | confirmed | **fixed** A C1 byte inside an APC, SOS or PM string ends it, so UTF-8 text in such a string is cut and its tail printed |
 | [VP10](01-vt-parser-screen.md) | efficiency | confirmed | XTRESTORE of a mode never saved builds a whole new terminal to read one default |
 | [VP11](01-vt-parser-screen.md) | bug | plausible | `feedImaged` decides "in place" with `t.bottom == 0` where SU uses `t.bottom == t.rows - 1` |
 | [VP12](01-vt-parser-screen.md) | bug | plausible | BS at the left margin above the scroll region, with reverse wraparound, moves the cursor down to the region's top |
