@@ -784,6 +784,7 @@ static int spot_x = -1, spot_y = -1;
 static void key_event(int press, uint8_t keycode, uint16_t state, uint32_t time, int via);
 static void pointer_event(int action, int xbutton, int x, int y, uint16_t state);
 static void selection_atoms(void);
+static void xfer_gone(xcb_window_t w);
 static void selection_request(xcb_selection_request_event_t *q);
 static void selection_clear(xcb_selection_clear_event_t *c);
 static void transfer_step(xcb_property_notify_event_t *p);
@@ -942,6 +943,7 @@ static void drain(void) {
         else if (type == XCB_SELECTION_REQUEST) selection_request((xcb_selection_request_event_t *) e);
         else if (type == XCB_SELECTION_CLEAR) selection_clear((xcb_selection_clear_event_t *) e);
         else if (type == XCB_PROPERTY_NOTIFY) transfer_step((xcb_property_notify_event_t *) e);
+        else if (type == XCB_DESTROY_NOTIFY) xfer_gone(((xcb_destroy_notify_event_t *) e)->window);
         else if (type == XCB_SELECTION_NOTIFY) paste_notify((xcb_selection_notify_event_t *) e);
         else if (type == XCB_KEY_PRESS || type == XCB_KEY_RELEASE) {
             xcb_key_press_event_t *k = (xcb_key_press_event_t *) e;
@@ -1506,13 +1508,55 @@ static struct {
     xcb_timestamp_t time;
     int owned;
 } sel[2];
+/* An INCR transfer: whose window and property, the text, how far it has
+ * gone, and when it last went (ns). A slot is freed when the last piece is
+ * taken, when the requestor's window is destroyed, or when it has not
+ * moved for XFER_IDLE; with every slot busy, the stalest is given up for a
+ * new request (code review X2). */
+#define XFER_IDLE 30e9
 static struct {
     xcb_window_t win;
     xcb_atom_t prop, type;
     uint8_t *data;
     size_t len, at;
+    double last;
     int live;
 } xfer[8];
+
+static void xfer_free(int i) {
+    if (xfer[i].win != window) {
+        uint32_t none = 0;
+        xcb_change_window_attributes(conn, xfer[i].win, XCB_CW_EVENT_MASK, &none);
+    }
+    free(xfer[i].data);
+    xfer[i].data = NULL;
+    xfer[i].live = 0;
+}
+
+/* The requestor's window is gone: its transfers with it. */
+static void xfer_gone(xcb_window_t w) {
+    for (int i = 0; i < 8; i++)
+        if (xfer[i].live && xfer[i].win == w) {
+            free(xfer[i].data);
+            xfer[i].data = NULL;
+            xfer[i].live = 0;
+        }
+}
+
+/* A slot for a new transfer: a free one, after freeing those idle past
+ * XFER_IDLE, or else the stalest. */
+static int xfer_slot(void) {
+    double now = ns();
+    int stalest = -1;
+    for (int i = 0; i < 8; i++)
+        if (xfer[i].live && now - xfer[i].last > XFER_IDLE) xfer_free(i);
+    for (int i = 0; i < 8; i++) {
+        if (!xfer[i].live) return i;
+        if (stalest < 0 || xfer[i].last < xfer[stalest].last) stalest = i;
+    }
+    xfer_free(stalest);
+    return stalest;
+}
 
 static void selection_atoms(void) {
     const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE", "image/png"};
@@ -1578,25 +1622,17 @@ static void selection_request(xcb_selection_request_event_t *q) {
             free(data);
             data = l;
         }
-        int slot = -1;
-        for (int i = 0; i < 8 && len > PIECE; i++)
-            if (!xfer[i].live) {
-                slot = i;
-                break;
-            }
         if (len <= PIECE) {
             xcb_change_property(conn, XCB_PROP_MODE_REPLACE, q->requestor, prop, type, 8, (uint32_t) len, data);
             notify_requestor(q, prop);
             free(data);
-        } else if (slot < 0) {
-            notify_requestor(q, XCB_ATOM_NONE); /* eight transfers at once already */
-            free(data);
         } else {
-            /* another client's window is watched for its deletes; this
-             * window, pasting its own selection, already is, and its own
-             * mask must not be replaced (code review X1) */
+            int slot = xfer_slot();
+            /* another client's window is watched for its deletes and its
+             * end (X2); this window, pasting its own selection, already is,
+             * and its own mask must not be replaced (code review X1) */
             if (q->requestor != window) {
-                uint32_t mask = XCB_EVENT_MASK_PROPERTY_CHANGE;
+                uint32_t mask = XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
                 xcb_change_window_attributes(conn, q->requestor, XCB_CW_EVENT_MASK, &mask);
             }
             uint32_t hint = (uint32_t) len;
@@ -1608,6 +1644,7 @@ static void selection_request(xcb_selection_request_event_t *q) {
             xfer[slot].data = data;
             xfer[slot].len = len;
             xfer[slot].at = 0;
+            xfer[slot].last = ns();
             xfer[slot].live = 1;
         }
     } else {
@@ -1652,13 +1689,11 @@ static void transfer_step(xcb_property_notify_event_t *p) {
         if (!xfer[i].live || xfer[i].win != p->window || xfer[i].prop != p->atom) continue;
         size_t n = xfer[i].len - xfer[i].at < PIECE ? xfer[i].len - xfer[i].at : PIECE;
         xcb_change_property(conn, XCB_PROP_MODE_REPLACE, p->window, p->atom, xfer[i].type, 8, (uint32_t) n, xfer[i].data + xfer[i].at);
-        if (n == 0) {
-            uint32_t none = 0;
-            if (p->window != window) xcb_change_window_attributes(conn, p->window, XCB_CW_EVENT_MASK, &none);
-            free(xfer[i].data);
-            xfer[i].live = 0;
+        if (n == 0) xfer_free(i);
+        else {
+            xfer[i].at += n;
+            xfer[i].last = ns();
         }
-        xfer[i].at += n;
         xcb_flush(conn);
         return;
     }

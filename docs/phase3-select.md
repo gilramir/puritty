@@ -1202,3 +1202,28 @@ with tab B open. `closes`: A reads one byte and exits; before, B received
 1,048,579 bytes of it, now none. `switched`: B shown right after the
 paste is asked for; before, B received 2,097,154 bytes, now none and A
 all 4,194,304. Drops are not changed: a drop goes where it was dropped.
+
+
+## 26. An abandoned INCR transfer is let go (2026-11-23)
+
+The code review's X2. A copy larger than a piece (256 KiB) goes to a
+requestor as `INCR`, a piece each time it deletes the last, from one of
+eight transfer slots in `puritty_x11.c`, each holding a copy of the text.
+A slot was freed only when the last piece was taken. A requestor that saw
+`INCR` and went away, as a clipboard manager over its size limit does,
+held its slot and its copy for good, and after eight of them every copy
+over 256 KiB was refused (`None`) until puritty was restarted.
+
+Now a requestor's window is watched for its end as well as its deletes
+(`StructureNotify`), and its `DestroyNotify` frees its slots
+(`xfer_gone`). A slot that has not moved for 30 seconds is freed when a
+new transfer starts. With all eight busy, the stalest is given up for
+the new request (`xfer_slot`) rather than refusing it.
+
+Tested: the pointer gate's `select-large-abandoned`. A 320,000-byte
+selection, nine python-xlib requestors one after another that ask for
+it, see `INCR` and destroy their window without deleting the property,
+then `xclip -o`. Before: 8 of 9 saw `INCR`, the ninth was refused, and
+xclip read nothing. Now: 9 of 9, and xclip reads all 320,000 bytes. Built
+once with the eviction of the stalest turned off, it gave the same: the
+`DestroyNotify` path frees the slots by itself.

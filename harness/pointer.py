@@ -111,6 +111,10 @@ CASES = [
     # its own selection over an INCR piece pasted back, then a key: the
     # paste stalled and the window took no more keys (code review X1)
     ("paste-own-large", "", "key:shift+Home sleep:0.5 move:0,0 down:1 key:shift+End sleep:0.5 move:715,400 up:1 sleep:0.5 click:2 sleep:2 key:x sleep:0.5", LARGE),
+    # nine requestors that ask for a large selection, see INCR and go
+    # without reading it; then xclip reads it. Each held a transfer slot
+    # for good, and past eight every large copy was refused (code review X2)
+    ("select-large-abandoned", "", "key:shift+Home sleep:0.5 move:0,0 down:1 key:shift+End sleep:0.5 move:715,400 up:1 sleep:0.5 abandon:9 primary", LARGE),
     ("paste-middle-reported", SGR, "own-primary:korean move:50,30 click:2"),
     ("paste-shift-middle-reported", SGR, "own-primary:korean move:50,30 key-down:shift click:2 key-up:shift"),
     ("paste-right-button", "", "own-primary:korean move:50,30 click:2 click:3", "", '[mouse]\npaste_button = "right"\n'),
@@ -155,6 +159,37 @@ def selection(env, which):
     if len(b) > 200:
         return f"{which} {len(b)} bytes, {b.count(b'\n') + 1} lines, ending {escaped(b[-20:])}"
     return f"{which} {escaped(b)}"
+
+
+def abandon(env, n):
+    """`n` requestors, one after another, that ask for PRIMARY as
+    UTF8_STRING, see INCR, and destroy their window without deleting the
+    property, as a clipboard manager over its size limit does (the code
+    review's X2): how many saw INCR."""
+    from Xlib import X, display as xdisplay
+    seen = 0
+    for _ in range(n):
+        d = xdisplay.Display(env["DISPLAY"])
+        w = d.screen().root.create_window(0, 0, 1, 1, 0, X.CopyFromParent)
+        prop = d.intern_atom("PURITTY_ABANDONED")
+        w.convert_selection(d.intern_atom("PRIMARY"), d.intern_atom("UTF8_STRING"), prop, X.CurrentTime)
+        d.flush()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if not d.pending_events():
+                time.sleep(0.02)
+                continue
+            e = d.next_event()
+            if e.type == X.SelectionNotify:
+                if e.property != X.NONE:
+                    r = w.get_full_property(prop, X.AnyPropertyType)
+                    if r is not None and r.property_type == d.intern_atom("INCR"):
+                        seen += 1
+                break
+        w.destroy()
+        d.close()
+        time.sleep(0.1)
+    return f"abandoned after INCR: {seen} of {n}"
 
 
 def own(env, which, name):
@@ -221,6 +256,9 @@ def run(xdo, env, modes, actions, before="", config=""):
                 continue
             elif kind == "sleep":
                 time.sleep(float(arg))
+                continue
+            elif kind == "abandon":
+                read.append(abandon(env, int(arg)))
                 continue
             # a pointer outside the window is still the window's during a drag
             subprocess.run([xdo, *cmd], env=env, check=kind != "move", stdout=subprocess.DEVNULL,
