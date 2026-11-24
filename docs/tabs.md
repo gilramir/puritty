@@ -847,3 +847,33 @@ change, the existing `tmux-ask-yes` among them, and the case written for
 this was taken out again. On the way, the gate's tmux cases press Enter
 at TM108's question, since their host's command is a script that runs
 `tmux -CC` (the question is right for it, and was new since TM108).
+
+
+## TB21 · A hidden tab's output draws a frame only when its marks change (2026-11-24)
+
+The code review's MA7 and MB5. `Main.behind` fed a hidden tab's reads and
+set the window's `urgent`, which `frameAt` answers at once (V31, meant for
+a key). So every chunk a background tab read cost a frame of the shown
+tab: the bar, the title and the frame built and sent again. The shown
+tab's own output is held to one frame each `frames.every_ms`.
+
+Now `behind` compares the tab's marks in the bar, whether it printed and
+whether it rang (`marksOf`), before and after the read, and asks for a
+frame at once only when they changed. The first read after the tab is
+left lights its mark at once, as before. Later reads change nothing the
+window shows. A notice from a hidden ssh tab still asks for a frame, as
+it may change what its label says.
+
+Measured with a scratch probe on Xvfb: puritty with two tabs, the shown
+one idle, the hidden one a Python loop that writes `line\n` and sleeps a
+millisecond, about a thousand small reads a second. puritty's user and
+system CPU over 5 s, from `/proc`, three runs each:
+
+| | CPU in 5 s |
+|---|---|
+| before | 0.54, 0.53, 0.70 s |
+| now | 0.36, 0.19, 0.38 s |
+
+With `yes` in the hidden tab, the reads are large and the parsing is the
+cost: about 6 MB/s through the hidden tab before and after, the same as
+with the tab shown.

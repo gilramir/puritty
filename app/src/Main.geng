@@ -9905,7 +9905,23 @@ behind id incoming ms m =
                 endTab id False m
 
             else
-                atTab id (\one -> feed one.remote chunk ms one |> Task.map (marked ms)) { m | urgent = True }
+                -- a frame at once only when the tab's marks in the bar
+                -- change; else the shown tab's frames are paced as ever,
+                -- not one a chunk of a tab no one sees (the code review's
+                -- MA7, MB5, `docs/tabs.md` TB21)
+                let
+                    wasMarked =
+                        marksOf id m
+                in
+                atTab id (\one -> feed one.remote chunk ms one |> Task.map (marked ms)) m
+                    |> Task.map
+                        (\after ->
+                            if marksOf id after /= wasMarked then
+                                { after | urgent = True }
+
+                            else
+                                after
+                        )
 
         Notice told ->
             if endsSession told (sshOfTab id m) then
@@ -9913,6 +9929,16 @@ behind id incoming ms m =
 
             else
                 atTab id (\one -> sshTold told one |> Task.map (marked ms)) { m | urgent = True }
+
+
+{-| What the bar shows of the tab `id`, not shown: whether it printed and
+whether it rang. -}
+marksOf : Int -> Model -> Maybe { activity : Bool, bell : Bool }
+marksOf id m =
+    slotOf id m
+        |> Maybe.andThen (\slot -> Builder.get slot m.tabs)
+        |> Maybe.andThen identity
+        |> Maybe.map (\t -> { activity = t.info.activity, bell = t.info.bell })
 
 
 {-| The ssh screen of the tab `id`, not shown. -}

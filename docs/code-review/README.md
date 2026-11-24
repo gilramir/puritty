@@ -312,7 +312,7 @@ covered" sections. The larger gaps:
 | [MA4](09-app-main-a.md) | bug | confirmed | **fixed** The dialog shown and the dialog the keys go to are decided by two different orders |
 | [MA5](09-app-main-a.md) | bug | confirmed | **fixed** A settings reload reaches only the shown tab's terminal |
 | [MA6](09-app-main-a.md) | security | confirmed | **fixed** `[images] read_files` turned off (or on) does not reach a running terminal |
-| [MA7](09-app-main-a.md) | speed | confirmed | Output in a tab not shown forces a frame for every chunk read, past the 16 ms pacing |
+| [MA7](09-app-main-a.md) | speed | confirmed | **fixed** Output in a tab not shown forces a frame for every chunk read, past the 16 ms pacing |
 | [MA8](09-app-main-a.md) | bug | plausible | Work that only the timer branch does waits for as long as the shown tab keeps printing |
 | [MA9](09-app-main-a.md) | bug | plausible | **fixed** A paste in flight goes to whichever tab is shown when its pieces arrive |
 | [MA10](09-app-main-a.md) | security | plausible | **fixed** The built-in ssh session's output reaches the window through a queue with no bound |
@@ -321,7 +321,7 @@ covered" sections. The larger gaps:
 | [MB2](10-app-main-b.md) | bug | confirmed | **fixed** The box drawn and the dialog that takes the keys are chosen in two different orders |
 | [MB3](10-app-main-b.md) | bug | confirmed | **fixed** A paste's later pieces, a pasted picture and an OSC 52 read go to whichever tab is shown when they arrive |
 | [MB4](10-app-main-b.md) | bug | confirmed | **fixed** Text the input method commits skips the search bar, the folder picker and the questions, and is sent to the program |
-| [MB5](10-app-main-b.md) | speed | confirmed | Every read of a tab not shown forces an unpaced frame of the shown tab |
+| [MB5](10-app-main-b.md) | speed | confirmed | **fixed** Every read of a tab not shown forces an unpaced frame of the shown tab |
 | [MB6](10-app-main-b.md) | security | confirmed | **fixed** OSC 52 writes of a tab not shown queue without bound, and are applied when it is next shown |
 | [MB19](10-app-main-b.md) | design | confirmed | The dialogs are listed in six places, and four groups of this half are modules in waiting |
 | [TA4](11-tmuxmode-a.md) | bug | confirmed | **fixed** After the active pane or window changes, named keys go to the old pane and text to the new one |
