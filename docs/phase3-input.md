@@ -713,3 +713,30 @@ German. Before: the keymap fetched 14 times; now 2 (at open, and for
 the burst when the key came) in each of five runs, and the key typed `z`
 both before and after. The window gates (sshwindow 33, pointer 56,
 tabpaste 2, reload 20, the IME gate's 16 runs) pass.
+
+## 18. Dead keys and the Compose key without an input method (2026-11-24)
+
+The code review's X4. A key's text was its keysym's own
+(`xkb_keysym_to_utf8`), and nothing composed: a dead key typed nothing
+and the letter after it came plain, and so did a Compose sequence. Only
+an input method (ibus, fcitx through XIM) composed. With none running (a
+bare window manager, ETX, `PURITTY_NO_XIM=1`), accented letters on
+`us(intl)` or a European layout with dead keys could not be typed, where
+xterm, through Xlib's compose, types them.
+
+Now, when the window has no input context (`have_xic` 0), each press is
+fed to libxkbcommon's compose state from the locale's table
+(`xkb_compose_table_new_from_locale` on `LC_ALL`, `LC_CTYPE` or `LANG`,
+the table Xlib reads). A key that leaves a sequence going is swallowed;
+the key that ends one is recorded with the composed text and keysym; a
+sequence that matches nothing is dropped, its last key with it, as GTK's
+and Xlib's compose do. A swallowed key's release is swallowed too. The
+diagnostic log says "key composing" for a swallowed key. With an input
+method, it composes as before.
+
+**Tested** by `harness/compose.py`, new (Xvfb, `PURITTY_NO_XIM=1`,
+`LANG=en_US.UTF-8`, xdotool): on `us(intl)`, `dead_acute e` types `é`,
+`dead_acute space` types `'` (the table's, how that layout types an
+apostrophe), and `dead_acute q x` types `x`; on `us` with Compose on
+Right Alt, `Multi_key o c` types `©`. Before, all four failed: `e`, a
+space, `oc`, `qx`.

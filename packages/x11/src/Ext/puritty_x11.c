@@ -95,6 +95,7 @@
 #include <xcb/xcbext.h> /* xcb_poll_for_reply, for a paste read without waiting */
 #include <xcb/xcb_renderutil.h>
 #include <xcb/xkb.h>
+#include <xkbcommon/xkbcommon-compose.h>
 #include <xkbcommon/xkbcommon-x11.h>
 #include <xcb/randr.h>
 #include <xcb-imdkit/imclient.h>
@@ -628,6 +629,26 @@ static void key_fetch(void) {
     note("keymap fetched", 0, 0, 0, 0);
 }
 
+/* Dead keys and the Compose key without an input method (X4): the
+ * locale's compose table, as Xlib's own compose does for xterm; NULL when
+ * the locale has none. Keys whose press it swallowed have their release
+ * swallowed too. */
+static struct xkb_compose_state *compose;
+static uint8_t swallowed[32];
+/* whether the input method has the keys (defined with the XIM code) */
+static int have_xic;
+
+static void compose_setup(void) {
+    const char *locale = getenv("LC_ALL");
+    if (!locale || !*locale) locale = getenv("LC_CTYPE");
+    if (!locale || !*locale) locale = getenv("LANG");
+    if (!locale || !*locale) locale = "C";
+    struct xkb_compose_table *table = xkb_compose_table_new_from_locale(xctx, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
+    if (!table) return;
+    compose = xkb_compose_state_new(table, XKB_COMPOSE_STATE_NO_FLAGS);
+    xkb_compose_table_unref(table);
+}
+
 /* XKB set up once, at open, and the first keymap fetched. */
 static void key_setup(void) {
     if (!xkb_x11_setup_xkb_extension(conn, XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSION,
@@ -635,6 +656,7 @@ static void key_setup(void) {
         return;
     if (!xctx) xctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     if (xctx) key_fetch();
+    if (xctx && !compose) compose_setup();
 }
 
 /* A keyboard or layout change seen: one is a burst of NewKeyboardNotify
@@ -706,6 +728,33 @@ static void key_event(int press, uint8_t keycode, uint16_t state, uint32_t time,
     }
     if (press) held[keycode >> 3] |= (uint8_t) bit;
     else held[keycode >> 3] &= (uint8_t) ~bit;
+    /* a dead key or a Compose sequence, when no input method composes
+     * (X4): its keys swallowed until it ends, then the composed text as
+     * the last key's; one that matches nothing types nothing, as GTK's and
+     * Xlib's compose do */
+    char composed[64];
+    int ncomposed = -1;
+    if (!press && (swallowed[keycode >> 3] & bit)) {
+        swallowed[keycode >> 3] &= (uint8_t) ~bit;
+        xkb_state_unref(st);
+        return;
+    }
+    if (press && compose && !have_xic && xkb_compose_state_feed(compose, sym) == XKB_COMPOSE_FEED_ACCEPTED) {
+        enum xkb_compose_status status = xkb_compose_state_get_status(compose);
+        if (status == XKB_COMPOSE_COMPOSING || status == XKB_COMPOSE_CANCELLED) {
+            if (status == XKB_COMPOSE_CANCELLED) xkb_compose_state_reset(compose);
+            swallowed[keycode >> 3] |= (uint8_t) bit;
+            note(status == XKB_COMPOSE_COMPOSING ? "key composing" : "key ends a sequence that composes nothing", 0, 0, 0, 0);
+            xkb_state_unref(st);
+            return;
+        }
+        if (status == XKB_COMPOSE_COMPOSED) {
+            ncomposed = xkb_compose_state_get_utf8(compose, composed, sizeof composed);
+            xkb_keysym_t one = xkb_compose_state_get_one_sym(compose);
+            if (one != XKB_KEY_NoSymbol) sym = one;
+            xkb_compose_state_reset(compose);
+        }
+    }
     int mods = ghostty_mods(st, 0);
     mods |= right_held & ((mods & 15) << 6);
     int r = right_bit(sym);
@@ -715,6 +764,10 @@ static void key_event(int press, uint8_t keycode, uint16_t state, uint32_t time,
      * ctrl+c 0x03: the encoder makes control characters itself, as it
      * does from GTK's text in Ghostty */
     int n = press ? xkb_keysym_to_utf8(sym, text, sizeof text) - 1 : 0;
+    if (ncomposed >= 0) {
+        n = ncomposed > 63 ? 63 : ncomposed;
+        memcpy(text, composed, (size_t) n);
+    }
     if (n < 0) n = 0;
     if (n > 63) n = 63;
     int consumed = ghostty_mods(NULL, xkb_state_key_get_consumed_mods2(st, keycode, XKB_CONSUMED_MODE_XKB));
