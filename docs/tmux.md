@@ -4708,3 +4708,37 @@ With the start tmux writes and the old handler: `list-panes -s -F 'P
 #{pane_id}'` asked twice and four captures of the one pane; now once and
 two (the saved screen's and the history's). The rest of the suite is
 unchanged: 605 of 605.
+
+## TM125 · A frame made once: tmux's colors, its bar, a preview line's start (2026-11-24)
+
+The code review's TB10, in part. `paint` runs at every frame under
+control mode, and some of its work was done more than once a frame, or
+over more than is drawn:
+
+- **The colors** (`colorsOf`, twelve styles parsed from tmux's options)
+  were made at each use: once a pane for the mode and number overlays,
+  for each search match drawn (`searchMarks`), and for the message and
+  prompt. Now `paint` makes them once and passes them down.
+- **tmux's bar** (`tmuxBar`) was made twice a frame in tmux's look: once
+  for the tab hits (`tabsOf`) and once for its pieces. Now once, both
+  taken from it.
+- **A preview line** in choose-buffer's box (`drawListing`) was sanitised
+  whole (`shownLine`, a character array built over the whole line) and
+  then cut to the box; a buffer whose first line is a copied minified file
+  walked megabytes a frame. The tree's preview did the same twice a piece.
+  Now each takes only the line's start that can fill the box
+  (`aboutCells`: 4 characters a cell and 64 more, since a tab is at most
+  eight cells and a character is no cell only when it is a combining
+  mark) before sanitising it.
+
+**Measured** for the preview only (app suite, new, tmux 3.8's fake):
+choose-buffer opened over a buffer whose first line is 1,000,000
+characters, thirty frames painted: the box shows its start and no row is
+wider than the window; the test took 3,361 ms on node before and 109 ms
+now. The colors and the bar were changed by reading, not measured.
+
+**Not done here**: the tree's rows (`treeRows`, made twice a frame, each
+sorting and filtering every session's windows and panes) and
+customize-mode's rows (every option, key and variable made to show forty)
+would be kept in the state and made again when what they show changes; that
+is a change to the state's shape, left for when the code is restructured.

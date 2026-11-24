@@ -299,6 +299,29 @@ tmuxMode =
                                 { said = "no sessions\u{000D}\n", asked = [] }
                                 (failedStart "\u{001B}P1000p%begin 1794605254 322 0\u{000D}\nno sessions\u{000D}\n%error 1794605254 322 0\u{000D}\n%exit\u{000D}\n\u{001B}\\")
                    }
+                 , { name = "choose-buffer over a buffer whose first line is 1 MB: thirty frames, its preview line cut to the box first (review TB10)"
+                   , test =
+                        \_ ->
+                            let
+                                made =
+                                    start "3.8"
+
+                                opened =
+                                    attached { made | buffers = [ String.repeat 1000000 "x" ++ "\nsecond line" ] }
+                                        |> prefixThen "="
+                                        |> settle
+
+                                framed =
+                                    Array.foldl (\_ run -> (look run).run) opened (Array.range 1 29)
+
+                                seen =
+                                    look framed
+                            in
+                            Expect.equal [ True, True ]
+                                [ Array.any (String.contains (String.repeat 40 "x")) seen.rows
+                                , Array.all (\r -> String.count r <= 81) seen.rows
+                                ]
+                   }
                  ]
                     ++ Array.flatten (Array.map onVersion RealTmux.versions)
                 )

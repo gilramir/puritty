@@ -198,8 +198,9 @@ SUITES = [
         # each tmux; 599 since VI11: a picture's drive asked before it is
         # opened; 605 since TA9: an attach asks for its panes once, on each
         # tmux; 608 since PS8: a long name cut in a few measures; 609 since
-        # PS9: a listing's parts merged in
-        609,
+        # PS9: a listing's parts merged in; 610 since TB10: a long preview
+        # line cut first
+        610,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

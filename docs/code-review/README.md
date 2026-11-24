@@ -342,7 +342,7 @@ covered" sections. The larger gaps:
 | [TB5](12-tmuxmode-b.md) | bug | plausible | **fixed** customize-mode's filter is sent through `display-message` without `%` doubled, and is longer than strftime's buffer |
 | [TB6](12-tmuxmode-b.md) | security | plausible | **fixed** Text from tmux is written into the canvas terminal with its control characters |
 | [TB7](12-tmuxmode-b.md) | bug | confirmed | **fixed** An unknown tmux version (0) is taken as the newest by some gates and as the oldest by others |
-| [TB10](12-tmuxmode-b.md) | speed | confirmed | Work done again on every frame while a mode is open or a search is marked |
+| [TB10](12-tmuxmode-b.md) | speed | confirmed | **in part** Work done again on every frame while a mode is open or a search is marked |
 | [TB17](12-tmuxmode-b.md) | design | confirmed | The three modes are three `Maybe`s, and their kinds are bare `Int`s |
 | [TB19](12-tmuxmode-b.md) | design | confirmed | What would make modules of this half, and what each needs |
 | [PS3](13-app-picker-settings.md) | bug | confirmed | **fixed** What is typed is tied to a row number, so it lands in another setting when the list changes under it |

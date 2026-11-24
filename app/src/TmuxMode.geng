@@ -4937,8 +4937,23 @@ paint s0 =
                     else
                         s.canvas.rows - max 1 (statusRows s)
 
+                -- tmux's colors and bar, made once a frame (review TB10)
+                colors =
+                    colorsOf s.status
+
+                tmuxBarNow =
+                    if s.lookTmux then
+                        tmuxBar cols barRow s
+
+                    else
+                        { pieces = [], hits = [] }
+
                 tabBar =
-                    tabsOf cols barRow s
+                    if s.lookTmux then
+                        { text = "", active = [], alerted = [], busy = [], hits = tmuxBarNow.hits }
+
+                    else
+                        tabsOf cols barRow s
 
                 -- in tmux's look, a prompt or a message over the whole bar, as
                 -- tmux shows them on its status line (TM25)
@@ -5100,7 +5115,7 @@ paint s0 =
                 -- tmux's other modes (TM32): the clock drawn, the others
                 -- said; and the tree puritty shows for `choose-tree`
                 modesDrawn =
-                    Array.mapAndFlatten (\p -> modeOverlay (colorsOf s.status) s.lookTmux (p.id == active) (Maybe.withDefault (meant Reason.NotYet "") (Dict.get p.id s.paneModes)) (clockText s) p) (tiled ++ floating)
+                    Array.mapAndFlatten (\p -> modeOverlay colors s.lookTmux (p.id == active) (Maybe.withDefault (meant Reason.NotYet "") (Dict.get p.id s.paneModes)) (clockText s) p) (tiled ++ floating)
 
                 treeDrawn =
                     when s.tree is
@@ -5115,7 +5130,7 @@ paint s0 =
                                 in
                                 when area is
                                     Just place ->
-                                        drawTree (themeOf s) (colorsOf s.status) s.lookTmux s.version place t
+                                        drawTree (themeOf s) colors s.lookTmux s.version place t
 
                                     Nothing ->
                                         meant Reason.Gone []
@@ -5137,7 +5152,7 @@ paint s0 =
                                 in
                                 when area is
                                     Just place ->
-                                        drawListing (colorsOf s.status) s.lookTmux s.version place l
+                                        drawListing colors s.lookTmux s.version place l
 
                                     Nothing ->
                                         meant Reason.Gone []
@@ -5171,7 +5186,7 @@ paint s0 =
                 numbersDrawn =
                     when s.numbers is
                         Just n ->
-                            Array.mapAndFlatten (\p -> paneNumber s.version (colorsOf s.status) s.lookTmux (p.id == active) n p) (tiled ++ floating)
+                            Array.mapAndFlatten (\p -> paneNumber s.version colors s.lookTmux (p.id == active) n p) (tiled ++ floating)
 
                         Nothing ->
                             meant Reason.NotOpen []
@@ -5182,7 +5197,7 @@ paint s0 =
 
                 statusBar =
                     if s.lookTmux && statusRows s > 0 then
-                        (tmuxBar cols barRow s).pieces ++ extraStatus cols barRow s
+                        tmuxBarNow.pieces ++ extraStatus cols barRow s
 
                     else
                         []
@@ -5196,7 +5211,7 @@ paint s0 =
                                 []
 
                             else
-                                drawMenu (colorsOf s.status) s.lookTmux (menuPlace cols rows s m) m
+                                drawMenu colors s.lookTmux (menuPlace cols rows s m) m
 
                         Nothing ->
                             meant Reason.NotOpen []
@@ -5209,7 +5224,7 @@ paint s0 =
                             if s.lookTmux then
                                 when Array.findFirst (\p -> p.id == active) (tiled ++ floating) is
                                     Just place ->
-                                        tmuxView (colorsOf s.status) place.value v
+                                        tmuxView colors place.value v
 
                                     Nothing ->
                                         meant Reason.Gone boxView cols rows s.barTop v
@@ -5394,7 +5409,7 @@ paint s0 =
                                         , col = p.x + max 0 (p.w - String.count text)
                                         , color =
                                             if s.lookTmux then
-                                                (colorsOf s.status).mode
+                                                colors.mode
 
                                             else
                                                 activeTabColor
@@ -5407,7 +5422,7 @@ paint s0 =
                 -- the message's and the prompt's color, as message-style
                 -- says (TM47)
                 messageInk =
-                    (colorsOf s.status).message
+                    colors.message
 
                 -- the prompt in vi's command mode in message-command-style
                 -- (TM100)
@@ -5415,7 +5430,7 @@ paint s0 =
                     when s.asking is
                         Just a ->
                             if a.commandMode then
-                                (colorsOf s.status).messageCommand
+                                colors.messageCommand
 
                             else
                                 messageInk
@@ -5429,10 +5444,10 @@ paint s0 =
 
                 -- a copy-mode search's matches (TM41)
                 tiledMarks =
-                    searchMarks tiled s
+                    searchMarks colors tiled s
 
                 floatMarks =
-                    searchMarks floating s
+                    searchMarks colors floating s
 
                 -- each floating pane's frame color, read before the canvas
                 -- is drawn on
@@ -12668,7 +12683,7 @@ drawListing colors tmuxLook version place l =
                     ++ (Array.range 1 (boxH - 2) |> Array.map (\r -> { row = boxRow + r, col = place.x, color = plainInk, text = "│" ++ String.repeat inner " " ++ "│" }))
                     ++ [ { row = boxRow + boxH - 1, col = place.x, color = plainInk, text = "└" ++ String.repeat inner "─" ++ "┘" } ]
                     ++ (Array.takeFirst (boxH - 2) l.preview.lines
-                            |> Array.indexedMap (\j line -> { row = boxRow + 1 + j, col = place.x + 2, color = plainInk, text = clipCells (max 0 (place.w - 4)) (shownLine line) })
+                            |> Array.indexedMap (\j line -> { row = boxRow + 1 + j, col = place.x + 2, color = plainInk, text = clipCells (max 0 (place.w - 4)) (shownLine (aboutCells (max 0 (place.w - 4)) line)) })
                        )
     in
     (Array.range 0 (place.h - 1) |> Array.map (\r -> { row = place.y + r, col = place.x, color = plainInk, text = String.repeat place.w " " }))
@@ -14119,7 +14134,18 @@ drawCustomize theme tmuxLook place c =
                                         e
                                     )
                                     { width = width - 4, height = boxH - 2 }
-                                    |> Array.map (\p -> { row = boxRow + 1 + p.row, col = area.x + 2 + p.col, color = ink False p.style, text = clipCells (min (max 0 (width - 4 - p.col)) (cellCount (shownLine p.text))) (shownLine p.text) })
+                                    |> Array.map
+                                        (\p ->
+                                            let
+                                                room =
+                                                    max 0 (width - 4 - p.col)
+
+                                                -- its start only, made once (review TB10)
+                                                lineStart =
+                                                    shownLine (aboutCells room p.text)
+                                            in
+                                            { row = boxRow + 1 + p.row, col = area.x + 2 + p.col, color = ink False p.style, text = clipCells (min room (cellCount lineStart)) lineStart }
+                                        )
 
                             Nothing ->
                                 meant Reason.OutOfRange []
@@ -16923,8 +16949,8 @@ cursor in copy-mode-current-match-style. tmux searches with a regular
 expression for `/` and `?`, which puritty does not have: a search with
 any of a regular expression's special characters is not marked, its
 count still said. -}
-searchMarks : Array Layout.Pane -> State -> Array { row : Int, col : Int, color : String, text : String }
-searchMarks panes s =
+searchMarks : Colors -> Array Layout.Pane -> State -> Array { row : Int, col : Int, color : String, text : String }
+searchMarks colors panes s =
     Array.mapAndFlatten
         (\p ->
             when Dict.get p.id s.copy is
@@ -16948,10 +16974,10 @@ searchMarks panes s =
                                             , col = p.x + m.start.col
                                             , color =
                                                 if m.start.row == cursorRow && m.start.col <= c.cx && c.cx <= m.end.col then
-                                                    (colorsOf s.status).currentMatch
+                                                    colors.currentMatch
 
                                                 else
-                                                    (colorsOf s.status).match
+                                                    colors.match
                                             , text = Vt.selectionText m.start m.end t
                                             }
                                         )
@@ -17222,6 +17248,15 @@ inert text =
 
     else
         text
+
+
+{-| A line's start, enough of it for `n` cells (review TB10): a tab is
+eight at most, and a character no cell only where most are combining
+marks, so `4 n + 64` characters, cut before a long line, a buffer's
+copied minified file, is walked whole at every frame. -}
+aboutCells : Int -> String -> String
+aboutCells n text =
+    String.takeFirst (4 * max 0 n + 64) text
 
 
 shownLine : String -> String
