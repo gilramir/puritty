@@ -595,25 +595,58 @@ static struct xkb_state *kstate;
 static int32_t kbd = -1;
 static uint8_t xkb_event;
 
+static void note(const char *fmt, int a, int b, int c, int d);
+
+/* The keymap and its state fetched from the server for the core keyboard,
+ * which may be a new device: several round trips and a keymap of 100 KB or
+ * more, compiled. The old ones are kept if the fetch fails. */
+static void key_fetch(void) {
+    int32_t device = xkb_x11_get_core_keyboard_device_id(conn);
+    if (device < 0) return;
+    if (device != kbd) {
+        kbd = device;
+        uint16_t events = XCB_XKB_EVENT_TYPE_NEW_KEYBOARD_NOTIFY | XCB_XKB_EVENT_TYPE_MAP_NOTIFY | XCB_XKB_EVENT_TYPE_STATE_NOTIFY;
+        uint16_t parts = XCB_XKB_MAP_PART_KEY_TYPES | XCB_XKB_MAP_PART_KEY_SYMS | XCB_XKB_MAP_PART_MODIFIER_MAP |
+                         XCB_XKB_MAP_PART_EXPLICIT_COMPONENTS | XCB_XKB_MAP_PART_KEY_ACTIONS | XCB_XKB_MAP_PART_VIRTUAL_MODS |
+                         XCB_XKB_MAP_PART_VIRTUAL_MOD_MAP;
+        xcb_xkb_select_events(conn, (xcb_xkb_device_spec_t) kbd, events, 0, events, parts, parts, NULL);
+        /* a key held down repeats as presses without releases between, so
+         * a repeat is told from a press (V47) */
+        xcb_xkb_per_client_flags(conn, (xcb_xkb_device_spec_t) kbd, XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT,
+                                 XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT, 0, 0, 0);
+    }
+    struct xkb_keymap *map = xkb_x11_keymap_new_from_device(xctx, conn, device, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    struct xkb_state *state = map ? xkb_x11_state_new_from_device(map, conn, device) : NULL;
+    if (!state) {
+        if (map) xkb_keymap_unref(map);
+        return;
+    }
+    if (keymap) xkb_keymap_unref(keymap);
+    if (kstate) xkb_state_unref(kstate);
+    keymap = map;
+    kstate = state;
+    note("keymap fetched", 0, 0, 0, 0);
+}
+
+/* XKB set up once, at open, and the first keymap fetched. */
 static void key_setup(void) {
     if (!xkb_x11_setup_xkb_extension(conn, XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSION,
                                      XKB_X11_SETUP_XKB_EXTENSION_NO_FLAGS, NULL, NULL, &xkb_event, NULL))
         return;
     if (!xctx) xctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    kbd = xkb_x11_get_core_keyboard_device_id(conn);
-    if (keymap) xkb_keymap_unref(keymap);
-    if (kstate) xkb_state_unref(kstate);
-    keymap = xkb_x11_keymap_new_from_device(xctx, conn, kbd, XKB_KEYMAP_COMPILE_NO_FLAGS);
-    kstate = keymap ? xkb_x11_state_new_from_device(keymap, conn, kbd) : NULL;
-    uint16_t events = XCB_XKB_EVENT_TYPE_NEW_KEYBOARD_NOTIFY | XCB_XKB_EVENT_TYPE_MAP_NOTIFY | XCB_XKB_EVENT_TYPE_STATE_NOTIFY;
-    uint16_t parts = XCB_XKB_MAP_PART_KEY_TYPES | XCB_XKB_MAP_PART_KEY_SYMS | XCB_XKB_MAP_PART_MODIFIER_MAP |
-                     XCB_XKB_MAP_PART_EXPLICIT_COMPONENTS | XCB_XKB_MAP_PART_KEY_ACTIONS | XCB_XKB_MAP_PART_VIRTUAL_MODS |
-                     XCB_XKB_MAP_PART_VIRTUAL_MOD_MAP;
-    xcb_xkb_select_events(conn, (xcb_xkb_device_spec_t) kbd, events, 0, events, parts, parts, NULL);
-    /* a key held down repeats as presses without releases between, so a
-     * repeat is told from a press (V47) */
-    xcb_xkb_per_client_flags(conn, (xcb_xkb_device_spec_t) kbd, XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT,
-                             XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT, 0, 0, 0);
+    if (xctx) key_fetch();
+}
+
+/* A keyboard or layout change seen: one is a burst of NewKeyboardNotify
+ * and MapNotify events, spread over several reads, and the keymap is
+ * fetched again once for it, when the next key or pointer event needs it
+ * (X7). */
+static int keymap_stale;
+
+static void key_refresh(void) {
+    if (!keymap_stale) return;
+    keymap_stale = 0;
+    key_fetch();
 }
 
 /* Keys held, for telling a repeat from a press under XKB's detectable
@@ -656,6 +689,7 @@ static void record_text(uint8_t kind, const char *s, size_t n);
  * the input method) and whether it was a press, a repeat or a release; not
  * which key, so that a log holds no typing (DG7). */
 static void key_event(int press, uint8_t keycode, uint16_t state, uint32_t time, int via) {
+    key_refresh();
     if (!keymap) return;
     struct xkb_state *st = xkb_state_new(keymap);
     if (!st) return;
@@ -706,7 +740,7 @@ static void xkb_event_in(xcb_generic_event_t *e) {
             xkb_state_update_mask(kstate, s->baseMods, s->latchedMods, s->lockedMods, (xkb_layout_index_t) s->baseGroup,
                                   (xkb_layout_index_t) s->latchedGroup, s->lockedGroup);
     } else if (type == XCB_XKB_NEW_KEYBOARD_NOTIFY || type == XCB_XKB_MAP_NOTIFY) {
-        key_setup();
+        keymap_stale = 1;
     }
 }
 
@@ -754,6 +788,7 @@ static void pointer_event(int action, int xbutton, int x, int y, uint16_t state)
     if (gw < 0) gw = 0;
     if (gh < 0) gh = 0;
     int mods = 0;
+    key_refresh();
     if (keymap) {
         struct xkb_state *st = xkb_state_new(keymap);
         if (st) {

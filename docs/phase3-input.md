@@ -683,3 +683,33 @@ the program.
 Tested: the IME gate's `hangul-search` (Ctrl+Shift+F, `gks`, Return,
 Escape) on fcitx5-hangul and ibus-hangul. Before, the program received
 `한`; now nothing, and the log says `commit 한 into the search`.
+
+## 17. A layout change fetches the keymap once (2026-11-24)
+
+The code review's X7. Every XKB NewKeyboardNotify and MapNotify called
+`key_setup`, which set the XKB extension up again, asked for the core
+keyboard's id, fetched and compiled the whole keymap (several round
+trips, 100 KB and more) and its state, and selected the events again,
+all inside `drain`, which `puritty_x11_draw` runs. A layout change sends
+a burst of those events, so the window fetched the keymap once an event,
+blocking on the server each time; over `ssh -X` that is a frozen window.
+A fetch that failed left `keymap` NULL, and every key was dropped until
+the next change.
+
+Now the extension is set up once, at open (`key_setup`). An event only
+marks the keymap stale; `key_refresh` fetches it again when the next key
+or pointer event needs it (the keymap is read only there), so a burst
+costs one fetch however many reads its events come in, and a key typed
+right after a change is read with the new layout. A first try that
+fetched after each `drain` still fetched 7 to 10 times in the test below:
+one `setxkbmap`'s events come over several reads. `key_fetch` selects the events again only when the core
+keyboard is another device, and keeps the old keymap and state when the
+new ones cannot be fetched. Each fetch writes `keymap fetched` to the
+diagnostic log.
+
+Tested by `harness/keymaps.py`, new: puritty on Xvfb, `setxkbmap` four
+times (us, de, us, de), then `xdotool key z`, which is US y's key under
+German. Before: the keymap fetched 14 times; now 2 (at open, and for
+the burst when the key came) in each of five runs, and the key typed `z`
+both before and after. The window gates (sshwindow 33, pointer 56,
+tabpaste 2, reload 20, the IME gate's 16 runs) pass.
