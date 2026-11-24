@@ -20,6 +20,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -142,18 +143,25 @@ class Server:
         self.host = Ed25519PrivateKey.generate()
         self.other_host = Ed25519PrivateKey.generate()
         self.session_id = None
-        self.strict = case not in ("ignore-first-not-strict",)
+        self.strict = case not in ("ignore-first-not-strict", "not-strict-gcm", "not-strict-chacha")
+        # a server that also has AES-GCM, which it cannot speak here: the
+        # case ends at the keys (docs/ssh-client.md SC34)
+        self.ciphers = ["chacha20-poly1305@openssh.com"] + (["aes256-gcm@openssh.com"] if case == "not-strict-gcm" else [])
 
     def kexinit(self, first=True, follows=False):
         kex = ["ecdh-sha2-nistp256", "curve25519-sha256"] if follows else ["curve25519-sha256"]
         extras = (["ext-info-s"] + (["kex-strict-s-v00@openssh.com"] if self.strict else [])) if first else []
         return (bytes([20]) + os.urandom(16) + namelist(kex + extras) + namelist(["ssh-ed25519"])
-                + namelist(["chacha20-poly1305@openssh.com"]) * 2 + namelist(["hmac-sha2-256"]) * 2
+                + namelist(self.ciphers) * 2 + namelist(["hmac-sha2-256"]) * 2
                 + namelist(["none"]) * 2 + namelist([]) * 2 + bytes([1 if follows else 0]) + bytes(4))
 
     def exchange(self, c, client_version, first):
         case = self.case
         ours = self.kexinit(first, follows=case == "wrong-guess")
+        # a server that sends its KEXINIT only once it has the client's
+        waits = case == "waits-for-ours" and first
+        if waits:
+            theirs = c.read()
         if case == "second-kexinit" and first:
             c.send(ours)
         c.send(ours)
@@ -161,7 +169,8 @@ class Server:
             c.send(bytes([31]) + string(b"a guess the client must drop"))
         if case == "newkeys-early" and first:
             c.send(bytes([21]))
-        theirs = c.read()
+        if not waits:
+            theirs = c.read()
         while theirs[0] != 20:
             theirs = c.read()
         init = c.read()
@@ -229,6 +238,8 @@ class Server:
         if case in ("ignore-first", "ignore-first-not-strict"):
             c.send(bytes([2]) + string(b"before the KEXINIT"))
         self.exchange(c, client_version, True)
+        if case == "not-strict-gcm":
+            return
         request = c.read()
         assert request[0] == 5, request
         if case == "disconnect":
@@ -316,9 +327,12 @@ LOGIN_CASES = {
     "login-passwd-change": ["--password", "secret"],
 }
 
+# cases run through `Session.run` (`ssh-tests session`), which has a clock
+SESSION_CASES = ["waits-for-ours", "not-strict-chacha"]
+
 CASES = ["ok", "banner", "ssh1", "no-version", "huge-length", "short-padding", "garbled-kexinit", "ignore-first",
          "ignore-first-not-strict", "wrong-guess", "bad-signature", "zero-public", "newkeys-early", "second-kexinit",
-         "bad-mac", "server-rekeys", "hostkey-changes", "disconnect"] + list(LOGIN_CASES)
+         "bad-mac", "server-rekeys", "hostkey-changes", "disconnect", "not-strict-gcm"] + list(LOGIN_CASES) + list(SESSION_CASES)
 
 
 def run_case(case):
@@ -343,12 +357,19 @@ def run_case(case):
     t.start()
     if case in LOGIN_CASES:
         args = ["login", "127.0.0.1", str(port), "--user", "me", *LOGIN_CASES[case]]
+    elif case in SESSION_CASES:
+        known = tempfile.NamedTemporaryFile(prefix="scripted-known-", delete=False)
+        known.close()
+        args = ["session", "127.0.0.1", str(port), "--user", "me", "--known-hosts", known.name, "--strict", "no"]
     else:
         args = ["connect", "127.0.0.1", str(port)]
     out = subprocess.run([str(CLIENT), *args], capture_output=True, text=True, timeout=30)
     t.join(5)
     listener.close()
     got = out.stdout + (f"[exit {out.returncode}]\n" if out.returncode else "")
+    if case in SESSION_CASES:
+        os.unlink(known.name)
+        got = got.replace(known.name, "KNOWN_HOSTS").replace(f"127.0.0.1:{port}", "127.0.0.1:PORT")
     return got + "".join(f"[server: {f}]\n" for f in failure)
 
 

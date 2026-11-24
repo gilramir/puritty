@@ -672,6 +672,7 @@ type Turn
     | FromInner (Maybe Bytes)
     | Tick
     | Pump
+    | Unheard
 
 
 {-| The server's bytes, the other side's (the window's inputs, or for a
@@ -706,8 +707,17 @@ loop other st =
 
                     Nothing ->
                         meant Reason.NotYet []
+
+            -- our first KEXINIT waits for the server's (SC34); a server
+            -- that waits for ours instead is sent it after a second
+            unheard =
+                if Transport.awaitingServer st.transport then
+                    [ Process.sleep 1000 |> Task.map (\_ -> Unheard) ]
+
+                else
+                    []
         in
-        Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer ++ pumping)
+        Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer ++ pumping ++ unheard)
             |> Task.andThen
                 (\turn ->
                     when turn is
@@ -738,6 +748,9 @@ loop other st =
 
                             else
                                 withConnection Connection.keepalive st
+
+                        Unheard ->
+                            onTransport (Transport.rekey st.transport) st
 
                         Pump ->
                             Time.monotonic
@@ -978,11 +991,13 @@ onEvent event st =
 
 {-| What a connection open to Terrapin (CVE-2023-48795) is told: the
 server has no strict key exchange and ChaCha20-Poly1305 was chosen, the
-combination the attack needs; nothing otherwise (SC33). -}
+combination the attack needs; nothing otherwise (SC33). Since SC34 only
+when the two sides have no AES-GCM cipher in common, or the server was
+slow to send its KEXINIT. -}
 terrapin : Transport.Algorithms -> Maybe String
 terrapin a =
     if not a.strict && (String.startsWith "chacha20" a.toServer || String.startsWith "chacha20" a.toClient) then
-        Just "the server has no strict key exchange (OpenSSH 9.6 and later do), and ChaCha20-Poly1305 is in use: a man in the middle could drop the first messages after the keys (Terrapin, CVE-2023-48795); a newer server, or Ciphers aes256-gcm@openssh.com for this host in ~/.ssh/config, avoids it"
+        Just "the server has no strict key exchange (OpenSSH 9.6 and later do), and ChaCha20-Poly1305 is in use: a man in the middle could drop the first messages after the keys (Terrapin, CVE-2023-48795); a newer server, or aes256-gcm@openssh.com in this host's Ciphers in ~/.ssh/config, avoids it"
 
     else
         Nothing

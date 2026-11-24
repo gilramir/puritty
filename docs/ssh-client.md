@@ -1746,3 +1746,44 @@ strict`; `scripted.py`'s `ignore-first-not-strict` says `not strict`, the
 other 24 scripted and sshd cases with keys `strict` (re-recorded, only
 that word added). The notice itself is read, not run: the test sshd is
 strict, and the scripted server ends before a session.
+
+
+## SC34 · AES-GCM, by itself, for a server with no strict key exchange (2026-11-23)
+
+The rest of the code review's SC3, which SC33 left for Gilbert; he chose
+it. For a server with no strict key exchange, the first exchange now
+offers the ciphers with ChaCha20-Poly1305 last, so a server that also
+has AES-GCM gets GCM. GCM's nonce does not come from the sequence number
+that Terrapin shifts. The order is kept for the connection's later
+exchanges. A user's own `Ciphers` list is reordered the same way. With
+no GCM in common (a server, or a `Ciphers` line, with only ChaCha20), the
+connection goes on with ChaCha20 and SC33's notice says so.
+
+To know whether the server is strict before naming our order,
+`Transport.start` no longer sends our KEXINIT with the version line. It
+goes when the server's KEXINIT is read (`theirKexinit`, which already
+sent ours for an exchange the server began), together with our
+`ECDH_INIT`. SC33 guessed this would cost half a round trip on every
+connection. It does not: our `ECDH_INIT` already waited for the server's
+KEXINIT, since the key exchange is chosen from it, and the server can
+answer nothing before it has both. Only the bytes of our KEXINIT move
+later, into the write that already carried `ECDH_INIT`. Strict KEX's
+rule, that our KEXINIT is our first packet, still holds.
+
+RFC 4253 §7.1 has each side send its KEXINIT without waiting, and
+OpenSSH's sshd, the scripted server and every server the tests meet do.
+For a server that waits for ours instead, `Session.loop` races one
+second's `Process.sleep` while `Transport.awaitingServer` holds, and then
+`Transport.rekey` sends our KEXINIT unreordered; SC33's notice covers
+that case if it ends on ChaCha20 without strict KEX. The test program's
+`connect` command has no such timer; only `Session.run` does.
+
+Tested, each through `scripted.py`:
+
+| case | the server | before | now |
+|---|---|---|---|
+| `not-strict-gcm` | not strict, ChaCha20 and AES-256-GCM | `chacha20-poly1305@openssh.com` both ways | `aes256-gcm@openssh.com` both ways |
+| `waits-for-ours` | sends its KEXINIT only after ours (through `ssh-tests session`) | connects | connects, in 1.03 s against 0.01 s for `ok` |
+| `not-strict-chacha` | not strict, ChaCha20 only (through `ssh-tests session`) | not run | SC33's notice, run for the first time |
+
+The other 25 scripted cases and the 80 sshd cases pass with no pin moved.

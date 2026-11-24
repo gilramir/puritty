@@ -4,6 +4,7 @@ module Ssh.Transport exposing
     , Event(..)
     , Step
     , Transport
+    , awaitingServer
     , defaultConfig
     , disconnect
     , isReady
@@ -231,7 +232,10 @@ strictServer =
 
 
 {-| A transport, from what it offers and a seed of 32 or more bytes from
-`Os.Random.bytes`. Its first bytes are its version line and its KEXINIT.
+`Os.Random.bytes`. Its first bytes are its version line. Its KEXINIT waits
+for the server's, so that it can prefer AES-GCM to ChaCha20-Poly1305 for a
+server with no strict key exchange (SC34); a caller whose server says
+nothing for a while sends it with `rekey` (`awaitingServer`).
 -}
 start : Config -> Bytes -> Step
 start config seed =
@@ -261,7 +265,14 @@ start config seed =
             , events = []
             }
     in
-    finish (beginKex st)
+    finish st
+
+
+{-| Whether the first exchange waits on the server's KEXINIT, ours unsent:
+a server that waits for ours instead is sent it with `rekey`. -}
+awaitingServer : Transport -> Bool
+awaitingServer (Transport st) =
+    st.phase /= Dead && st.kex == Nothing && not st.ready
 
 
 {-| What the connection gave, taken: as many whole packets as there are.
@@ -291,7 +302,8 @@ send payload (Transport st) =
         finish (rekeyIfDue (sendPacket payload st))
 
 
-{-| A new key exchange, now, unless one is in progress. -}
+{-| A new key exchange, now, unless one is in progress; before the first,
+our KEXINIT without waiting longer for the server's. -}
 rekey : Transport -> Step
 rekey (Transport st) =
     if st.phase == Dead || st.kex /= Nothing then
@@ -753,15 +765,27 @@ firstShared ours theirs =
 theirKexinit : Int -> Bytes -> State -> State
 theirKexinit seq payload st0 =
     let
-        -- an exchange the server began: ours goes now
+        parsed =
+            parseKexinit payload
+
+        theirsStrict =
+            when parsed is
+                Ok t ->
+                    Array.member strictServer t.kex
+
+                Err _ ->
+                    meant Reason.NotKnown True
+
+        -- an exchange the server began, or the first, which waited for
+        -- this: ours goes now
         st =
             if st0.kex == Nothing then
-                beginKex st0
+                beginKex (againstTerrapin theirsStrict st0)
 
             else
                 st0
     in
-    when { kex = st.kex, parsed = parseKexinit payload } is
+    when { kex = st.kex, parsed = parsed } is
         { kex = Nothing } ->
             fail "no exchange" st
 
@@ -837,6 +861,26 @@ theirKexinit seq payload st0 =
 
                         _ ->
                             fail ("no cipher both sides have; the server offers " ++ String.join "," theirs.toServer) st
+
+
+{-| For the first exchange with a server that has no strict key exchange,
+the ciphers offered with ChaCha20-Poly1305 last: its nonce is the sequence
+number, which is what Terrapin (CVE-2023-48795) shifts, and AES-GCM's is
+not. Kept for the connection's later exchanges (SC34). -}
+againstTerrapin : Bool -> State -> State
+againstTerrapin theirsStrict st =
+    if st.sessionId == Nothing && not theirsStrict then
+        let
+            config =
+                st.config
+
+            isChacha c =
+                String.startsWith "chacha20" c
+        in
+        { st | config = { config | ciphers = Array.keepIf (\c -> not (isChacha c)) config.ciphers ++ Array.keepIf isChacha config.ciphers } }
+
+    else
+        st
 
 
 ecdhReply : Bytes -> State -> State
