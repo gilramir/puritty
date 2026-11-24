@@ -105,6 +105,7 @@ not by a run.
 - What: FocusIn/FocusOut are filtered only by `f->detail != XCB_NOTIFY_DETAIL_POINTER`; `f->mode` is not looked at. A passive key grab activating (any i3/sway-on-X/awesome key binding, an Alt-Tab switcher, a volume key) sends FocusOut with mode NotifyGrab and FocusIn with NotifyUngrab to the focused window though the focus never left.
 - Scenario: under such a window manager each hotkey makes puritty record focus out then in: programs that asked for focus reports (mode 1004: vim, tmux) get `CSI O`/`CSI I` pairs, the cursor flickers hollow, `xcb_xim_unset_ic_focus` is sent (an IME may drop its preedit), `held` is cleared so a key still held is reported as a new press, and `repaint_all` copies the whole window twice.
 - Fix: ignore events whose `mode` is `XCB_NOTIFY_MODE_GRAB` or `XCB_NOTIFY_MODE_UNGRAB` (and `detail` Inferior), as GTK and xterm do.
+- Fixed: 2026-11-24, `docs/phase3-input.md` §19. Focus events of mode NotifyGrab or NotifyUngrab, and of detail NotifyInferior, are let go. Test: `harness/grabfocus.py`, another client grabbing the keyboard three times: before, `CSI O CSI I` three times to a program with mode 1004; now nothing, and a real focus move still reported.
 
 ### X11 · After the sound server goes away, every sound is lost and still reported as played
 - Where: packages/x11/src/Ext/puritty_sound.c:103-118 (the write loop), 124-144

@@ -1100,7 +1100,12 @@ static void drain(void) {
             if (c->window == window) size_in(c->width, c->height);
         } else if (type == XCB_FOCUS_IN || type == XCB_FOCUS_OUT) {
             xcb_focus_in_event_t *f = (xcb_focus_in_event_t *) e;
-            if (f->detail != XCB_NOTIFY_DETAIL_POINTER) {
+            /* not a change: the pointer's, one inside the window, or the
+             * Out and In around another client's keyboard grab, a window
+             * manager's hotkey or switcher, though the focus never left
+             * (X10), as GTK and xterm read them */
+            if (f->detail != XCB_NOTIFY_DETAIL_POINTER && f->detail != XCB_NOTIFY_DETAIL_INFERIOR &&
+                f->mode != XCB_NOTIFY_MODE_GRAB && f->mode != XCB_NOTIFY_MODE_UNGRAB) {
                 focus_in(type == XCB_FOCUS_IN);
                 if (have_xic) {
                     if (type == XCB_FOCUS_IN) xcb_xim_set_ic_focus(xim, xic);

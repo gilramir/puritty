@@ -740,3 +740,27 @@ method, it composes as before.
 apostrophe), and `dead_acute q x` types `x`; on `us` with Compose on
 Right Alt, `Multi_key o c` types `©`. Before, all four failed: `e`, a
 space, `oc`, `qx`.
+
+## 19. A keyboard grab is not a focus change (2026-11-24)
+
+The code review's X10. FocusIn and FocusOut were taken as focus changes
+whenever their detail was not `NotifyPointer`; their mode was not looked
+at. When another client grabs the keyboard, as a window manager's hotkey
+(i3, awesome), an Alt-Tab switcher or a volume key does, the focused
+window gets FocusOut with mode `NotifyGrab`, and FocusIn with
+`NotifyUngrab` when it lets go, though the focus never left. So each
+hotkey sent a program that asked for focus reports (mode 1004: vim, tmux)
+`CSI O` and `CSI I`, drew the cursor hollow and back, told the input
+method the focus left, and forgot the keys held.
+
+Now events of mode `NotifyGrab` or `NotifyUngrab`, and of detail
+`NotifyInferior` (a window inside puritty's, which it has none of), are
+let go, as GTK and xterm do. A focus that really moves while a grab is
+on comes with mode `NotifyWhileGrabbed` and is still a change.
+
+**Tested** by `harness/grabfocus.py`, new: puritty on Xvfb, its tab's
+program asking for focus reports; another client grabs the keyboard
+(`XGrabKeyboard` through ctypes) and lets it go three times, then the
+focus moves to the root window and back. Before: the grabs reported
+`CSI O CSI I` three times; now nothing, and the real move `CSI O CSI I`
+both before and after.
