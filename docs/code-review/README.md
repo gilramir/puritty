@@ -278,7 +278,7 @@ covered" sections. The larger gaps:
 | [SC1](04-ssh-core.md) | bug | confirmed | **fixed** A side channel closed while it is still opening is not closed, and then runs |
 | [SC2](04-ssh-core.md) | security | plausible | **fixed** The channel window is given back on receipt, so the server is never slowed and output queues without bound |
 | [SC3](04-ssh-core.md) | security | confirmed | **fixed** No warning or fallback when the server has no strict KEX and ChaCha20-Poly1305 is chosen (Terrapin), though the design promises one |
-| [SC4](04-ssh-core.md) | security | confirmed | An unencrypted key file's text, the private key itself, is held in Geng memory for the whole session |
+| [SC4](04-ssh-core.md) | security | confirmed | **fixed** An unencrypted key file's text, the private key itself, is held in Geng memory for the whole session |
 | [SC5](04-ssh-core.md) | inaccuracy | plausible | **fixed** A host looked up through `HostKeyAlias` on a port other than 22 is looked up as `[alias]:port`; OpenSSH uses the bare alias |
 | [SC6](04-ssh-core.md) | security | confirmed | **fixed** With `accept-new` or `no`, a key of a type the host is not known by is taken silently even when the host is known by another type |
 | [SC7](04-ssh-core.md) | inaccuracy | confirmed | **fixed** `ssh_config` keywords the client does not act on are dropped without a word, including ones that restrict what it may do |

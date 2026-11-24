@@ -216,8 +216,13 @@ fingerprint key =
     "SHA256:" ++ String.replace "=" "" (Base64.encode (SshCrypto.hash SshCrypto.Sha256 key))
 
 
+{-| A key the session may sign with: through the agent (`file =
+Nothing`), or from its file, which is read again each time it signs, so
+that the file's text, the private key itself when it has no passphrase,
+is in memory only while it signs (the code review's SC4, puritty
+`docs/ssh-client.md` SC36). -}
 type alias Identity =
-    { identity : Auth.Identity, file : Maybe { path : String, text : Bytes } }
+    { identity : Auth.Identity, file : Maybe { path : String } }
 
 
 type Waiting
@@ -225,7 +230,7 @@ type Waiting
     | ForHostKey { name : String, key : Bytes }
     | ForChangedKey { name : String, key : Bytes }
     | ForPassword
-    | ForPassphrase { need : { id : Int, algorithm : String, data : Bytes }, text : Bytes, path : String, tries : Int }
+    | ForPassphrase { need : { id : Int, algorithm : String, data : Bytes }, publicKey : Bytes, path : String, tries : Int }
     | ForResponses
 
 
@@ -552,7 +557,7 @@ identitiesOf permissions options =
                         (\text ->
                             when SshCrypto.keyFileInfo text is
                                 Just info ->
-                                    [ { identity = { id = i, publicKey = info.publicKey, keyType = KnownHosts.keyTypeOf info.publicKey }, file = Just { path = path, text = text } } ]
+                                    [ { identity = { id = i, publicKey = info.publicKey, keyType = KnownHosts.keyTypeOf info.publicKey }, file = Just { path = path } } ]
 
                                 Nothing ->
                                     meant Reason.FromOutside []
@@ -1295,13 +1300,22 @@ onRequest request st =
                         Nothing ->
                             meant Reason.Refused (onAuth (Auth.unsigned need.id auth) st)
 
-                Just { file = Just file } ->
-                    when SshCrypto.keyFileInfo file.text is
-                        Just { encrypted = True } ->
-                            tell (Asking (Passphrase { file = file.path })) { st | waiting = ForPassphrase { need = need, text = file.text, path = file.path, tries = 0 } }
+                Just { file = Just file, identity = identity } ->
+                    keyFileAgain st.permissions file.path identity.publicKey
+                        |> Task.andThen
+                            (\read ->
+                                when read is
+                                    Ok text ->
+                                        when SshCrypto.keyFileInfo text is
+                                            Just { encrypted = True } ->
+                                                tell (Asking (Passphrase { file = file.path })) { st | waiting = ForPassphrase { need = need, publicKey = identity.publicKey, path = file.path, tries = 0 } }
 
-                        _ ->
-                            meant Reason.NotSet signWith need file.text Bytes.empty st
+                                            _ ->
+                                                meant Reason.NotSet signWith need text Bytes.empty st
+
+                                    Err why ->
+                                        meant Reason.FromOutside (tell (Status why) st |> Task.andThen (onAuth (Auth.unsigned need.id auth)))
+                            )
 
         { request = Auth.NeedPassword need } ->
             tell (Asking (Password { prompt = need.prompt, account = accountOf st.options, keyKnown = st.hostKeyKnown })) { st | waiting = ForPassword }
@@ -1318,9 +1332,30 @@ accountOf o =
     o.user ++ "@" ++ o.host ++ ":" ++ String.fromInt o.port
 
 
-{-| A signature by a key file's key: loaded, used and forgotten, so the
-key is in memory only while it signs. A wrong passphrase is asked for
-again, twice. -}
+{-| A key file read again to sign with (SC36): its text if it still holds
+the key it held when the session began, or why not. -}
+keyFileAgain : Permissions -> String -> Bytes -> Task x (Result String Bytes)
+keyFileAgain permissions path publicKey =
+    File.readFile permissions.fs (Path.fromString path)
+        |> Task.map
+            (\text ->
+                when SshCrypto.keyFileInfo text is
+                    Just info ->
+                        if info.publicKey == publicKey then
+                            Ok text
+
+                        else
+                            Err ("the key file " ++ path ++ " holds another key now")
+
+                    Nothing ->
+                        meant Reason.FromOutside (Err ("the key file " ++ path ++ " is not a key file now"))
+            )
+        |> Task.onError (\e -> Task.succeed (Err ("the key file " ++ path ++ " could not be read again: " ++ Os.Error.toString e)))
+
+
+{-| A signature by a key file's key: the file's text, read for this, given
+to C, which loads, uses and forgets the key; the text goes when this
+does. A wrong passphrase is asked for again, twice. -}
 signWith : { id : Int, algorithm : String, data : Bytes } -> Bytes -> Bytes -> State -> Task Os.Error.Error State
 signWith need text passphrase st =
     when st.auth is
@@ -1399,8 +1434,17 @@ onAnswer answer st =
         { waiting = ForResponses, auth = Just auth } ->
             onAuth (Auth.responses Nothing auth) cleared
 
-        { waiting = ForPassphrase w, answer = Give passphrase } ->
-            signWith w.need w.text (Bytes.fromString passphrase) st
+        { waiting = ForPassphrase w, answer = Give passphrase, auth = Just auth } ->
+            keyFileAgain st.permissions w.path w.publicKey
+                |> Task.andThen
+                    (\read ->
+                        when read is
+                            Ok text ->
+                                signWith w.need text (Bytes.fromString passphrase) st
+
+                            Err why ->
+                                meant Reason.FromOutside (tell (Status why) cleared |> Task.andThen (onAuth (Auth.unsigned w.need.id auth)))
+                    )
 
         { waiting = ForPassphrase w, auth = Just auth } ->
             onAuth (Auth.unsigned w.need.id auth) cleared

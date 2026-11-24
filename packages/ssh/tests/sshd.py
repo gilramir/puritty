@@ -113,6 +113,10 @@ SESSION_CASES = [
 SESSION_DRIVER_CASES = [
     ("driver-trust-remember", "empty", ["--identity", "{ed}", "--trust"]),
     ("driver-trust-once", "empty", ["--identity", "{ed}", "--trust-once"]),
+    # the key file replaced by another key after the session read it and
+    # before it signs: read again to sign, so the key it held is not used
+    # (the code review's SC4, docs/ssh-client.md SC36)
+    ("driver-key-file-replaced", "empty", ["--identity", "{edcopy}", "--trust-once", "--replace-before-trust", "{other}", "{edcopy}"]),
     ("driver-decline", "empty", ["--identity", "{ed}"]),
     ("driver-known", "known", ["--identity", "{ed}"]),
     ("driver-changed", "other", ["--identity", "{ed}", "--trust"]),
@@ -337,6 +341,10 @@ def main():
             print(f"ok   {name}")
     other_key = WORK / "userkeys" / "other.pub"
     for name, start, options in SESSION_DRIVER_CASES:
+        # a copy of the ed25519 key a case may replace, made again each case
+        keys["edcopy"] = str(WORK / "userkeys" / "edcopy")
+        shutil.copy(keys["ed"], keys["edcopy"])
+        os.chmod(keys["edcopy"], 0o600)
         server = Server(["HostKeyAlgorithms ssh-ed25519"] if start == "other-type" else [])
         kh = WORK / f"known_hosts.{name}"
         server_pub = (WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
@@ -363,7 +371,7 @@ def main():
         finally:
             server.stop()
         got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS").replace(str(server.port), "PORT"))
-        got = got.replace(f"as {getpass.getuser()}", "as USER")
+        got = got.replace(f"as {getpass.getuser()}", "as USER").replace(str(WORK), "WORK")
         pin = PINS / f"{name}.txt"
         if a.update:
             pin.write_text(got)

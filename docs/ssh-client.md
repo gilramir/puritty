@@ -971,8 +971,9 @@ whose paths differ.
 SC11's step 6, without the agent.
 
 **Keys stay in C** (SC12 question 7). `SshCrypto.keyFileInfo` reads an
-OpenSSH key file's public half without its passphrase; `loadKey` reads the
-file in C, runs `bcrypt_pbkdf` and AES-256-CTR on a thread of its own,
+OpenSSH key file's public half without its passphrase; `loadKey` takes the
+file's text (read by Geng, which SC36 keeps only while it signs), runs
+`bcrypt_pbkdf` and AES-256-CTR on a thread of its own,
 checks the two check words, and has PuTTY make its key of the private part
 (`ssh_key_new_priv_openssh`), clearing every copy of the decrypted bytes
 and of the passphrase it was handed; Geng holds a handle. `sign` signs on
@@ -1839,3 +1840,34 @@ Tested:
 The first three `connection` cases fail with the drop and `taken` turned
 off (12 of 15 then). The `connection` suite was not in `gate.sh`; it is
 now. 82 of 82 sshd cases pass twice; no other pin moved.
+
+
+## SC36 · A key file is read again to sign, its text not kept (2026-11-24)
+
+The code review's SC4. `identitiesOf` read every `IdentityFile` and kept
+its whole text in `State.identities` for the session, to hand to
+`loadKey` later. For a key with no passphrase that text is the private
+key, held in the collector's heap for hours, where SC12 question 7
+decided private keys must not be. `SshCrypto.Key`'s comment and SC16
+said the key was read in C and never in Geng's memory; it was read in
+Geng and C was handed a copy.
+
+Now `Session.Identity`'s file is its path only. `keyFileAgain` reads the
+file when the server asks for a signature, checks that it still holds
+the public key it held when the session began, and gives the text to
+`signWith`, so the text lives only while it signs. With a passphrase,
+the question waits with the path and the key, not the text, and the
+file is read again when the answer comes. A file that cannot be read,
+is not a key file, or holds another key now is said once, and that key
+is passed over. The two comments are corrected. Reading the file in C,
+the review's other way, is not done: Geng still reads the text, for as
+long as it signs.
+
+Tested: `sshd.py`'s `driver-key-file-replaced`. The identity is a copy
+of the authorized key. When the session asks to trust the host's key,
+the test program writes another key over the file
+(`--replace-before-trust`), after the session read it and before it
+signs. Before: "logged in", signed with the text it had kept. Now: "the
+key file WORK/userkeys/edcopy holds another key now", and the login
+fails, as the file's key is not authorized. 83 of 83 sshd cases pass,
+the passphrase cases among them.

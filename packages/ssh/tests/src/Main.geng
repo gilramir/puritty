@@ -230,7 +230,7 @@ connectionSuite =
                                 Bytes.fromString k
 
                             file id k =
-                                { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Just { path = "/home/me/.ssh/" ++ k, text = Bytes.empty } }
+                                { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Just { path = "/home/me/.ssh/" ++ k } }
 
                             agent id k =
                                 { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Nothing }
@@ -2548,7 +2548,7 @@ sessionMode r target =
                                                 |> Task.andThen (\env -> uploadOverSession r.fs (Array.dropFirst (found.index + 1) env.argsAsBytes) sources)
 
                                         Nothing ->
-                                            watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0 }
+                                            watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0, fs = r.fs }
                         )
             )
 
@@ -2677,7 +2677,7 @@ options; the output shown at the end. The side channels' lines
 and said at the end, in order, so that how their events interleave with
 the session's does not move the pins. -}
 type alias Watch =
-    { output : Array Bytes, sides : Dict.Dict Int { lines : Array String, output : Array Bytes }, open : Int, opened : Int }
+    { output : Array Bytes, sides : Dict.Dict Int { lines : Array String, output : Array Bytes }, open : Int, opened : Int, fs : File.Permission }
 
 
 watch : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Watch -> Task Never {}
@@ -2730,6 +2730,26 @@ watchOn args sources w notice0 =
                         (when ask is
                             Session.TrustHostKey k ->
                                 say ("asked to trust " ++ k.host ++ "'s " ++ k.algorithm ++ " key")
+                                    -- `--replace-before-trust SRC DST`: a key file
+                                    -- changed after the session read it and before
+                                    -- it signs (docs/ssh-client.md SC36)
+                                    |> Task.andThen
+                                        (\_ ->
+                                            when Array.findFirst (\a -> a == "--replace-before-trust") args is
+                                                Just found ->
+                                                    when { from = Array.get (found.index + 1) args, to = Array.get (found.index + 2) args } is
+                                                        { from = Just from, to = Just to } ->
+                                                            File.readFile w.fs (Path.fromString from)
+                                                                |> Task.andThen (\text -> File.writeFile w.fs text (Path.fromString to))
+                                                                |> Task.map (\_ -> {})
+                                                                |> Task.onError (\e -> say ("could not replace " ++ to ++ ": " ++ Os.Error.toString e))
+
+                                                        _ ->
+                                                            say "--replace-before-trust needs SRC DST"
+
+                                                Nothing ->
+                                                    Task.succeed {}
+                                        )
                                     |> Task.andThen
                                         (\_ ->
                                             if Array.member "--trust" args then
