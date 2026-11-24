@@ -4683,3 +4683,28 @@ Tested: the tmux package's Control suite, "a reply is closed only by an
 %end that repeats its %begin's time, number and flags". Before, the
 reply closed at the forged `%end 1 5 1` and `y` became a stray line; now
 the reply holds all three lines. 148 of 148.
+
+
+## TM124 · An attach asks for its panes once (2026-11-24)
+
+The code review's TA9. tmux writes `%session-changed $0 0` right after
+the attach command's reply (TM3; a tmux 3.8 control client shows it
+there). `attachQueries` runs on that reply and asks for the window, the
+tabs, the panes and their modes. The `%session-changed` handler then
+asked the same four again, and each `ForPanes` answer sends a capture of
+every pane: every pane was captured, sent and parsed twice on each
+attach, and its terminal built twice. `State` held no session, so it
+could not tell that notification from a `switch-client`.
+
+Now `State.sessionId` keeps the session, -1 until `%session-changed`
+says which. One for the same session (or the first), while a panes
+question is still waiting (`isPanesAsk`), only records it. Another
+session's still asks all four, as TM102 has it. FakeTmux's start now
+writes the `%session-changed` that tmux writes, which its attach lacked,
+so its tests attach as tmux's clients do.
+
+Tested: TmuxTests "an attach asks for its panes once", on each version.
+With the start tmux writes and the old handler: `list-panes -s -F 'P
+#{pane_id}'` asked twice and four captures of the one pane; now once and
+two (the saved screen's and the history's). The rest of the suite is
+unchanged: 605 of 605.

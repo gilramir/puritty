@@ -102,6 +102,10 @@ type alias State =
     -- the tmux window shown, -1 until tmux says which
     , window : Int
     , name : String
+    -- the session attached to, -1 until `%session-changed` says which:
+    -- the first, right after the attach, is for the session the attach's
+    -- own questions are about (the code review's TA9, TM124)
+    , sessionId : Int
     -- each pane's terminal, and its id at the same index: as many of
     -- one as of the other, which the compiler holds every update to
     -- (TM34)
@@ -826,6 +830,7 @@ idle _ =
     , starting = Nothing
     , window = -1
     , name = ""
+    , sessionId = -1
     , ids = []
     , panes = Builder.empty 0
     , layout = Nothing
@@ -2633,7 +2638,7 @@ event size e acc =
                 st =
                     acc.state
             in
-            { acc | state = { st | on = True, starting = Just [], window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus, rawStatus = noStatus, capsKnown = False } }
+            { acc | state = { st | on = True, starting = Just [], window = -1, sessionId = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus, rawStatus = noStatus, capsKnown = False } }
 
         Exited ->
             let
@@ -2760,6 +2765,17 @@ attachQueries acc =
         , { command = Command.globalValue "command-alias", expect = ForAliases }
         ]
         acc
+
+
+{-| Whether a question waiting is the panes' (`panesQuery`). -}
+isPanesAsk : Expect -> Bool
+isPanesAsk e =
+    when e is
+        ForPanes ->
+            True
+
+        _ ->
+            False
 
 
 {-| A reply block: one of puritty's questions answered, or a command not
@@ -4498,17 +4514,24 @@ notice n acc =
             -- another window of the session shown: ask for its layout
             ask [ { command = windowQuery, expect = ForWindow } ] { acc | state = st }
 
-        SessionChanged _ ->
-            -- another session's panes, and their modes, which are asked
-            -- when tmux attaches for that session's only: one already in
-            -- copy mode is shown so (TM102)
-            ask
-                [ { command = windowQuery, expect = ForWindow }
-                , { command = tabsQuery, expect = ForTabs }
-                , { command = panesQuery, expect = ForPanes }
-                , { command = Command.listPanesSession modeFormat, expect = ForModes }
-                ]
-                { acc | state = st }
+        SessionChanged c ->
+            -- the session tmux attached for, said right after the attach,
+            -- while the attach's own questions about it wait: nothing more
+            -- to ask, or each pane would be captured twice (TA9, TM124)
+            if (st.sessionId == -1 || st.sessionId == c.session) && Array.any (\a -> isPanesAsk a.expect) st.expecting then
+                { acc | state = { st | sessionId = c.session } }
+
+            else
+                -- another session's panes, and their modes, which are asked
+                -- when tmux attaches for that session's only: one already in
+                -- copy mode is shown so (TM102)
+                ask
+                    [ { command = windowQuery, expect = ForWindow }
+                    , { command = tabsQuery, expect = ForTabs }
+                    , { command = panesQuery, expect = ForPanes }
+                    , { command = Command.listPanesSession modeFormat, expect = ForModes }
+                    ]
+                    { acc | state = { st | sessionId = c.session } }
 
         Pause pane ->
             -- puritty fell behind on the pane and tmux dropped what was

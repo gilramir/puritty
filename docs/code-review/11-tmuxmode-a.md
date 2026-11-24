@@ -105,6 +105,7 @@ read as the answer to the question before it, until the next attach.
 - What: `attachQueries` asks `windowQuery`, `tabsQuery`, `panesQuery`, the modes; the `%session-changed` that tmux sends next asks the same four again, and each `ForPanes` answer sends `recapture` for every pane.
 - Scenario: attaching to a session of ten panes transfers and parses twenty whole-history captures and builds each terminal twice. `State` holds no session id, so it cannot tell the session it is attaching to from a `switch-client`.
 - Fix: keep the session id; on `%session-changed` to the same session while the attach's own questions are still in `expecting`, ask nothing.
+- Fixed: 2026-11-24, `docs/tmux.md` TM124. `State.sessionId`; the `%session-changed` after an attach, for the same session with the panes question waiting, asks nothing. FakeTmux's start now writes it, as tmux does. Test: TmuxTests "an attach asks for its panes once": before, panes asked twice and four captures of one pane; now once and two.
 
 ### TA10 · A pane's whole history is captured on attach and on every `%pause`, into a terminal that keeps about 1000 rows
 - Where: app/src/TmuxMode.geng:867-877 (`blank`: `scrollbackBytesFor { cols, rows = 1000 }`), 2381-2383 and Command.geng:549-558 (`-S - -E -`), 4163-4167 (`Pause`), 3889-3962 (`rebuild`)

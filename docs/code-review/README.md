@@ -329,7 +329,7 @@ covered" sections. The larger gaps:
 | [TA6](11-tmuxmode-a.md) | bug | confirmed | **fixed** Before tmux 3.4 a binding of several commands is sent on one line and waited for once; `source-file` in it has no fence |
 | [TA7](11-tmuxmode-a.md) | bug | confirmed | **fixed** A pane that closes while it holds the pointer leaves `grab` set: clicks, selection and tabs stop working |
 | [TA8](11-tmuxmode-a.md) | bug | confirmed | **fixed** Panes are never taken out of `ids`/`panes`/`info`: closed panes and a left session's panes keep their terminals |
-| [TA9](11-tmuxmode-a.md) | efficiency | confirmed | Every attach asks the window, tabs, panes and modes twice, so every pane is captured twice |
+| [TA9](11-tmuxmode-a.md) | efficiency | confirmed | **fixed** Every attach asks the window, tabs, panes and modes twice, so every pane is captured twice |
 | [TA10](11-tmuxmode-a.md) | efficiency | confirmed | **fixed** A pane's whole history is captured on attach and on every `%pause`, into a terminal that keeps about 1000 rows |
 | [TA11](11-tmuxmode-a.md) | bug | confirmed | **fixed** `applyLayout` sizes terminals without the scrollbar's columns; only `refit` uses `fittedIn` |
 | [TA12](11-tmuxmode-a.md) | bug | confirmed | **fixed** Key bindings and prefixes are read once, on attach |
