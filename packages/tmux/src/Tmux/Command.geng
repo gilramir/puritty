@@ -62,6 +62,7 @@ module Tmux.Command exposing
     , setHook
     , setOption
     , setPaneFormat
+    , setPaneFormatUnexpanded
     , setPaneOption
     , showBuffer
     , showEnvironment
@@ -655,6 +656,12 @@ setPaneShape =
     { name = "set-option", parts = [ Flag "p", Value "t", Rest ], allowed = Caps.has "set-option" "p" }
 
 
+setPaneUnexpandedShape : Shape
+setPaneUnexpandedShape =
+    -- the current pane's option, as given: a popup's title (3.8)
+    { name = "set-option", parts = [ Flag "p", Rest ], allowed = Caps.has "new-pane" "O" }
+
+
 setPaneFormatShape : Shape
 setPaneFormatShape =
     -- the current pane's option, a format expanded: a popup's colors (3.8)
@@ -779,6 +786,17 @@ expanded. -}
 setPaneFormat : String -> String -> String
 setPaneFormat name format =
     render setPaneFormatShape [ name, quote format ]
+
+
+{-| `set-option -p NAME FORMAT`: the current pane's option, the format
+kept as given, which tmux expands each time it uses it. For a format that
+must be expanded once, not twice: a popup's `-T` title as its
+`pane-border-format`, which `-F` expanded and tmux then expanded again,
+running a `#()` that a pane's title put there (the code review's TB4,
+puritty `docs/tmux.md` TM121). -}
+setPaneFormatUnexpanded : String -> String -> String
+setPaneFormatUnexpanded name format =
+    render setPaneUnexpandedShape [ name, quote format ]
 
 
 {-| `if-shell -F -t PANE CONDITION { COMMANDS }`, the commands given as
@@ -1055,7 +1073,7 @@ catalog =
         ++ Array.map bare [ "new-window", "next-window", "previous-window" ]
         ++ Array.map targeted [ "select-window", "select-pane", "kill-pane", "kill-window", "kill-session", "detach-client", "suspend-client" ]
         ++ [ setOptionShape, unsetOptionShape, setHookShape, showHooksShape, setEnvironmentShape, bindKeyShape, unbindKeyShape, templatePasteShape, targeted "switch-client" ]
-        ++ [ markShape, unmarkShape, swapWindowShape, detachKillShape, deleteBufferShape, rootShape, resizeShape, moveShape, setPaneShape, setPaneFormatShape, ifShellShape, popupShape ]
+        ++ [ markShape, unmarkShape, swapWindowShape, detachKillShape, deleteBufferShape, rootShape, resizeShape, moveShape, setPaneShape, setPaneFormatShape, setPaneUnexpandedShape, ifShellShape, popupShape ]
 
 
 {-| `list-commands` with no format: each command's usage line, which

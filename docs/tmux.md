@@ -4581,3 +4581,39 @@ Tested: the tmux package's Control suite, "a reply that does not end is
 held to 64 MiB": 65 lines of 1 MiB after `%begin`. Before, all were held,
 control mode on; now control mode is left at the 65th, and 65 MiB is the
 terminal's. 146 of 146.
+
+
+## TM121 · A popup's title is expanded once (2026-11-24)
+
+The code review's TB4. On 3.8 a popup is a floating pane, and its `-T`
+title became the pane's `pane-border-format` (TM82), set with `set-option
+-p -F`. `-F` expands the format once and stores the result. tmux then
+expands the stored option again each time it draws the border, and again
+for puritty's own subscription, `#{T:pane-border-format}`. Whatever text
+the title named was then expanded as a format. A directory named
+`#(...)` under `-T '#{pane_current_path}'` had tmux run the command on
+the tmux host, and a name with a `#` in it was drawn wrongly even with no
+one trying. (The review's example, `#{pane_title}`, does not carry it on
+3.8: tmux turns a `#` in a title a program sets into `_`.)
+
+Now the title is set with `Command.setPaneFormatUnexpanded`, `set-option
+-p NAME FORMAT` without `-F`. The format is kept as given and expanded
+once, each time tmux draws it. Like `-F`, it applies to the new pane,
+the current one for the commands after `new-pane` on the line.
+
+One difference from tmux's own popup is kept: `display-popup -T` expands
+the title once when the popup opens, while a pane's border format is
+expanded at each draw, so the title follows what it names (the pane's
+title, its directory).
+
+Tested: TmuxTests "a popup's -T title is set as a format tmux expands
+once", `display-popup -T '#{pane_title}' -E true` on each version. On
+3.8, before: `set-option -p -F pane-border-format '#{pane_title}'`; now
+`set-option -p pane-border-format '#{pane_title}'`. Before 3.8 no floating
+pane is made, as before.
+
+Measured on tmux 3.8 (devbox's): a pane in a directory named
+`a#{session_name}b`, its `pane-border-format` set to
+`#{b:pane_current_path}` each way, then `display -p
+'#{T:pane-border-format}'`, as puritty's subscription asks. With `-F`,
+`a0b`: the name expanded again. Without it, `a#{session_name}b`.

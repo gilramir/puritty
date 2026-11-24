@@ -1272,6 +1272,31 @@ onVersion version =
                         , status = Array.any (String.contains "pane-border-status top") heard
                         }
           }
+        , { name = "a popup's -T title is set as a format tmux expands once, not expanded and stored to be expanded again (review TB4)"
+          , test =
+                \_ ->
+                    let
+                        heard =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> typeText "display-popup -T '#{pane_title}' -E true"
+                                |> named enterKey
+                                |> settle
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.contains "new-pane")
+                                |> Array.mapAndFlatten (String.split " ; ")
+                                |> Array.keepIf (String.contains "pane-border-format")
+                    in
+                    Expect.equal
+                        (if version == "3.8" then
+                            [ "set-option -p pane-border-format '#{pane_title}'" ]
+
+                         else
+                            []
+                        )
+                        heard
+          }
         , { name = "choose-buffer's search finds a buffer's whole text, and ignores case from 3.6 only (TM81)"
           , test =
                 \_ ->
