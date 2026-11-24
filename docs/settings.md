@@ -1204,3 +1204,41 @@ Test (the app's Writing suite): with Solarized Dark, `#1d1f21` written is
 in the file (before, the file read back Solarized's `#002b36`); its
 background row is not modified (before, it was); and choosing the scheme
 makes the model's background `#002b36` (before, `#1d1f21`).
+
+## ST39 · `config.toml` written one at a time, through its link, with its mode (2026-11-24)
+
+The code review's PS12. `SettingsFile.change` read the file, edited it,
+wrote `config.toml.new` and moved it over. Several programs write it: the
+settings window, each host list window, and each terminal when its
+picker closes with changed bookmarks (FT33). Nothing kept two from doing
+so at once, so the second could read before the first's move and undo
+it, and both wrote the same `.new`. A `config.toml` that is a symlink
+into a dotfiles folder was replaced by a plain file, and the new file had
+the umask's mode, not the old one's.
+
+Now:
+
+- **One at a time.** A change holds `NAME.lock` beside the file
+  (`File.tryLock`, `flock` on Linux, `LockFileEx` on Windows, on a file
+  kept for the lock), asked again every 20 ms for two seconds; if it is
+  still held, nothing is written and the answer says the file "is being
+  written by another program". The read, the edit and the move are all
+  under it. The lock file stays.
+- **Through the link.** The file written is the one the path leads to
+  (`File.realPath`), so the link stays and its file is changed; the
+  `.bak` and the lock are beside that file.
+- **The mode kept.** The temporary is a copy of the old file first
+  (`File.copy`, which keeps its permissions), then its bytes written
+  over, then moved. Its name is this program's own (`NAME.new-PID`).
+- **Not done**: the temporary is not flushed to the disk before the move;
+  geng-lang's os package has no `fsync` to ask for.
+
+**Tested** (app suite, three new, natively; node has no files to write
+and passes them over, `stub/FileSuite.geng`): `config.toml` a symlink to
+`real.toml` of mode 600: before, the link was replaced by a plain file,
+`real.toml` unchanged; now the link stays, `real.toml` has the change,
+mode 600. A plain `config.toml` of mode 600: before, 664 after the
+change; now 600, and no temporary left. And with the test holding
+`config.toml.lock`: nothing written and why, and once let go, the change
+written with `config.toml`, `.bak` and `.lock` beside it, and nothing
+else; this one runs on Windows too.

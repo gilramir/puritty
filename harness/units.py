@@ -200,8 +200,10 @@ SUITES = [
         # tmux; 608 since PS8: a long name cut in a few measures; 609 since
         # PS9: a listing's parts merged in; 610 since TB10: a long preview
         # line cut first; 611 since PS7: names sorted in the host's
-        # character set; 612 since PS6: two listings of a folder kept apart
-        612,
+        # character set; 612 since PS6: two listings of a folder kept apart;
+        # 615 since PS12: config.toml written through a link, its mode and
+        # a lock kept
+        615,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

@@ -354,7 +354,7 @@ covered" sections. The larger gaps:
 | [PS9](13-app-picker-settings.md) | speed | confirmed | **fixed** Each part of a listing re-sorts everything received so far |
 | [PS10](13-app-picker-settings.md) | bug | confirmed | **fixed** Undo of a host removed or renamed rewrites its table: bookmarks, comments and unknown keys are lost, and hosts added since are deleted |
 | [PS11](13-app-picker-settings.md) | bug | confirmed | **fixed** After the keyboard moves the highlight down, the wheel does nothing |
-| [PS12](13-app-picker-settings.md) | bug | plausible | Writing `config.toml`: one fixed temporary name, no lock, a symlink replaced, the mode not kept |
+| [PS12](13-app-picker-settings.md) | bug | plausible | **fixed** Writing `config.toml`: one fixed temporary name, no lock, a symlink replaced, the mode not kept |
 | [PS13](13-app-picker-settings.md) | design | confirmed | The one-line text field exists five times and they have drifted: an invisible selection, a cut that loses text, no paste |
 | [OS1](14-dep-os.md) | bug | plausible | `Os.Net.connect` looks names up with `AI_ADDRCONFIG`, so loopback and literal addresses fail on a machine with no routable address of that family |
 | [OS2](14-dep-os.md) | bug | plausible | Windows: a child that is not on a pseudo console is started without `CREATE_NO_WINDOW`, so a GUI program's helper opens a console window |

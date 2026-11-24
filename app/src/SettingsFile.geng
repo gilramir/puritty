@@ -4,7 +4,9 @@ module SettingsFile exposing (Store, change, store)
 the file as it is now, so that an edit by hand since is kept, edited in
 place by `Schema.write`, and written whole beside it and moved over it, so
 that a terminal reading it at that moment (ST3) sees the old file or the
-new one, never half of either.
+new one, never half of either. One writer at a time, by a lock beside the
+file; a symlink's file written, the link kept; the file's mode kept
+(ST39).
 
 @docs Store, store, change
 
@@ -15,6 +17,8 @@ import Os.Directory as Directory
 import Os.Error
 import Os.File as File
 import Os.Path as Path exposing (Path)
+import Os.Process
+import Process
 import Reason
 import Task exposing (Task)
 import Toml
@@ -41,26 +45,96 @@ lost. An edit that changes no byte writes nothing. The first write of a
 store copies the file as it was to `config.toml.bak` first. -}
 change : (Toml.Document -> Toml.Document) -> Store -> Task String Store
 change edit s =
+    -- the file a symlink leads to, written beside it, so that a link into
+    -- a dotfiles folder stays one (review PS12); the path itself when
+    -- there is no file yet
+    File.realPath s.fs s.path
+        |> Task.onError (\_ -> Task.succeed s.path)
+        |> Task.andThen
+            (\target ->
+                -- its folder made first, for the lock beside a file not
+                -- there yet
+                (when Path.parent target is
+                    Just d ->
+                        if Path.toString d == "" then
+                            Task.succeed {}
+
+                        else
+                            Directory.createAll s.fs d |> Task.mapError Os.Error.toString
+
+                    Nothing ->
+                        meant Reason.NotSet Task.succeed {}
+                )
+                    |> Task.andThen (\_ -> locked s.fs target (changeAt edit s target))
+            )
+
+
+{-| `work` done holding `NAME.lock` beside the file, `flock`'s on Linux:
+the settings window, the host list and each terminal's picker write the
+file, and two at once would each read it before the other's move and
+undo it (review PS12). Asked again for two seconds, then given up. -}
+locked : File.Permission -> Path -> Task String a -> Task String a
+locked fs target work =
+    File.open fs (File.ForWrite File.CreateIfMissing) (beside target ".lock")
+        |> Task.mapError Os.Error.toString
+        |> Task.andThen
+            (\handle ->
+                lockWithin 100 handle
+                    |> Task.andThen
+                        (\taken ->
+                            if taken then
+                                work
+                                    |> Task.andThen (\done -> File.close handle |> Task.map (\_ -> done) |> Task.onError (\_ -> Task.succeed done))
+                                    |> Task.onError (\why -> File.close handle |> Task.onError (\_ -> Task.succeed {}) |> Task.andThen (\_ -> Task.fail why))
+
+                            else
+                                File.close handle
+                                    |> Task.onError (\_ -> Task.succeed {})
+                                    |> Task.andThen (\_ -> Task.fail (Path.toString target ++ " is being written by another program; nothing is written"))
+                        )
+            )
+
+
+lockWithin : Int -> File.Handle -> Task String Bool
+lockWithin tries handle =
+    File.tryLock handle
+        |> Task.mapError Os.Error.toString
+        |> Task.andThen
+            (\taken ->
+                if taken || tries <= 1 then
+                    Task.succeed taken
+
+                else
+                    Process.sleep 20 |> Task.andThen (\_ -> lockWithin (tries - 1) handle)
+            )
+
+
+{-| A path beside `path`: its name with `suffix`. -}
+beside : Path -> String -> Path
+beside path suffix =
+    let
+        dir =
+            when Path.parent path is
+                Just d ->
+                    if Path.toString d == "" then
+                        Path.fromString "."
+
+                    else
+                        d
+
+                Nothing ->
+                    meant Reason.NotSet Path.fromString "."
+    in
+    Path.append (Path.fromString (Path.filename path ++ suffix)) dir
+
+
+changeAt : (Toml.Document -> Toml.Document) -> Store -> Path -> Task String Store
+changeAt edit s target =
     let
         name =
             Path.toString s.path
-
-        dir =
-            when Path.parent s.path is
-                Just d ->
-                    if Path.toString d == "" then
-                        Nothing
-
-                    else
-                        Just d
-
-                Nothing ->
-                    meant Reason.NotSet Nothing
-
-        beside suffix =
-            Path.append (Path.fromString (Path.filename s.path ++ suffix)) (Maybe.withDefault (meant Reason.NotSet Path.fromString ".") dir)
     in
-    File.readFile s.fs s.path
+    File.readFile s.fs target
         |> Task.map Just
         |> Task.onError
             (\e ->
@@ -90,21 +164,34 @@ change edit s =
                             Task.succeed s
 
                         else
-                            (when old is
-                                Just bytes ->
-                                    if s.backedUp then
-                                        Task.succeed {}
+                            Os.Process.currentId
+                                |> Task.andThen
+                                    (\pid ->
+                                        let
+                                            -- this program's own, the lock
+                                            -- held besides (review PS12)
+                                            temporary =
+                                                beside target (".new-" ++ String.fromInt pid)
+                                        in
+                                        (when old is
+                                            Just bytes ->
+                                                (if s.backedUp then
+                                                    Task.succeed {}
 
-                                    else
-                                        File.writeFile s.fs bytes (beside ".bak")
+                                                 else
+                                                    File.writeFile s.fs bytes (beside target ".bak")
+                                                )
+                                                    -- a copy first, which has the
+                                                    -- file's mode, then its bytes
+                                                    -- written over (review PS12)
+                                                    |> Task.andThen (\_ -> File.copy s.fs { from = target, to = temporary })
 
-                                Nothing ->
-                                    meant Reason.NotYet
-                                        Maybe.map (Directory.createAll s.fs) dir
-                                            |> Maybe.withDefault (meant Reason.NotSet (Task.succeed {}))
-                            )
-                                |> Task.andThen (\_ -> File.writeFile s.fs (Toml.toBytes edited) (beside ".new"))
-                                |> Task.andThen (\_ -> File.move s.fs { from = beside ".new", to = s.path })
-                                |> Task.mapError Os.Error.toString
-                                |> Task.map (\_ -> { s | backedUp = True })
+                                            Nothing ->
+                                                meant Reason.NotYet Task.succeed {}
+                                        )
+                                            |> Task.andThen (\_ -> File.writeFile s.fs (Toml.toBytes edited) temporary)
+                                            |> Task.andThen (\_ -> File.move s.fs { from = temporary, to = target })
+                                            |> Task.mapError Os.Error.toString
+                                            |> Task.map (\_ -> { s | backedUp = True })
+                                    )
             )

@@ -1,0 +1,163 @@
+module FileSuite exposing (settingsFile)
+
+{-| The suites that write files, natively, where the os package is: node's
+build has `stub/FileSuite.geng`, the same tests passed over, so that both
+count the same. -}
+
+import Bytes
+import Config
+import Expect
+import Os.Directory as Directory
+import Os.Error
+import Os.File as File
+import Os.Path as Path
+import Os.Process as Process
+import Platform
+import Schema
+import SettingsFile
+import Task
+import Test.Runner.UnitNode as U
+
+
+{-| `config.toml` written (the code review's PS12): through a symlink to
+the file it leads to, with that file's mode, and no temporary left. Linux
+only, where `sh` makes the link and reads the mode. -}
+settingsFile : U.Suite
+settingsFile =
+    U.suite
+        { name = "settings file"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "a setting written through config.toml as a symlink: the link kept, its file changed with its mode (review PS12)"
+                (\_ ->
+                    if Platform.pathSeparator == "\\" then
+                        Task.succeed Expect.pass
+
+                    else
+                        Task.map3 (\fs proc pid -> { fs = fs, proc = proc, pid = pid }) File.initialize Process.initialize Process.currentId
+                            |> Task.andThen
+                                (\go ->
+                                    let
+                                        dir =
+                                            "ps12-" ++ String.fromInt go.pid
+
+                                        sh script =
+                                            Process.run go.proc "sh" [ "-c", script ] Process.defaultRunOptions
+                                                |> Task.map (\r -> Bytes.toStringLossy r.stdout)
+                                                |> Task.onError (\_ -> Task.succeed "sh failed")
+
+                                        edit doc =
+                                            when Schema.find [ "window", "title" ] is
+                                                Just title ->
+                                                    Schema.write Config.defaults title (Schema.Text "b") doc
+
+                                                Nothing ->
+                                                    doc
+                                    in
+                                    sh ("mkdir " ++ dir ++ " && printf '[window]\\ntitle = \"a\"\\n' > " ++ dir ++ "/real.toml && chmod 600 " ++ dir ++ "/real.toml && ln -s real.toml " ++ dir ++ "/config.toml")
+                                        |> Task.andThen (\_ -> SettingsFile.change edit (SettingsFile.store go.fs (Path.fromString (dir ++ "/config.toml"))) |> Task.map (\_ -> "") |> Task.onError Task.succeed)
+                                        |> Task.andThen
+                                            (\failed ->
+                                                sh ("cd " ++ dir ++ " && { test -L config.toml && echo link; stat -c %a real.toml; cat real.toml; ls -A; }")
+                                                    |> Task.map (\seen -> failed ++ seen)
+                                            )
+                                        |> Task.andThen (\seen -> Directory.removeAll go.fs (Path.fromString dir) |> Task.map (\_ -> seen) |> Task.onError (\_ -> Task.succeed seen))
+                                        |> Task.map (Expect.equal "link\n600\n[window]\ntitle = \"b\"\nconfig.toml\nreal.toml\nreal.toml.bak\nreal.toml.lock\n")
+                                )
+                )
+            , U.test "a setting written to config.toml of mode 600: the mode kept, no temporary left (review PS12)"
+                (\_ ->
+                    if Platform.pathSeparator == "\\" then
+                        Task.succeed Expect.pass
+
+                    else
+                        Task.map3 (\fs proc pid -> { fs = fs, proc = proc, pid = pid }) File.initialize Process.initialize Process.currentId
+                            |> Task.andThen
+                                (\go ->
+                                    let
+                                        dir =
+                                            "ps12b-" ++ String.fromInt go.pid
+
+                                        sh script =
+                                            Process.run go.proc "sh" [ "-c", script ] Process.defaultRunOptions
+                                                |> Task.map (\r -> Bytes.toStringLossy r.stdout)
+                                                |> Task.onError (\_ -> Task.succeed "sh failed")
+
+                                        edit doc =
+                                            when Schema.find [ "window", "title" ] is
+                                                Just title ->
+                                                    Schema.write Config.defaults title (Schema.Text "b") doc
+
+                                                Nothing ->
+                                                    doc
+                                    in
+                                    sh ("mkdir " ++ dir ++ " && printf '[window]\\ntitle = \"a\"\\n' > " ++ dir ++ "/config.toml && chmod 600 " ++ dir ++ "/config.toml")
+                                        |> Task.andThen (\_ -> SettingsFile.change edit (SettingsFile.store go.fs (Path.fromString (dir ++ "/config.toml"))) |> Task.map (\_ -> "") |> Task.onError Task.succeed)
+                                        |> Task.andThen
+                                            (\failed ->
+                                                sh ("cd " ++ dir ++ " && { stat -c %a config.toml; cat config.toml; ls -A; }")
+                                                    |> Task.map (\seen -> failed ++ seen)
+                                            )
+                                        |> Task.andThen (\seen -> Directory.removeAll go.fs (Path.fromString dir) |> Task.map (\_ -> seen) |> Task.onError (\_ -> Task.succeed seen))
+                                        |> Task.map (Expect.equal "600\n[window]\ntitle = \"b\"\nconfig.toml\nconfig.toml.bak\nconfig.toml.lock\n")
+                                )
+                )
+            , U.test "a setting written while another holds config.toml's lock: nothing written, and why; once let go, written, no temporary left (review PS12)"
+                (\_ ->
+                    -- on Windows too: the lock, the path made real and the
+                    -- move are the os package's on both
+                    Task.map2 (\fs pid -> { fs = fs, pid = pid }) File.initialize Process.currentId
+                        |> Task.andThen
+                            (\go ->
+                                let
+                                    dir =
+                                        "ps12c-" ++ String.fromInt go.pid
+
+                                    config =
+                                        Path.fromString (dir ++ "/config.toml")
+
+                                    edit doc =
+                                        when Schema.find [ "window", "title" ] is
+                                            Just title ->
+                                                Schema.write Config.defaults title (Schema.Text "b") doc
+
+                                            Nothing ->
+                                                doc
+                                in
+                                Directory.createAll go.fs (Path.fromString dir)
+                                    |> Task.andThen (\_ -> File.writeFile go.fs (Bytes.fromString "[window]\ntitle = \"a\"\n") config)
+                                    |> Task.andThen (\_ -> File.open go.fs (File.ForWrite File.CreateIfMissing) (Path.fromString (dir ++ "/config.toml.lock")))
+                                    |> Task.andThen
+                                        (\held ->
+                                            File.tryLock held
+                                                |> Task.andThen
+                                                    (\taken ->
+                                                        SettingsFile.change edit (SettingsFile.store go.fs config)
+                                                            |> Task.map (\_ -> "written")
+                                                            |> Task.onError (\why -> Task.succeed why)
+                                                            |> Task.andThen (\said -> File.readFile go.fs config |> Task.map (\now -> { taken = taken, said = said, now = Bytes.toStringLossy now }))
+                                                    )
+                                                |> Task.andThen (\seen -> File.close held |> Task.map (\_ -> seen))
+                                        )
+                                    |> Task.andThen
+                                        (\seen ->
+                                            SettingsFile.change edit (SettingsFile.store go.fs config)
+                                                |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "change", path = Nothing, detail = why })
+                                                |> Task.andThen (\_ -> File.readFile go.fs config)
+                                                |> Task.andThen (\after -> Directory.list go.fs (Path.fromString dir) |> Task.map (\names -> { seen = seen, after = Bytes.toStringLossy after, names = Array.sort (Array.map (\e -> Path.filename e.path) names) }))
+                                        )
+                                    |> Task.andThen (\both -> Directory.removeAll go.fs (Path.fromString dir) |> Task.map (\_ -> both))
+                                    |> Task.map
+                                        (\both ->
+                                            Expect.equal
+                                                { taken = True, said = True, now = "[window]\ntitle = \"a\"\n", after = "[window]\ntitle = \"b\"\n", names = [ "config.toml", "config.toml.bak", "config.toml.lock" ] }
+                                                { taken = both.seen.taken, said = String.contains "is being written by another program" both.seen.said, now = both.seen.now, after = both.after, names = both.names }
+                                        )
+                                    |> Task.onError (\e -> Task.succeed (Expect.fail (Os.Error.toString e)))
+                            )
+                )
+            ]
+        }
