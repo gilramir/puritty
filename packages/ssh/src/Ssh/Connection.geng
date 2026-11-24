@@ -18,6 +18,7 @@ module Ssh.Connection exposing
     , sendEof
     , sendEofSide
     , sideWaiting
+    , taken
     , write
     , writeSide
     )
@@ -130,14 +131,17 @@ type Kind
 
 
 {-| A channel: its phase, the server's number for it and its window and
-largest packet once open; how much of our window it has used; what waits
-for room in theirs; the EOF asked for and sent. -}
+largest packet once open; how much of our window its data holds
+(`received`) and how much of that has been taken and is not yet given
+back (`consumed`); what waits for room in theirs; the EOF asked for and
+sent. -}
 type alias Channel =
     { kind : Kind
     , phase : Phase
     , remote : Int
     , remoteWindow : Int
     , remoteMaxPacket : Int
+    , received : Int
     , consumed : Int
     , pending : Array Bytes
     , pendingLength : Int
@@ -300,6 +304,7 @@ fresh kind =
     , remote = 0
     , remoteWindow = 0
     , remoteMaxPacket = 0
+    , received = 0
     , consumed = 0
     , pending = []
     , pendingLength = 0
@@ -641,7 +646,7 @@ onChannel n afterChannel id ch st =
     else if n == msgData then
         when afterChannel |> Result.andThen (\c -> Wire.string c.next) is
             Ok data ->
-                consume id (Bytes.length data.value) ch (emitOn id (Output data.value) st)
+                within id (Bytes.length data.value) ch (Output data.value) st
 
             Err _ ->
                 meant Reason.FromOutside fails "channel data that does not read"
@@ -649,7 +654,7 @@ onChannel n afterChannel id ch st =
     else if n == msgExtendedData then
         when afterChannel |> Result.andThen (\c -> Wire.uint32 c.next) |> Result.andThen (\code -> Wire.string code.next) is
             Ok data ->
-                consume id (Bytes.length data.value) ch (emitOn id (ErrorOutput data.value) st)
+                within id (Bytes.length data.value) ch (ErrorOutput data.value) st
 
             Err _ ->
                 meant Reason.FromOutside fails "extended channel data that does not read"
@@ -698,19 +703,73 @@ ended id ch st =
         emitOn id Ended { st | channels = Dict.remove id st.channels }
 
 
-{-| Our window used by what came; given back once half is used, so the
-server never waits for room while the program reads. -}
+{-| Data that came on channel `id`, told, if it is within our window and
+our largest packet; past either it is dropped, as OpenSSH's `ssh` drops it
+("rcvd too much data"), so a server cannot make us hold more than the
+window (SC35). The session's own channel is given back only what the
+caller says it has [`taken`](#taken); every other channel's data counts
+as taken as it comes, since its reader takes it as fast as it is told.
+-}
+within : Int -> Int -> Channel -> Event -> State -> State
+within id n ch event st =
+    if n > maxPacket || ch.received + n > windowSize then
+        -- past the window or the largest packet: dropped
+        st
+
+    else
+        let
+            held =
+                { ch | received = ch.received + n }
+
+            told =
+                emitOn id event st
+        in
+        if acknowledged id told then
+            setChannel id held told
+
+        else
+            consume id n held told
+
+
+{-| Whether channel `id`'s data is given back only as it is [`taken`](#taken):
+the session's own channel, unless it carries a connection to another host.
+-}
+acknowledged : Int -> State -> Bool
+acknowledged id st =
+    id == mainChannel && st.direct == Nothing
+
+
+{-| `n` of channel `id`'s bytes taken: given back to the server once half
+the window is, so the server does not wait for room while the program's
+output is read. -}
 consume : Int -> Int -> Channel -> State -> State
 consume id n ch st =
     let
         used =
-            ch.consumed + n
+            min ch.received (ch.consumed + n)
     in
     if used >= windowSize // 2 then
-        queue (Bytes.flatten [ Wire.writeByte msgWindowAdjust, Wire.writeUint32 ch.remote, Wire.writeUint32 used ]) (setChannel id { ch | consumed = 0 } st)
+        queue (Bytes.flatten [ Wire.writeByte msgWindowAdjust, Wire.writeUint32 ch.remote, Wire.writeUint32 used ]) (setChannel id { ch | consumed = 0, received = ch.received - used } st)
 
     else
         setChannel id { ch | consumed = used } st
+
+
+{-| `n` bytes of the session's output taken by whoever shows it: our window
+for them given back (SC35). Until then the server can send at most the
+window, 2 MiB, ahead of what has been taken. -}
+taken : Int -> Connection -> Step
+taken n (Connection st) =
+    when channelOf mainChannel st is
+        Just ch ->
+            if acknowledged mainChannel st && ch.phase /= Closed then
+                finish (consume mainChannel n ch st)
+
+            else
+                finish st
+
+        Nothing ->
+            meant Reason.NotOpen finish st
 
 
 {-| A reply to the first of our requests on channel `id` that wanted one.
@@ -803,13 +862,13 @@ flushUpTo budget ch st =
             n =
                 min budget (min ch.pendingLength (min ch.remoteWindow ch.remoteMaxPacket))
 
-            taken =
+            cut =
                 takePending n ch.pending
 
             rest =
                 flushUpTo (budget - n)
-                    { ch | pending = taken.rest, pendingLength = ch.pendingLength - n, remoteWindow = ch.remoteWindow - n }
-                    (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 ch.remote, Wire.writeString taken.bytes ]) st)
+                    { ch | pending = cut.rest, pendingLength = ch.pendingLength - n, remoteWindow = ch.remoteWindow - n }
+                    (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 ch.remote, Wire.writeString cut.bytes ]) st)
         in
         { rest | sent = rest.sent + n }
 

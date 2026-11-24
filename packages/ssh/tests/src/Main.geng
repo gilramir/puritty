@@ -203,275 +203,389 @@ connectionSuite =
             Bytes.flatten [ Wire.writeUint32 100, Bytes.fromString "abc" ]
     in
     suiteOf "Connection"
-        [ caseTest "confirmed"
-            (\_ ->
-                if Array.member Connection.Started opened.events then
+        (windowCases
+            ++ [ caseTest "confirmed"
+                    (\_ ->
+                        if Array.member Connection.Started opened.events then
+                            Nothing
+
+                        else
+                            Just "the confirmation did not start the channel"
+                    )
+               , caseTest "data that reads is output"
+                    (\_ ->
+                        if Array.member (Connection.Output (Bytes.fromString "abc")) (after (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, Wire.writeString (Bytes.fromString "abc") ])).events then
+                            Nothing
+
+                        else
+                            Just "no output"
+                    )
+               , ends "data that does not read" (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, short ])
+               , ends "extended data that does not read" (Bytes.flatten [ Wire.writeByte 95, Wire.writeUint32 0, Wire.writeUint32 1, short ])
+               , ends "a window adjustment that does not read" (Bytes.flatten [ Wire.writeByte 93, Wire.writeUint32 0, Wire.writeByte 1 ])
+               , caseTest "a key file the agent also holds is offered through the agent, in the file's place (review ST6)"
+                    (\_ ->
+                        let
+                            key k =
+                                Bytes.fromString k
+
+                            file id k =
+                                { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Just { path = "/home/me/.ssh/" ++ k, text = Bytes.empty } }
+
+                            agent id k =
+                                { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Nothing }
+
+                            shown list =
+                                Array.map
+                                    (\i ->
+                                        Bytes.toStringLossy i.identity.publicKey
+                                            ++ (if i.file == Nothing then
+                                                    "@agent"
+
+                                                else
+                                                    "@file"
+                                               )
+                                    )
+                                    list
+
+                            files =
+                                [ file 1 "A", file 2 "B" ]
+
+                            held =
+                                [ agent 1000 "B", agent 1001 "C" ]
+                        in
+                        when { all = shown (Session.withAgent False files held), only = shown (Session.withAgent True files held) } is
+                            { all = [ "A@file", "B@agent", "C@agent" ], only = [ "A@file", "B@agent" ] } ->
+                                Nothing
+
+                            r ->
+                                Just (String.join "," r.all ++ " / " ++ String.join "," r.only)
+                    )
+               , caseTest "keyboard-interactive is begun again after a failure, as often as a password is tried (review SC8)"
+                    (\_ ->
+                        let
+                            config =
+                                { user = "me", identities = [], methods = [ "keyboard-interactive" ], serverSigAlgs = [], passwordTries = 3 }
+
+                            failure =
+                                Bytes.flatten [ Wire.writeByte 51, Wire.writeText "keyboard-interactive", Wire.writeByte 0 ]
+
+                            started =
+                                Auth.received (Bytes.flatten [ Wire.writeByte 6, Wire.writeText "ssh-userauth" ]) (Auth.begin config Bytes.empty).auth
+
+                            asked step =
+                                Array.length (Array.keepIf (\b -> String.contains "keyboard-interactive" (Bytes.toStringLossy b)) step.send)
+
+                            -- four failures in a row, each answered by a new try
+                            -- until the count is spent
+                            steps =
+                                Array.foldl
+                                    (\_ acc ->
+                                        let
+                                            st =
+                                                Auth.received failure acc.auth
+                                        in
+                                        { auth = st.auth
+                                        , asked = acc.asked + asked st
+                                        , exhausted =
+                                            acc.exhausted || Array.any
+                                                                (\e ->
+                                                                    when e is
+                                                                        Auth.Exhausted _ ->
+                                                                            True
+
+                                                                        _ ->
+                                                                            False
+                                                                )
+                                                                st.events
+                                        }
+                                    )
+                                    { auth = started.auth, asked = asked started, exhausted = False }
+                                    (Array.range 1 4)
+                        in
+                        if steps.asked /= 3 then
+                            Just ("keyboard-interactive asked " ++ String.fromInt steps.asked ++ " times")
+
+                        else if not steps.exhausted then
+                            Just "not exhausted after three"
+
+                        else
+                            Nothing
+                    )
+               , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
+                    (\_ ->
+                        let
+                            side =
+                                Connection.openExec (Bytes.fromString "true") opened.connection
+
+                            -- closed, then written to, before the server answers
+                            closed =
+                                Connection.closeSide 1 side.step.connection
+
+                            written =
+                                Connection.writeSide 1 (Bytes.fromString "late") closed.connection
+
+                            confirmed =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) written.connection
+
+                            kinds =
+                                Array.map (\b -> Bytes.get 0 b |> Maybe.map UInt8.toInt |> Maybe.withDefault -1) confirmed.send
+
+                            over =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 97, Wire.writeUint32 1 ]) confirmed.connection
+                        in
+                        if kinds /= [ 97 ] then
+                            Just ("sent after the confirmation: " ++ String.join "," (Array.map String.fromInt kinds))
+
+                        else if not (Array.member Connection.Ended (Array.map .event over.side)) then
+                            Just "the server's close did not end it"
+
+                        else
+                            Nothing
+                    )
+               , caseTest "a side channel's bad data closes only it"
+                    (\_ ->
+                        let
+                            -- an exec channel beside it, number 1, the server's 9,
+                            -- confirmed and its command started
+                            side =
+                                Connection.openExec (Bytes.fromString "true") opened.connection
+
+                            confirmed =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                            started =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                            bad =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 1, short ]) started.connection
+
+                            sideEvents =
+                                Array.map .event bad.side
+
+                            stillMain =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, Wire.writeString (Bytes.fromString "abc") ]) bad.connection
+                        in
+                        if side.channel /= 1 then
+                            Just "the side channel is not number 1"
+
+                        else if not (Array.member Connection.Started (Array.map .event started.side)) then
+                            Just "the side channel did not start"
+
+                        else if not (refused sideEvents && Array.member Connection.Ended sideEvents) then
+                            Just "the side channel went on"
+
+                        else if not (Array.isEmpty bad.events) then
+                            Just "the session was told of the side channel's data"
+
+                        else if not (Array.member (Connection.Output (Bytes.fromString "abc")) stillMain.events) then
+                            Just "the session stopped"
+
+                        else
+                            Nothing
+                    )
+               , caseTest "a side channel's data waits for a pump"
+                    (\_ ->
+                        let
+                            side =
+                                Connection.openExec (Bytes.fromString "cat") opened.connection
+
+                            confirmed =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                            started =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                            written =
+                                Connection.writeSide 1 (Bytes.fromString (String.repeat 100000 "x")) started.connection
+
+                            pumped =
+                                Connection.pump 32768 written.connection
+                        in
+                        if not (Array.isEmpty written.send) then
+                            Just "a side channel's write was sent before a pump"
+
+                        else if Array.length pumped.send /= 1 then
+                            Just ("a pump of 32 KiB sent " ++ String.fromInt (Array.length pumped.send) ++ " packets")
+
+                        else if Connection.sideWaiting pumped.connection <= 0 then
+                            Just "nothing waits after one pump of 100,000 bytes"
+
+                        else
+                            Nothing
+                    )
+               , caseTest "a side channel's writes go in order, each pump saying what waits"
+                    (\_ ->
+                        let
+                            side =
+                                Connection.openExec (Bytes.fromString "cat") opened.connection
+
+                            confirmed =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                            started =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                            -- three writes, the first pump's packet across the
+                            -- first two (FT17: what waits is kept in pieces)
+                            pieces =
+                                [ String.repeat 20000 "a", String.repeat 20000 "b", String.repeat 80000 "c" ]
+
+                            written =
+                                Array.foldl (\t conn -> (Connection.writeSide 1 (Bytes.fromString t) conn).connection) started.connection pieces
+
+                            first =
+                                Connection.pump 32768 written
+
+                            rest =
+                                Connection.pump 1000000 first.connection
+
+                            -- a data packet's payload: its type, the server's
+                            -- channel, then the bytes as a string
+                            data packet =
+                                Bytes.slice 9 (Bytes.length packet) packet
+
+                            sentOf step =
+                                Array.mapAndKeepJust
+                                    (\e ->
+                                        when e.event is
+                                            Connection.Sent n ->
+                                                Just n
+
+                                            _ ->
+                                                Nothing
+                                    )
+                                    step.side
+                        in
+                        if Bytes.flatten (Array.map data first.send) /= Bytes.fromString (String.repeat 20000 "a" ++ String.repeat 12768 "b") then
+                            Just "the first pump did not send the first 32 KiB in order"
+
+                        else if sentOf first /= [ 87232 ] then
+                            Just ("the first pump said " ++ String.join ", " (Array.map String.fromInt (sentOf first)) ++ " wait, not 87232")
+
+                        else if Bytes.flatten (Array.map data (first.send ++ rest.send)) /= Bytes.fromString (String.join "" pieces) then
+                            Just "the bytes sent are not the bytes written, in order"
+
+                        else if sentOf rest /= [ 0 ] then
+                            Just ("the last pump said " ++ String.join ", " (Array.map String.fromInt (sentOf rest)) ++ " wait, not 0")
+
+                        else
+                            Nothing
+                    )
+               ]
+        )
+
+
+{-| The session's channel window (`docs/ssh-client.md` SC35): data past
+our window or our largest packet dropped; the session's channel given
+back only what is taken, a direct channel's as it comes. -}
+windowCases : Array (U.Test {})
+windowCases =
+    let
+        -- the session's channel, confirmed: the server's channel 7
+        session =
+            Connection.open (sessionOf [])
+                |> .connection
+                |> Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 0, Wire.writeUint32 7, Wire.writeUint32 1048576, Wire.writeUint32 32768 ])
+                |> .connection
+
+        direct =
+            Connection.openDirect { host = "h", port = 22 }
+                |> .connection
+                |> Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 0, Wire.writeUint32 7, Wire.writeUint32 1048576, Wire.writeUint32 32768 ])
+                |> .connection
+
+        data n =
+            Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, Wire.writeString (Bytes.fromString (String.repeat n "x")) ]
+
+        -- `count` packets of `n` bytes: the output's length, and the
+        -- window adjustments sent, by their amounts
+        feed count n start =
+            Array.foldl
+                (\_ acc ->
+                    let
+                        step =
+                            Connection.received (data n) acc.connection
+                    in
+                    { connection = step.connection, output = acc.output + outputOf step.events, adjusts = acc.adjusts ++ adjustsOf step.send }
+                )
+                { connection = start, output = 0, adjusts = [] }
+                (Array.range 1 count)
+
+        outputOf events =
+            Array.foldl
+                (\e n ->
+                    when e is
+                        Connection.Output b ->
+                            n + Bytes.length b
+
+                        _ ->
+                            n
+                )
+                0
+                events
+
+        adjustsOf payloads =
+            Array.mapAndFlatten
+                (\p ->
+                    if Bytes.get 0 p |> Maybe.map UInt8.toInt |> (==) (Just 93) then
+                        [ Wire.reader p |> skip 5 |> Result.andThen Wire.uint32 |> Result.map .value |> Result.withDefault -1 ]
+
+                    else
+                        []
+                )
+                payloads
+
+        skip k r =
+            Wire.take k r |> Result.map .next
+    in
+    [ caseTest "the session's data past the 2 MiB window is dropped"
+        (\_ ->
+            when (feed 65 32768 session).output is
+                2097152 ->
                     Nothing
 
-                else
-                    Just "the confirmation did not start the channel"
-            )
-        , caseTest "data that reads is output"
-            (\_ ->
-                if Array.member (Connection.Output (Bytes.fromString "abc")) (after (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, Wire.writeString (Bytes.fromString "abc") ])).events then
+                got ->
+                    Just ("output " ++ String.fromInt got)
+        )
+    , caseTest "a packet larger than our 32 KiB is dropped"
+        (\_ ->
+            when (feed 1 32769 session).output is
+                0 ->
                     Nothing
 
-                else
-                    Just "no output"
-            )
-        , ends "data that does not read" (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, short ])
-        , ends "extended data that does not read" (Bytes.flatten [ Wire.writeByte 95, Wire.writeUint32 0, Wire.writeUint32 1, short ])
-        , ends "a window adjustment that does not read" (Bytes.flatten [ Wire.writeByte 93, Wire.writeUint32 0, Wire.writeByte 1 ])
-        , caseTest "a key file the agent also holds is offered through the agent, in the file's place (review ST6)"
-            (\_ ->
-                let
-                    key k =
-                        Bytes.fromString k
+                got ->
+                    Just ("output " ++ String.fromInt got)
+        )
+    , caseTest "the session's window is given back only for what is taken"
+        (\_ ->
+            let
+                fed =
+                    feed 64 32768 session
 
-                    file id k =
-                        { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Just { path = "/home/me/.ssh/" ++ k, text = Bytes.empty } }
+                after =
+                    Connection.taken 1048576 fed.connection
 
-                    agent id k =
-                        { identity = { id = id, publicKey = key k, keyType = "ssh-ed25519" }, file = Nothing }
-
-                    shown list =
-                        Array.map
-                            (\i ->
-                                Bytes.toStringLossy i.identity.publicKey
-                                    ++ (if i.file == Nothing then
-                                            "@agent"
-
-                                        else
-                                            "@file"
-                                       )
-                            )
-                            list
-
-                    files =
-                        [ file 1 "A", file 2 "B" ]
-
-                    held =
-                        [ agent 1000 "B", agent 1001 "C" ]
-                in
-                when { all = shown (Session.withAgent False files held), only = shown (Session.withAgent True files held) } is
-                    { all = [ "A@file", "B@agent", "C@agent" ], only = [ "A@file", "B@agent" ] } ->
-                        Nothing
-
-                    r ->
-                        Just (String.join "," r.all ++ " / " ++ String.join "," r.only)
-            )
-        , caseTest "keyboard-interactive is begun again after a failure, as often as a password is tried (review SC8)"
-            (\_ ->
-                let
-                    config =
-                        { user = "me", identities = [], methods = [ "keyboard-interactive" ], serverSigAlgs = [], passwordTries = 3 }
-
-                    failure =
-                        Bytes.flatten [ Wire.writeByte 51, Wire.writeText "keyboard-interactive", Wire.writeByte 0 ]
-
-                    started =
-                        Auth.received (Bytes.flatten [ Wire.writeByte 6, Wire.writeText "ssh-userauth" ]) (Auth.begin config Bytes.empty).auth
-
-                    asked step =
-                        Array.length (Array.keepIf (\b -> String.contains "keyboard-interactive" (Bytes.toStringLossy b)) step.send)
-
-                    -- four failures in a row, each answered by a new try
-                    -- until the count is spent
-                    steps =
-                        Array.foldl
-                            (\_ acc ->
-                                let
-                                    st =
-                                        Auth.received failure acc.auth
-                                in
-                                { auth = st.auth
-                                , asked = acc.asked + asked st
-                                , exhausted =
-                                    acc.exhausted || Array.any
-                                                        (\e ->
-                                                            when e is
-                                                                Auth.Exhausted _ ->
-                                                                    True
-
-                                                                _ ->
-                                                                    False
-                                                        )
-                                                        st.events
-                                }
-                            )
-                            { auth = started.auth, asked = asked started, exhausted = False }
-                            (Array.range 1 4)
-                in
-                if steps.asked /= 3 then
-                    Just ("keyboard-interactive asked " ++ String.fromInt steps.asked ++ " times")
-
-                else if not steps.exhausted then
-                    Just "not exhausted after three"
-
-                else
+                more =
+                    feed 32 32768 after.connection
+            in
+            when { before = fed.adjusts, given = adjustsOf after.send, output = more.output } is
+                { before = [], given = [ 1048576 ], output = 1048576 } ->
                     Nothing
-            )
-        , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
-            (\_ ->
-                let
-                    side =
-                        Connection.openExec (Bytes.fromString "true") opened.connection
 
-                    -- closed, then written to, before the server answers
-                    closed =
-                        Connection.closeSide 1 side.step.connection
-
-                    written =
-                        Connection.writeSide 1 (Bytes.fromString "late") closed.connection
-
-                    confirmed =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) written.connection
-
-                    kinds =
-                        Array.map (\b -> Bytes.get 0 b |> Maybe.map UInt8.toInt |> Maybe.withDefault -1) confirmed.send
-
-                    over =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 97, Wire.writeUint32 1 ]) confirmed.connection
-                in
-                if kinds /= [ 97 ] then
-                    Just ("sent after the confirmation: " ++ String.join "," (Array.map String.fromInt kinds))
-
-                else if not (Array.member Connection.Ended (Array.map .event over.side)) then
-                    Just "the server's close did not end it"
-
-                else
+                got ->
+                    Just ("adjusts before " ++ String.join "," (Array.map String.fromInt got.before) ++ ", after taken " ++ String.join "," (Array.map String.fromInt got.given) ++ ", then output " ++ String.fromInt got.output)
+        )
+    , caseTest "a direct channel's window is given back as data comes"
+        (\_ ->
+            when (feed 64 32768 direct).adjusts is
+                [ 1048576, 1048576 ] ->
                     Nothing
-            )
-        , caseTest "a side channel's bad data closes only it"
-            (\_ ->
-                let
-                    -- an exec channel beside it, number 1, the server's 9,
-                    -- confirmed and its command started
-                    side =
-                        Connection.openExec (Bytes.fromString "true") opened.connection
 
-                    confirmed =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
-
-                    started =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
-
-                    bad =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 1, short ]) started.connection
-
-                    sideEvents =
-                        Array.map .event bad.side
-
-                    stillMain =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, Wire.writeString (Bytes.fromString "abc") ]) bad.connection
-                in
-                if side.channel /= 1 then
-                    Just "the side channel is not number 1"
-
-                else if not (Array.member Connection.Started (Array.map .event started.side)) then
-                    Just "the side channel did not start"
-
-                else if not (refused sideEvents && Array.member Connection.Ended sideEvents) then
-                    Just "the side channel went on"
-
-                else if not (Array.isEmpty bad.events) then
-                    Just "the session was told of the side channel's data"
-
-                else if not (Array.member (Connection.Output (Bytes.fromString "abc")) stillMain.events) then
-                    Just "the session stopped"
-
-                else
-                    Nothing
-            )
-        , caseTest "a side channel's data waits for a pump"
-            (\_ ->
-                let
-                    side =
-                        Connection.openExec (Bytes.fromString "cat") opened.connection
-
-                    confirmed =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
-
-                    started =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
-
-                    written =
-                        Connection.writeSide 1 (Bytes.fromString (String.repeat 100000 "x")) started.connection
-
-                    pumped =
-                        Connection.pump 32768 written.connection
-                in
-                if not (Array.isEmpty written.send) then
-                    Just "a side channel's write was sent before a pump"
-
-                else if Array.length pumped.send /= 1 then
-                    Just ("a pump of 32 KiB sent " ++ String.fromInt (Array.length pumped.send) ++ " packets")
-
-                else if Connection.sideWaiting pumped.connection <= 0 then
-                    Just "nothing waits after one pump of 100,000 bytes"
-
-                else
-                    Nothing
-            )
-        , caseTest "a side channel's writes go in order, each pump saying what waits"
-            (\_ ->
-                let
-                    side =
-                        Connection.openExec (Bytes.fromString "cat") opened.connection
-
-                    confirmed =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
-
-                    started =
-                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
-
-                    -- three writes, the first pump's packet across the
-                    -- first two (FT17: what waits is kept in pieces)
-                    pieces =
-                        [ String.repeat 20000 "a", String.repeat 20000 "b", String.repeat 80000 "c" ]
-
-                    written =
-                        Array.foldl (\t conn -> (Connection.writeSide 1 (Bytes.fromString t) conn).connection) started.connection pieces
-
-                    first =
-                        Connection.pump 32768 written
-
-                    rest =
-                        Connection.pump 1000000 first.connection
-
-                    -- a data packet's payload: its type, the server's
-                    -- channel, then the bytes as a string
-                    data packet =
-                        Bytes.slice 9 (Bytes.length packet) packet
-
-                    sentOf step =
-                        Array.mapAndKeepJust
-                            (\e ->
-                                when e.event is
-                                    Connection.Sent n ->
-                                        Just n
-
-                                    _ ->
-                                        Nothing
-                            )
-                            step.side
-                in
-                if Bytes.flatten (Array.map data first.send) /= Bytes.fromString (String.repeat 20000 "a" ++ String.repeat 12768 "b") then
-                    Just "the first pump did not send the first 32 KiB in order"
-
-                else if sentOf first /= [ 87232 ] then
-                    Just ("the first pump said " ++ String.join ", " (Array.map String.fromInt (sentOf first)) ++ " wait, not 87232")
-
-                else if Bytes.flatten (Array.map data (first.send ++ rest.send)) /= Bytes.fromString (String.join "" pieces) then
-                    Just "the bytes sent are not the bytes written, in order"
-
-                else if sentOf rest /= [ 0 ] then
-                    Just ("the last pump said " ++ String.join ", " (Array.map String.fromInt (sentOf rest)) ++ " wait, not 0")
-
-                else
-                    Nothing
-            )
-        ]
+                got ->
+                    Just ("adjusts " ++ String.join "," (Array.map String.fromInt got))
+        )
+    ]
 
 
 {-| `Ssh.Sftp`'s reading of what a server sends, with no server
@@ -2319,10 +2433,12 @@ onConnectionEvent event session =
             say ("refused: " ++ why) |> Task.andThen (\_ -> onTransport (Transport.disconnect 11 "done" session.transport) { session | done = True })
 
         Connection.Output bytes ->
-            Task.succeed { session | output = Array.pushLast bytes session.output }
+            -- kept is taken: the window given back for it (SC35)
+            withConnectionDo (Connection.taken (Bytes.length bytes)) { session | output = Array.pushLast bytes session.output }
 
         Connection.ErrorOutput bytes ->
-            say ("stderr: " ++ String.trim (Bytes.toStringLossy bytes)) |> Task.map (\_ -> session)
+            withConnectionDo (Connection.taken (Bytes.length bytes)) session
+                |> Task.andThen (\s -> say ("stderr: " ++ String.trim (Bytes.toStringLossy bytes)) |> Task.map (\_ -> s))
 
         Connection.Exited status ->
             say ("exit status " ++ String.fromInt status) |> Task.map (\_ -> session)
@@ -2566,7 +2682,31 @@ type alias Watch =
 
 watch : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Watch -> Task Never {}
 watch args sources w =
-    Source.next sources.notices
+    -- `--hold-output`: the output is taken by no one, and three quiet
+    -- seconds end the session, saying how much came (docs/ssh-client.md
+    -- SC35)
+    (if Array.member "--hold-output" args then
+        Task.race (Source.next sources.notices |> Task.map Just) [ Process.sleep 3000 |> Task.map (\_ -> Nothing) ]
+
+     else
+        Source.next sources.notices |> Task.map Just
+    )
+        |> Task.andThen
+            (\heard ->
+                when heard is
+                    Just notice ->
+                        watchOn args sources w notice
+
+                    Nothing ->
+                        say ("held: " ++ String.fromInt (Array.foldl (\b n -> n + Bytes.length b) 0 w.output) ++ " bytes came")
+                            |> Task.andThen (\_ -> Source.emit sources.inputs Session.Hangup)
+                            |> Task.andThen (\_ -> watch args sources { w | output = [] })
+            )
+
+
+watchOn : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Watch -> Maybe Session.Notice -> Task Never {}
+watchOn args sources w notice0 =
+    Task.succeed notice0
         |> Task.andThen
             (\notice ->
                 let
@@ -2642,13 +2782,22 @@ watch args sources w =
                             |> Task.andThen (\opened -> watch args sources { w | open = opened, opened = opened })
 
                     Just (Session.Output bytes) ->
-                        if Array.member "--echo" args then
-                            -- what the command writes goes back as keys, at
-                            -- once (a latency measurement, docs/sftp.md FT12)
-                            Source.emit sources.inputs (Session.Keys bytes) |> Task.andThen (\_ -> next)
+                        (if Array.member "--hold-output" args then
+                            Task.succeed {}
 
-                        else
-                            watch args sources { w | output = Array.pushLast bytes w.output }
+                         else
+                            Source.emit sources.inputs (Session.Taken (Bytes.length bytes))
+                        )
+                            |> Task.andThen
+                                (\_ ->
+                                    if Array.member "--echo" args then
+                                        -- what the command writes goes back as keys, at
+                                        -- once (a latency measurement, docs/sftp.md FT12)
+                                        Source.emit sources.inputs (Session.Keys bytes) |> Task.andThen (\_ -> next)
+
+                                    else
+                                        watch args sources { w | output = Array.pushLast bytes w.output }
+                                )
 
                     Just (Session.Exited status) ->
                         say ("output: " ++ String.replace "\r" "" (String.trim (Bytes.toStringLossy (Bytes.flatten w.output))))

@@ -1787,3 +1787,55 @@ Tested, each through `scripted.py`:
 | `not-strict-chacha` | not strict, ChaCha20 only (through `ssh-tests session`) | not run | SC33's notice, run for the first time |
 
 The other 25 scripted cases and the 80 sshd cases pass with no pin moved.
+
+
+## SC35 · The session's window is given back only for output taken (2026-11-23)
+
+The code review's SC2 and MA10. SC8 (above, "the session adjusts the
+window only for data the core has taken, so a fast `cat` cannot fill
+memory") was not what was built: `Connection.consume` gave the window
+back as soon as half of it had arrived, whatever became of the bytes, and
+the session put each `Output` into a `Source`, which does not wait for its
+reader. A server sending faster than the window drew was acknowledged at
+network speed, and the queue between the session and the window grew by
+the difference. Nor were our window or our 32 KiB largest packet held
+against what came.
+
+Now:
+
+- `Connection.within` drops data past our window or larger than our
+  largest packet, as OpenSSH's `ssh` does ("rcvd too much data", "rcvd
+  big packet"). A server can make us hold at most the window.
+- The session's own channel is given back only what the caller says it
+  has taken, `Connection.taken n`, once half the window has been. Every
+  other channel (side channels, and a jump hop's direct channel, whose
+  bytes go straight to the inner session's transport) is given back as
+  data comes, as before. A hop needs nothing more: the inner session's
+  own window now holds its server back, so the hop carries no more than
+  that window, encrypted.
+- `Session.Input` has `Taken Int`. `Backend.ssh` sends it as its `read`
+  hands an `Output` to the loop, which feeds it to the core in the same
+  turn. What waits between the session and the window is at most the
+  window, 2 MiB, and a fast `cat` runs at the speed the window takes it.
+- A reader of `Session` notices that never says `Taken` gets 2 MiB and
+  then nothing. The test program's `watch` and its `login` driver say it.
+
+Not done: the other direction. `writeSome` still takes a whole paste into
+the session's inputs at once, and the session's pending bytes wait for the
+server's window there. That queue is the user's own paste, not something
+a server can grow.
+
+Tested:
+
+| test | before | now |
+|---|---|---|
+| `sshd.py` `flow-held`: 8 MB of output to a reader that takes none (`--hold-output`, three quiet seconds) | the command ran to its end, all 8 MB taken in | `held: 2097152 bytes came` |
+| `sshd.py` `flow-taken`: the same, taken as it comes | done | done |
+| `ssh-tests connection`: 65 packets of 32 KiB on the session's channel | | 2,097,152 bytes out, the 65th dropped |
+| the same: one packet of 32,769 bytes | | dropped |
+| the same: 2 MiB in, then 1 MiB taken | | no adjustment before, one of 1,048,576 after, and room for 1 MiB more |
+| the same: a direct channel, 2 MiB in | | two adjustments of 1 MiB as it comes |
+
+The first three `connection` cases fail with the drop and `taken` turned
+off (12 of 15 then). The `connection` suite was not in `gate.sh`; it is
+now. 82 of 82 sshd cases pass twice; no other pin moved.

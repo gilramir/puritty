@@ -157,6 +157,10 @@ type Answer
 `docs/sftp.md` FT12) are named by a number of the window's choosing,
 `ref`, which their [`Side`](#Notice) notices carry back:
 
+  - `Taken`: that many bytes of [`Output`](#Notice) taken by whoever
+    shows them. The session's channel window is given back only for
+    these, so a reader that says nothing gets at most 2 MiB (SC35).
+
   - `OpenExec`: a channel beside the session running a command, no
     terminal; `OpenSubsystem`: one running a subsystem (`sftp`).
   - `SideWrite`: bytes for its program, sent as the connection has room,
@@ -166,6 +170,7 @@ type Answer
 -}
 type Input
     = Keys Bytes
+    | Taken Int
     | Resize { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int }
     | Answered Answer
     | Hangup
@@ -824,6 +829,9 @@ onInput input st =
                     -- not connected yet: the size is the one the pty-req
                     -- will ask for
                     meant Reason.NotYet Task.succeed { st | options = resized size st.options }
+
+        { input = Taken n } ->
+            withConnection (Connection.taken n) st
 
         { input = Hangup } ->
             onTransport (Transport.disconnect 11 "the window closed" st.transport) { st | done = True }

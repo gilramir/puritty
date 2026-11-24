@@ -125,18 +125,22 @@ ssh permissions options =
                     |> Task.map
                         (\_ ->
                             { read =
+                                -- output read is output the loop takes, now: the
+                                -- session gives the server window back for it, and
+                                -- only for it (SC35)
                                 Source.next sources.notices
-                                    |> Task.map
+                                    |> Task.andThen
                                         (\notice ->
                                             when notice is
                                                 Nothing ->
-                                                    meant Reason.NoMore Data Bytes.empty
+                                                    meant Reason.NoMore Task.succeed (Data Bytes.empty)
 
                                                 Just (Session.Output bytes) ->
-                                                    Data bytes
+                                                    Source.emit sources.inputs (Session.Taken (Bytes.length bytes))
+                                                        |> Task.map (\_ -> Data bytes)
 
                                                 Just other ->
-                                                    Notice other
+                                                    Task.succeed (Notice other)
                                         )
                             , writeSome = \bytes -> Source.emit sources.inputs (Session.Keys bytes) |> Task.map (\_ -> Bytes.length bytes)
                             , writable = Task.succeed {}

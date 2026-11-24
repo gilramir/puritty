@@ -166,6 +166,16 @@ SIDE_CASES = [
 ]
 
 
+# the session's channel window (docs/ssh-client.md SC35): name, client
+# options. 8 MB of newlines then "done": taken as it comes, the whole of it;
+# taken by no one (`--hold-output`), no more than the 2 MiB window.
+FLOW_COMMAND = "head -c 8000000 /dev/zero | tr '\\0' '\\n'; echo done"
+FLOW_CASES = [
+    ("flow-taken", []),
+    ("flow-held", ["--hold-output"]),
+]
+
+
 # jump hosts (SC21): name, how many jump hosts before the host, which of
 # the servers' keys known_hosts holds ("all", or "host" for the host's
 # only), client options, sshd config lines for the jump hosts. The host is
@@ -384,6 +394,25 @@ def main():
             print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
         else:
             print(f"ok   {name}")
+    for name, options in FLOW_CASES:
+        server = Server([])
+        kh = WORK / f"known_hosts.{name}"
+        kh.write_text(f"[127.0.0.1]:{server.port} {' '.join(server_pub)}\n")
+        try:
+            got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
+                              "--identity", keys["ed"], "--exec", FLOW_COMMAND, *options])
+        finally:
+            server.stop()
+        got = got.replace(str(server.port), "PORT").replace(f"as {getpass.getuser()}", "as USER")
+        pin = PINS / f"{name}.txt"
+        if a.update:
+            pin.write_text(got)
+            print(f"wrote {name}:\n  " + got.strip().replace("\n", "\n  "))
+        elif not pin.exists() or pin.read_text() != got:
+            fails += 1
+            print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
+        else:
+            print(f"ok   {name}")
     for name, hops, known, options, extra in JUMP_CASES:
         host = Server([])
         jumps = [Server(extra) for _ in range(hops)]
@@ -449,7 +478,7 @@ def main():
         else:
             fails += 1
             print(f"FAIL replay {replay.stem}\n  {got}")
-    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(SIDE_CASES) + len(JUMP_CASES) + len(AGENT_CASES) + len(replays)
+    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(SIDE_CASES) + len(FLOW_CASES) + len(JUMP_CASES) + len(AGENT_CASES) + len(replays)
     if not a.update:
         print(f"{total - fails} of {total} cases pass")
         sys.exit(1 if fails else 0)

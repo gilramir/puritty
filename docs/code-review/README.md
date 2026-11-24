@@ -276,7 +276,7 @@ covered" sections. The larger gaps:
 | [VI11](03-vt-images.md) | security | plausible | With `read_files` on under Windows, a remote program can make puritty open a UNC path |
 | [VI20](03-vt-images.md) | test-gap | confirmed | **fixed** No malformed-input tests for the JPEG, GIF, TIFF and Sixel decoders |
 | [SC1](04-ssh-core.md) | bug | confirmed | **fixed** A side channel closed while it is still opening is not closed, and then runs |
-| [SC2](04-ssh-core.md) | security | plausible | The channel window is given back on receipt, so the server is never slowed and output queues without bound |
+| [SC2](04-ssh-core.md) | security | plausible | **fixed** The channel window is given back on receipt, so the server is never slowed and output queues without bound |
 | [SC3](04-ssh-core.md) | security | confirmed | **fixed** No warning or fallback when the server has no strict KEX and ChaCha20-Poly1305 is chosen (Terrapin), though the design promises one |
 | [SC4](04-ssh-core.md) | security | confirmed | An unencrypted key file's text, the private key itself, is held in Geng memory for the whole session |
 | [SC5](04-ssh-core.md) | inaccuracy | plausible | **fixed** A host looked up through `HostKeyAlias` on a port other than 22 is looked up as `[alias]:port`; OpenSSH uses the bare alias |
@@ -315,7 +315,7 @@ covered" sections. The larger gaps:
 | [MA7](09-app-main-a.md) | speed | confirmed | Output in a tab not shown forces a frame for every chunk read, past the 16 ms pacing |
 | [MA8](09-app-main-a.md) | bug | plausible | Work that only the timer branch does waits for as long as the shown tab keeps printing |
 | [MA9](09-app-main-a.md) | bug | plausible | **fixed** A paste in flight goes to whichever tab is shown when its pieces arrive |
-| [MA10](09-app-main-a.md) | security | plausible | The built-in ssh session's output reaches the window through a queue with no bound |
+| [MA10](09-app-main-a.md) | security | plausible | **fixed** The built-in ssh session's output reaches the window through a queue with no bound |
 | [MA11](09-app-main-a.md) | design | plausible | A failing call on any tab's backend ends the whole window, and skips `finish` |
 | [MA12](09-app-main-a.md) | design | confirmed | Main.geng is 10,922 lines over one 130-field record, and the shown tab's fields are kept in step with `Tab` by hand |
 | [MB2](10-app-main-b.md) | bug | confirmed | **fixed** The box drawn and the dialog that takes the keys are chosen in two different orders |
