@@ -155,6 +155,9 @@ type alias Picker =
     , files : Array Bytes
     , folder : Maybe Bytes
     , entries : Array Entry
+    -- the same, each with its key, the name as the host's character set
+    -- reads it (review PS7), which the filter looks in
+    , keyed : Array Keyed
     , complete : Bool
     -- the listing being gone to: its request, and whether a part of it
     -- has come, and the row to highlight when it has
@@ -195,6 +198,7 @@ open o =
             , files = Array.map lastPart o.files
             , folder = Nothing
             , entries = []
+            , keyed = []
             , complete = False
             , going = Nothing
             , waiting = Dict.empty
@@ -363,10 +367,10 @@ plain with path =
 ones (`.name`) last: a part of a listing sorted and merged into what came
 before it, already in order with its keys, in one pass, each key made once
 (review PS9). -}
-mergedIn : Array Keyed -> Array Entry -> Array Keyed
-mergedIn before part =
+mergedIn : With -> Array Keyed -> Array Entry -> Array Keyed
+mergedIn with before part =
     mergeFrom before
-        (Array.sortBy .key (Array.map (\e -> { key = sortKey e, value = e }) part))
+        (Array.sortBy .key (Array.map (\e -> { key = sortKey with e, value = e }) part))
         0
         0
         (Builder.empty (Array.length before + Array.length part))
@@ -392,11 +396,11 @@ mergeFrom a b i j out =
                         mergeFrom a b (i + 1) j (Builder.pushLast x out)
 
 
-sortKey : Entry -> String
-sortKey e =
+sortKey : With -> Entry -> String
+sortKey with e =
     let
         name =
-            String.toLower (Bytes.toStringLossy e.name)
+            String.toLower (with.decode e.name)
 
         hidden =
             if String.startsWith "." name then
@@ -469,7 +473,7 @@ entered : Bytes -> Listing -> Maybe Bytes -> Picker -> Picker
 entered path l select p =
     let
         p1 =
-            { p | folder = Just path, entries = l.entries, complete = l.complete, top = 0, highlight = -1, focus = InList }
+            { p | folder = Just path, entries = l.entries, keyed = l.keys, complete = l.complete, top = 0, highlight = -1, focus = InList }
     in
     when select is
         Just name ->
@@ -490,11 +494,11 @@ highlightName name p =
 
 
 {-| An answer of the host's. -}
-answer : Answer -> Picker -> Step
-answer a p =
+answer : With -> Answer -> Picker -> Step
+answer with a p =
     when a is
         Listed l ->
-            { picker = listed l p, requests = [], outcome = Stay }
+            { picker = listed with l p, requests = [], outcome = Stay }
 
         Failed f ->
             { picker = failed f p, requests = [], outcome = Stay }
@@ -518,8 +522,8 @@ trouble why p =
 
 
 {-| A part of a listing, `more` while more is to come. -}
-listed : { id : Int, path : Bytes, entries : Array Entry, more : Bool } -> Picker -> Picker
-listed l p =
+listed : With -> { id : Int, path : Bytes, entries : Array Entry, more : Bool } -> Picker -> Picker
+listed with l p =
     when Dict.get l.id p.waiting is
         Just purpose ->
             let
@@ -539,7 +543,7 @@ listed l p =
                             meant Reason.NotYet []
 
                 keys =
-                    mergedIn before l.entries
+                    mergedIn with before l.entries
 
                 all =
                     Array.map .value keys
@@ -571,6 +575,7 @@ listed l p =
                                     grown =
                                         { cached
                                             | entries = all
+                                            , keyed = keys
                                             , complete = not l.more
                                             , going =
                                                 if l.more then
@@ -695,7 +700,8 @@ rows p =
                 p.entries
 
             else
-                Array.keepIf (\e -> String.contains needle (String.toLower (Bytes.toStringLossy e.name))) p.entries
+                -- the key's name, after its kind's and hidden's marks
+                Array.keepIf (\k -> String.contains needle (String.dropFirst 2 k.key)) p.keyed |> Array.map .value
     in
     (if atRoot || p.filter /= "" then
         []

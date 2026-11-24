@@ -34,10 +34,10 @@ listedAt : Picker.Picker
 listedAt =
     let
         first =
-            Picker.answer (Listed { id = 1, path = Bytes.fromString "/x", entries = [ folderNamed "a" ], more = True }) opened.picker
+            Picker.answer with (Listed { id = 1, path = Bytes.fromString "/x", entries = [ folderNamed "a" ], more = True }) opened.picker
 
         second =
-            Picker.answer (Listed { id = 1, path = Bytes.fromString "/x", entries = [ folderNamed "b" ], more = False }) first.picker
+            Picker.answer with (Listed { id = 1, path = Bytes.fromString "/x", entries = [ folderNamed "b" ], more = False }) first.picker
     in
     second.picker
 
@@ -83,7 +83,7 @@ cases =
                         { cols = 100, rows = 40, cellWidth = 9, cellHeight = 17 }
 
                     many =
-                        (Picker.answer (Listed { id = 1, path = Bytes.fromString "/x", entries = Array.map (\k -> folderNamed ("f" ++ String.padLeft 4 '0' (String.fromInt k))) (Array.range 0 1999), more = False }) opened.picker).picker
+                        (Picker.answer with (Listed { id = 1, path = Bytes.fromString "/x", entries = Array.map (\k -> folderNamed ("f" ++ String.padLeft 4 '0' (String.fromInt k))) (Array.range 0 1999), more = False }) opened.picker).picker
 
                     ended =
                         (press 0xFF57 0xFF57 0 many).picker
@@ -175,11 +175,49 @@ cases =
 
                     final =
                         Array.foldl
-                            (\k p -> (Picker.answer (Listed { id = 1, path = Bytes.fromString "/x", entries = part k, more = k < 199 }) p).picker)
+                            (\k p -> (Picker.answer with (Listed { id = 1, path = Bytes.fromString "/x", entries = part k, more = k < 199 }) p).picker)
                             opened.picker
                             (Array.range 0 199)
                 in
                 Expect.equal (Array.map named (Array.range 0 19999)) (Array.map (\e -> Bytes.toStringLossy e.name) final.entries)
+      }
+    , { name = "names in the host's character set: sorted and filtered as it reads them, not as UTF-8 (review PS7)"
+      , test =
+            \_ ->
+                let
+                    zeta =
+                        Bytes.fromUInt8s (Array.map UInt8.fromIntWrap [ 0xA1 ])
+
+                    alpha =
+                        Bytes.fromUInt8s (Array.map UInt8.fromIntWrap [ 0xB2 ])
+
+                    -- a host whose character set reads 0xA1 as "Zeta" and
+                    -- 0xB2 as "alpha", neither of them UTF-8
+                    host =
+                        { decode =
+                            \b ->
+                                if b == zeta then
+                                    "Zeta"
+
+                                else if b == alpha then
+                                    "alpha"
+
+                                else
+                                    Bytes.toStringLossy b
+                        , encode = \t -> Just (Bytes.fromString t)
+                        }
+
+                    shown =
+                        (Picker.answer host (Listed { id = 1, path = Bytes.fromString "/x", entries = [ { name = zeta, kind = Folder, link = Nothing, size = Nothing, mtime = Nothing }, { name = alpha, kind = Folder, link = Nothing, size = Nothing, mtime = Nothing } ], more = False }) opened.picker).picker
+
+                    filtered =
+                        (Picker.key host { sym = 0x70, unshifted = 0x70, mods = 0, text = "alp" } shown).picker
+
+                    drawn =
+                        Bytes.toStringLossy (Picker.draw { cols = 100, rows = 30, cellWidth = 8, cellHeight = 16 } host Picker.utcText filtered).list
+                in
+                Expect.equal { order = [ alpha, zeta ], alphaShown = True, zetaShown = False }
+                    { order = Array.map .name shown.entries, alphaShown = String.contains "alpha" drawn, zetaShown = String.contains "Zeta" drawn }
       }
     , { name = "the folders' file read back: a path not UTF-8 as bytes, a host of a later kind passed over"
       , test =

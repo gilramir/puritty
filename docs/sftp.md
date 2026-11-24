@@ -2329,3 +2329,25 @@ the test took 2,216 ms on node before; with the keys kept but the whole
 still sorted with `Array.sortWith`, 938 ms; merged, 189 ms. Each part
 still copies what came before into the new array and draws the rows
 again (`highlightName`), a pass each, not a sort.
+
+## FT37 · Names sorted and filtered as the host's character set reads them (2026-11-24)
+
+The code review's PS7. The picker draws a name and completes a typed
+path with the host's character set (`With.decode`), but it sorted and
+filtered by the name's bytes read as UTF-8 (`Bytes.toStringLossy`). On a
+host in EUC-KR every Hangul name read as U+FFFD: Korean names kept
+READDIR's order among themselves, and a Korean filter matched nothing
+("No name here has … in it") though the names were drawn right.
+
+Now `Picker.answer` (and `listed`) takes the host's `With`, as `draw`
+and `key` do, and an entry's key (FT36) is made from its name decoded
+that way. The picker keeps the shown entries' keys beside them
+(`keyed`), and the filter looks for what is typed in each key's name,
+which is already lowered, so it no longer lowers every name at every
+frame. Main passes the tab's charset (`fromHost`) for the SFTP picker
+and the demo's `With` for the demo.
+
+**Tested** (app suite, new): a host whose character set reads the byte
+`A1` as `Zeta` and `B2` as `alpha`, neither UTF-8, listing `A1` then
+`B2`: before, they stayed in that order and a filter `alp` showed
+neither; now `B2` sorts first and `alp` shows `alpha` and not `Zeta`.

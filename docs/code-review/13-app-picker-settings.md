@@ -84,6 +84,7 @@ Two facts used throughout, both checked:
 - What: the module says "Names are the host's bytes; the caller says how its character set reads and writes them (`With`)", but `sorted` and `rows` do not have `With` and read the bytes as UTF-8.
 - Scenario: a host whose `charset` is `euc-kr` (a case the project names). Hangul names decode to runs of U+FFFD: typing Korean into the filter matches nothing ("No name here has … in it") though the names are drawn correctly, and Korean names sort in READDIR's order (equal keys) while ASCII ones sort. Path completion on the same names works, since it uses `with.decode`.
 - Fix: pass `With` to `listed`/`sorted` and `rows` (or decode once when a part arrives and keep the lowercased name beside the entry, which also removes the per-frame lowercasing below).
+- Fixed: 2026-11-24, `docs/sftp.md` FT37. `Picker.answer` takes the host's `With`; a name's sort key is made from it decoded that way, and the filter looks in the shown entries' keys (`keyed`). Test: a host reading A1 as Zeta and B2 as alpha: before, READDIR order and `alp` matched nothing; now alpha first and `alp` shows it.
 
 ### PS8 · `middle` cuts a long label one character at a time, measuring the whole string each time
 - Where: app/src/Picker.geng:1849-1871 (`middle`, `middleFrom`); used per frame at 2175, 2252, 2578, 2620, 2712, 2788, 2794, 2891, 2912, 2974, 3042; contrast app/src/SettingsGui.geng:629-654 (`fit`, a binary search)
