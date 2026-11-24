@@ -877,3 +877,30 @@ system CPU over 5 s, from `/proc`, three runs each:
 With `yes` in the hidden tab, the reads are large and the parsing is the
 cost: about 6 MB/s through the hidden tab before and after, the same as
 with the tab shown.
+
+## TB22 · A busy tab leaves the others their turns (2026-11-24)
+
+The code review's MA8. The window's loop races the shown tab's read
+against the window's events, the timer, the writes waiting, the settings
+file's changes and each hidden tab's read and write, and natively the
+race answers the first of the ready tasks in the order they are listed
+(docs/sftp.md FT25). The shown tab's read was always first. FT25 gave
+the window's events a look after every read (`windowToo`), but nothing
+else had one: while the shown tab's program printed without a pause,
+the hidden tabs were not read, so their programs blocked on a full pty,
+and the timer's work waited too.
+
+Now every other race lists the shown tab's read last (`shownLast` in the
+model, flipped at each race), so whatever else is ready wins that turn.
+When nothing else is ready the race waits for the read as before, so a
+busy tab alone loses nothing.
+
+**Tested** by `harness/starve.py`, new: a window whose first tab waits
+4 s and then writes 200 KB to its terminal and makes a file, while the
+second, shown, runs `yes`. Before, the file was not there after 10 s
+(with the second tab quiet instead, it was there in 0.5 s); now in 0.5
+to 1 s, in three runs. Its second case changes the settings file's title
+while `yes` runs: the window's title followed in 1 to 5 s before as now,
+so the settings were not starved in this test. The shown tab's own speed
+is the same: 50 MB of `yes` text took 1.12 to 1.14 s with the build
+before and with this one, two runs each.

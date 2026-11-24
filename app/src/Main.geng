@@ -283,6 +283,9 @@ type alias Model =
     , logDir : Maybe String
     , turnMs : Int
     , loggedTab : Int
+    -- whether this turn's race lists the shown tab's read last, as every
+    -- other turn's does (docs/tabs.md TB22)
+    , shownLast : Bool
     -- the system's clock when the window began, which every time the
     -- window keeps is counted from (`clock`)
     , clockStart : Int64
@@ -1578,6 +1581,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , logDir = logDir
                      , turnMs = t0
                      , loggedTab = -1
+                     , shownLast = False
                      , clockStart = began - Int64.fromInt startAt
                      , maximized = False
                      , normalSize = { columns = config.columns, rows = config.rows }
@@ -2486,12 +2490,15 @@ race remote m0 =
         |> Task.andThen
             (\ms0 ->
                 let
-                    m =
+                    blinked =
                         if blinking m0 && m0.blinkAt < 0 then
                             { m0 | blinkAt = Clock.after ms0 m0.config.blinkMs }
 
                         else
                             m0
+
+                    m =
+                        { blinked | shownLast = not blinked.shownLast }
 
                     at =
                         nextAt m
@@ -2532,8 +2539,21 @@ race remote m0 =
                                     )
                             )
                             (hiddenOf m)
+
+                    -- of the tasks ready, the race answers the first
+                    -- listed (docs/sftp.md FT25): the shown tab's read is
+                    -- listed last every other turn, or a program that
+                    -- prints without a pause keeps the hidden tabs, the
+                    -- timer and the settings from ever having a turn
+                    -- (docs/tabs.md TB22)
+                    raced =
+                        if m.shownLast then
+                            Task.race (Window.events |> Task.map Events) (timer ++ writing ++ following ++ behindTabs ++ [ remote.read |> Task.map Read ])
+
+                        else
+                            Task.race (remote.read |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing ++ following ++ behindTabs)
                 in
-                Task.race (remote.read |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing ++ following ++ behindTabs)
+                raced
                     |> Task.andThen
                         (\turn ->
                             clock m.clockStart
