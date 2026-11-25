@@ -571,6 +571,42 @@ connectionSuite =
                         else
                             Just "a pattern matched wrongly"
                     )
+               , caseTest "an RSA certificate is offered and signed under its SHA-2 name; a DSA key is not offered (review SC22)"
+                    (\_ ->
+                        let
+                            config =
+                                { user = "me", identities = [ { id = 1, publicKey = Bytes.fromString "cert", keyType = "ssh-rsa-cert-v01@openssh.com" } ], methods = [ "publickey" ], serverSigAlgs = [], passwordTries = 3 }
+
+                            accepted =
+                                Auth.received (Bytes.flatten [ Wire.writeByte 6, Wire.writeText "ssh-userauth" ]) (Auth.begin config Bytes.empty).auth
+
+                            queried =
+                                Auth.received (Bytes.flatten [ Wire.writeByte 51, Wire.writeText "publickey", Wire.writeByte 0 ]) accepted.auth
+
+                            named =
+                                Array.any (\p -> String.contains "rsa-sha2-512-cert-v01@openssh.com" (Bytes.toStringLossy p)) queried.send
+
+                            flags =
+                                Agent.signRequest { publicKey = Bytes.fromString "cert", data = Bytes.empty, algorithm = "rsa-sha2-512-cert-v01@openssh.com" }
+                                    |> (\b -> Bytes.slice (Bytes.length b - 4) (Bytes.length b) b)
+                                    |> Wire.reader
+                                    |> Wire.uint32
+                                    |> Result.map .value
+                        in
+                        if named && flags == Ok 4 && not (Auth.offerable "ssh-dss") && Auth.offerable "sk-ssh-ed25519@openssh.com" then
+                            Nothing
+
+                        else
+                            Just
+                                ("named "
+                                    ++ (if named then
+                                            "yes"
+
+                                        else
+                                            "no"
+                                       )
+                                )
+                    )
                , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
                     (\_ ->
                         let

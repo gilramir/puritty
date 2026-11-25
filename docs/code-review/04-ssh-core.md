@@ -229,6 +229,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: an agent's identities are taken with whatever type their blob names. `algorithmFor` maps only `ssh-rsa` to `rsa-sha2-*`; `ssh-rsa-cert-v01@openssh.com` is offered as it is (SHA-1, refused by OpenSSH since 8.8; the SHA-2 name is `rsa-sha2-512-cert-v01@openssh.com`), and the sign flags are 0 for it. `sk-` keys and `ssh-dss` are offered too.
 - Scenario: an agent with a few certificates and a FIDO key: each is a wasted `publickey` query, and they count against the server's `MaxAuthTries` (6) before the key that works is reached: "Too many authentication failures".
 - Fix: map RSA certificate types to their `rsa-sha2-*-cert` names and flags, and leave out of `identities` any type the client has no signature algorithm for.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC40. RSA certificates under their `rsa-sha2-*-cert` names and flags; `Auth.offerable` leaves DSA and unknown types out of the agent's keys; test.
 
 ### SC23 · A key handle that is dropped without `forget` leaks the private key uncleared
 - Where: packages/ssh-crypto/src/Ext/ssh_crypto_keys.c:177-195, 276-285; packages/ssh/src/Ssh/Session.geng:1182-1188
@@ -238,6 +239,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `key_handle` is a collected object holding a `malloc`ed `key_box`; nothing runs when the handle is collected. The only release is `ssh_crypto_forgetKey`. `signWith` forgets on success and on failure, but not if its task is cancelled between `loadKey` succeeding and `forget` (the window closing while an RSA signature is on its thread).
 - Scenario: the box and PuTTY's key, private numbers and all, stay allocated and uncleared for the life of the process. A small window, and a leak rather than a crash, but it is exactly the memory SC12 question 7 wanted cleared.
 - Fix: one extern that loads, signs and frees in C (the session never needs the handle between the two), or a finalizer on the handle if the runtime has one.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC40. `SshCrypto.signOnce` frees the key's numbers when the signature ends, taken or canceled; `signWith` uses it; crypto suite test.
 
 ### SC24 · `aesCtr` and `bcryptPbkdf` are exported and used by nothing but the tests
 - Where: packages/ssh-crypto/src/SshCrypto.geng:241-261; packages/ssh-crypto/src/Ext/ssh_crypto.c:411-430
@@ -247,6 +249,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: key files are decrypted in C by `load_now`, which calls `openssh_bcrypt` and the cipher itself. The two pure externs are the earlier route, decrypting a key file into Geng `Bytes`, which is what SC12 question 7 rules out. `bcryptPbkdf` as a pure extern also blocks the loop for `rounds` x 6 ms with no bound on `rounds`.
 - Scenario: a later change reaches for them and puts a decrypted private key in the Geng heap, or freezes the window on a file that says 100,000 rounds.
 - Fix: move them to the test package's own externs, or delete them and test `loadKey` only.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC40. Moved to `SshCrypto.Testing`; the C `bcryptPbkdf` capped at 64 rounds.
 
 ### SC25 · `Transport.start` takes a seed of any length, an empty one included
 - Where: packages/ssh/src/Ssh/Transport.geng:232-263; packages/ssh/src/Ssh/Random.geng:22-26

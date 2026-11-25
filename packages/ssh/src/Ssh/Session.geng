@@ -614,7 +614,10 @@ agentOf permissions options files =
                                             -- them with the files'
                                             Task.succeed
                                                 { link = Just link
-                                                , identities = Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) keys
+                                                , identities =
+                                                    Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) keys
+                                                        -- not a type nothing can sign for (SC22)
+                                                        |> Array.keepIf (\k -> Auth.offerable k.identity.keyType)
                                                 }
 
                                         Err why ->
@@ -1432,7 +1435,10 @@ signWith need text passphrase st =
             SshCrypto.loadKey text passphrase
                 |> Task.andThen
                     (\key ->
-                        SshCrypto.sign key need.algorithm need.data
+                        -- the key's numbers freed when the signature ends,
+                        -- even if this task is canceled before its forget
+                        -- (the code review's SC23)
+                        SshCrypto.signOnce key need.algorithm need.data
                             |> Task.andThen (\signature -> SshCrypto.forget key |> Task.map (\_ -> signature))
                             |> Task.onError (\p -> SshCrypto.forget key |> Task.andThen (\_ -> Task.fail p))
                     )

@@ -7,6 +7,7 @@ module Ssh.Auth exposing
     , Step
     , begin
     , isAuthMessage
+    , offerable
     , received
     , responses
     , signed
@@ -391,15 +392,52 @@ next st =
 `rsa-sha2-512` unless the server says it takes only `rsa-sha2-256`. -}
 algorithmFor : State -> Identity -> String
 algorithmFor st identity =
+    let
+        sha256 =
+            not (Array.isEmpty st.config.serverSigAlgs) && not (Array.member "rsa-sha2-512" st.config.serverSigAlgs) && Array.member "rsa-sha2-256" st.config.serverSigAlgs
+    in
     if identity.keyType == "ssh-rsa" then
-        if not (Array.isEmpty st.config.serverSigAlgs) && not (Array.member "rsa-sha2-512" st.config.serverSigAlgs) && Array.member "rsa-sha2-256" st.config.serverSigAlgs then
+        if sha256 then
             "rsa-sha2-256"
 
         else
             "rsa-sha2-512"
 
+    else if identity.keyType == "ssh-rsa-cert-v01@openssh.com" then
+        -- an RSA certificate under its SHA-2 name, as OpenSSH 8.8 on takes
+        -- it, never `ssh-rsa`'s SHA-1 (the code review's SC22)
+        if sha256 then
+            "rsa-sha2-256-cert-v01@openssh.com"
+
+        else
+            "rsa-sha2-512-cert-v01@openssh.com"
+
     else
         identity.keyType
+
+
+{-| Whether a key of this type can be offered: one a signature algorithm is
+known for, an agent's FIDO keys among them; DSA, which OpenSSH no longer
+takes, and types not known are left out, so that none spends one of the
+server's tries (`MaxAuthTries`; the code review's SC22). -}
+offerable : String -> Bool
+offerable keyType =
+    Array.member keyType
+        [ "ssh-ed25519"
+        , "ssh-rsa"
+        , "ecdsa-sha2-nistp256"
+        , "ecdsa-sha2-nistp384"
+        , "ecdsa-sha2-nistp521"
+        , "sk-ssh-ed25519@openssh.com"
+        , "sk-ecdsa-sha2-nistp256@openssh.com"
+        , "ssh-ed25519-cert-v01@openssh.com"
+        , "ssh-rsa-cert-v01@openssh.com"
+        , "ecdsa-sha2-nistp256-cert-v01@openssh.com"
+        , "ecdsa-sha2-nistp384-cert-v01@openssh.com"
+        , "ecdsa-sha2-nistp521-cert-v01@openssh.com"
+        , "sk-ssh-ed25519-cert-v01@openssh.com"
+        , "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"
+        ]
 
 
 {-| A key offered without a signature (RFC 4252 §7). -}

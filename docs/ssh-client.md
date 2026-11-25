@@ -2009,3 +2009,36 @@ now "failed: readFile KNOWN_HOSTS: Permission denied".
 included, though the same seed makes the same key exchange secret. A seed
 under 32 bytes now fails the transport at once, nothing sent, not even the
 version line; `ssh-tests connection` holds it (25).
+
+## SC40 · An agent's keys offered under names a server takes, and a key not kept past its signature (2026-11-25)
+
+The code review's SC22 to SC24.
+
+**SC22.** An agent's keys were offered with whatever type their blobs
+named. An RSA certificate went as `ssh-rsa-cert-v01@openssh.com`, SHA-1,
+which OpenSSH refuses since 8.8, signed with the agent's flags 0; and DSA
+keys and types nothing signs for were offered too, each a query that
+counts against the server's `MaxAuthTries`. An RSA certificate is now
+offered under `rsa-sha2-512-cert-v01@openssh.com` (or `-256-`, as for a
+plain RSA key by `server-sig-algs`) with the agent's SHA-2 flags, and
+`Auth.offerable` leaves out of the agent's keys any type outside the
+Ed25519, ECDSA, RSA and FIDO keys and their certificates. `ssh-tests
+connection`: a certificate's query names the SHA-2 algorithm, its sign
+request carries flag 4, DSA is not offerable and FIDO's Ed25519 is (26).
+
+**SC23.** `signWith` loaded a key, signed and forgot it; a task canceled
+during the signature (the window closing while RSA signs on its thread)
+never forgot it, and the key, its private numbers among them, stayed
+allocated and uncleared. `SshCrypto.signOnce` signs and frees the key's
+numbers when the signature ends, taken or canceled; the box stays,
+holding nothing, until `forget`. `signed_` now releases the box before it
+hands the signature on, so what runs on from it sees the key as it is
+after. The ssh-crypto suite signs each of its 14 key files once and holds
+that a second signature, before `forget` and after, is refused.
+
+**SC24.** `aesCtr` and `bcryptPbkdf`, the earlier way of decrypting a key
+file into Geng's heap, were exported beside the API that keeps it out;
+only the tests' vectors use them. They are now `SshCrypto.Testing`'s,
+and the C `bcryptPbkdf` takes at most 64 rounds (a pure call holds the
+loop about 6 ms a round; the vectors use 16 at most). The ssh-crypto
+fuzz's answers are as before (checksum 658983976).

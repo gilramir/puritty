@@ -40,6 +40,7 @@ import Os.Error
 import Os.File as File
 import Os.Path as Path
 import SshCrypto exposing (Cipher(..))
+import SshCrypto.Testing as Testing
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Test.Runner.UnitNode.Program as Program
@@ -349,7 +350,7 @@ check kind f =
             checkPacket f
 
         "aesctr" ->
-            SshCrypto.aesCtr { key = hex f "key", iv = hex f "iv" } (hex f "data") == Just (hex f "out")
+            Testing.aesCtr { key = hex f "key", iv = hex f "iv" } (hex f "data") == Just (hex f "out")
 
         "keyfile" ->
             checkKeyFile f
@@ -415,8 +416,8 @@ checkKeyFile : Fields -> Bool
 checkKeyFile f =
     let
         decrypt passphrase =
-            SshCrypto.bcryptPbkdf { passphrase = passphrase, salt = hex f "salt", rounds = int f "rounds", length = 48 }
-                |> Maybe.andThen (\k -> SshCrypto.aesCtr { key = Bytes.slice 0 32 k, iv = Bytes.slice 32 48 k } (hex f "encrypted"))
+            Testing.bcryptPbkdf { passphrase = passphrase, salt = hex f "salt", rounds = int f "rounds", length = 48 }
+                |> Maybe.andThen (\k -> Testing.aesCtr { key = Bytes.slice 0 32 k, iv = Bytes.slice 32 48 k } (hex f "encrypted"))
 
         checksHold d =
             Bytes.slice 0 4 d == Bytes.slice 4 8 d
@@ -655,10 +656,10 @@ fuzzOne i =
             SshCrypto.openLength { cipher = cipher, key = random 48 (near 49 64), sequence = pick 50 1000 } (random 51 (near 52 4))
 
         counter =
-            SshCrypto.aesCtr { key = random 53 (near 54 32), iv = random 55 (near 56 16) } (random 57 (pick 58 70))
+            Testing.aesCtr { key = random 53 (near 54 32), iv = random 55 (near 56 16) } (random 57 (pick 58 70))
 
         kdf =
-            SshCrypto.bcryptPbkdf { passphrase = random 59 (pick 60 20), salt = random 61 (pick 62 20), rounds = pick 63 3 - 1, length = pick 64 80 - 2 }
+            Testing.bcryptPbkdf { passphrase = random 59 (pick 60 20), salt = random 61 (pick 62 20), rounds = pick 63 3 - 1, length = pick 64 80 - 2 }
 
         taken b =
             if b then
@@ -760,11 +761,16 @@ keyTest f =
                     SshCrypto.publicKeyOf key
                         |> Task.andThen
                             (\blob ->
-                                SshCrypto.sign key algorithm data
+                                -- signed once: the key is gone after, before its
+                                -- forget (the code review's SC23)
+                                SshCrypto.signOnce key algorithm data
                                     |> Task.andThen
                                         (\signature ->
-                                            SshCrypto.forget key
-                                                |> Task.andThen (\_ -> SshCrypto.sign key algorithm data |> Task.map (\_ -> False) |> Task.onError (\p -> Task.succeed (p == SshCrypto.Forgotten)))
+                                            SshCrypto.sign key algorithm data
+                                                |> Task.map (\_ -> False)
+                                                |> Task.onError (\p -> Task.succeed (p == SshCrypto.Forgotten))
+                                                |> Task.andThen (\goneBefore -> SshCrypto.forget key |> Task.map (\_ -> goneBefore))
+                                                |> Task.andThen (\goneBefore -> SshCrypto.sign key algorithm data |> Task.map (\_ -> False) |> Task.onError (\p -> Task.succeed (goneBefore && p == SshCrypto.Forgotten)))
                                                 |> Task.map
                                                     (\forgotten ->
                                                         let
@@ -785,7 +791,7 @@ keyTest f =
                                                             Just "the signature does not verify"
 
                                                         else if not forgotten then
-                                                            Just "a forgotten key signed"
+                                                            Just "a key signed after signOnce or forget"
 
                                                         else
                                                             Nothing

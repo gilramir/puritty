@@ -384,6 +384,11 @@ typedef struct {
     key_box *box;
     unsigned flags;
     int canceled;
+    /* `once`: the key is freed, its numbers cleared, when this signature
+     * ends, taken or canceled, so that a task canceled between the
+     * signature and its `forget` leaves no private key behind (the code
+     * review's SC23) */
+    int once;
     strbuf *data;
     strbuf *signature;
 } signing;
@@ -403,6 +408,12 @@ static void *sign_run(void *arg) {
 
 static void sign_finished(signing *s) {
     s->box->busy--;
+    if (s->once && s->box->busy == 0 && s->box->key != NULL) {
+        /* the box itself stays, holding nothing, as the handle still names
+         * it; a later forget frees it */
+        ssh_key_free(s->box->key);
+        s->box->key = NULL;
+    }
     box_release(s->box);
     strbuf_free(s->signature);
     strbuf_free(s->data);
@@ -412,8 +423,12 @@ static void sign_finished(signing *s) {
 static void signed_(void *env, void *message) {
     signing *s = message;
     geng_post_close(s->post);
-    if (!s->canceled) geng_succeed(env, geng_slot_P(bytes_of(s->signature->u, s->signature->len)));
+    /* the box released, and for `once` the key freed, before the answer is
+     * handed on: what runs on from it finds the key as it is after */
+    int canceled = s->canceled;
+    geng_bytes *out = canceled ? NULL : bytes_of(s->signature->u, s->signature->len);
     sign_finished(s);
+    if (!canceled) geng_succeed(env, geng_slot_P(out));
 }
 
 static void sign_dropped(void *message) { sign_finished(message); }
@@ -427,7 +442,7 @@ static geng_task *sign_stop(void *env) {
 /* A signature of `data` by the key, as SSH's signature blob, on a thread:
  * `algorithm` is the signature algorithm the server takes, which for an
  * RSA key is rsa-sha2-512 or rsa-sha2-256. */
-geng_cancel ssh_crypto_sign(void *handle, void *algorithm, void *data, geng_wait *wait) {
+static geng_cancel sign_with(void *handle, void *algorithm, void *data, int once, geng_wait *wait) {
     key_box *box = ((key_handle *) handle)->box;
     if (box == NULL || box->forgotten || box->key == NULL) {
         fail(wait, FORGOTTEN);
@@ -441,6 +456,7 @@ geng_cancel ssh_crypto_sign(void *handle, void *algorithm, void *data, geng_wait
     if (s == NULL) geng_crash("ssh-crypto: out of memory");
     s->box = box;
     s->flags = flags;
+    s->once = once;
     s->data = strbuf_new();
     put_datapl(s->data, pl(data));
     box->busy++;
@@ -457,4 +473,14 @@ geng_cancel ssh_crypto_sign(void *handle, void *algorithm, void *data, geng_wait
         return (geng_cancel) {0};
     }
     return (geng_cancel) {sign_stop, s};
+}
+
+geng_cancel ssh_crypto_sign(void *handle, void *algorithm, void *data, geng_wait *wait) {
+    return sign_with(handle, algorithm, data, 0, wait);
+}
+
+/* As ssh_crypto_sign, and the key freed when the signature ends, taken or
+ * canceled. */
+geng_cancel ssh_crypto_signOnce(void *handle, void *algorithm, void *data, geng_wait *wait) {
+    return sign_with(handle, algorithm, data, 1, wait);
 }

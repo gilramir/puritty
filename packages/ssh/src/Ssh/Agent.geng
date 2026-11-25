@@ -121,15 +121,16 @@ signRequest : { publicKey : Bytes, data : Bytes, algorithm : String } -> Bytes
 signRequest r =
     let
         flags =
-            when r.algorithm is
-                "rsa-sha2-256" ->
-                    2
+            -- SSH_AGENT_RSA_SHA2_256 and _512, for a key and a certificate
+            -- alike (the code review's SC22)
+            if r.algorithm == "rsa-sha2-256" || r.algorithm == "rsa-sha2-256-cert-v01@openssh.com" then
+                2
 
-                "rsa-sha2-512" ->
-                    4
+            else if r.algorithm == "rsa-sha2-512" || r.algorithm == "rsa-sha2-512-cert-v01@openssh.com" then
+                4
 
-                _ ->
-                    0
+            else
+                0
     in
     frame (Bytes.flatten [ Wire.writeByte 13, Wire.writeString r.publicKey, Wire.writeString r.data, Wire.writeUint32 flags ])
 

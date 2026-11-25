@@ -405,9 +405,9 @@ covered" sections. The larger gaps:
 | [SC19](04-ssh-core.md) | bug | confirmed | **fixed** `KnownHosts.replaced` numbers lines differently from `parse`, so it can take out the wrong line |
 | [SC20](04-ssh-core.md) | inaccuracy | confirmed | **fixed** A relative `Include` in the system's file is read from the user's `~/.ssh` |
 | [SC21](04-ssh-core.md) | bug | confirmed | **fixed** `HostName %%h` expands to the host; `%%` is replaced before `%h` |
-| [SC22](04-ssh-core.md) | bug | plausible | RSA certificates and other key types an agent holds are offered under a name the server cannot take |
-| [SC23](04-ssh-core.md) | design | plausible | A key handle that is dropped without `forget` leaks the private key uncleared |
-| [SC24](04-ssh-core.md) | dead-code | confirmed | `aesCtr` and `bcryptPbkdf` are exported and used by nothing but the tests |
+| [SC22](04-ssh-core.md) | bug | plausible | **fixed** RSA certificates and other key types an agent holds are offered under a name the server cannot take |
+| [SC23](04-ssh-core.md) | design | plausible | **fixed** A key handle that is dropped without `forget` leaks the private key uncleared |
+| [SC24](04-ssh-core.md) | dead-code | confirmed | **fixed** `aesCtr` and `bcryptPbkdf` are exported and used by nothing but the tests |
 | [SC25](04-ssh-core.md) | design | confirmed | **fixed** `Transport.start` takes a seed of any length, an empty one included |
 | [SC26](04-ssh-core.md) | bug | confirmed | **fixed** `IdentitiesOnly true` is read as `no`, and a `known_hosts` that cannot be read is read as empty |
 | [SC27](04-ssh-core.md) | design | confirmed | **fixed** The glob matcher is written twice and backtracks exponentially |

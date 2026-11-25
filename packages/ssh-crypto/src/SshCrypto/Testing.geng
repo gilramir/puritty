@@ -1,0 +1,55 @@
+module SshCrypto.Testing exposing (aesCtr, bcryptPbkdf)
+
+{-| The two steps of decrypting an OpenSSH key file, for the tests' vectors
+alone. A key file is decrypted in C (`SshCrypto.loadKey`), so that its
+private part never comes into Geng's heap (`docs/ssh-client.md` SC12
+question 7); these were the earlier way, which put it there, and are
+kept apart from `SshCrypto` so that nothing but a test reaches for them.
+`bcryptPbkdf` here takes at most 64 rounds, as a pure call holds the loop
+for 6 ms a round (the code review's SC24).
+
+@docs aesCtr, bcryptPbkdf
+
+-}
+
+import Bytes exposing (Bytes)
+
+
+{-| AES in counter mode, a 16- or 32-byte key and a 16-byte counter block,
+over whole blocks: an OpenSSH key file's `aes256-ctr`. Encrypting and
+decrypting are the same. `Nothing` for other lengths.
+-}
+aesCtr : { key : Bytes, iv : Bytes } -> Bytes -> Maybe Bytes
+aesCtr k data =
+    if (Bytes.length k.key /= 16 && Bytes.length k.key /= 32) || Bytes.length k.iv /= 16 || modBy 16 (Bytes.length data) /= 0 then
+        Nothing
+
+    else
+        Just (aesCtrExtern k.key k.iv data)
+
+
+{-| OpenSSH's `bcrypt_pbkdf`: `length` bytes (1 to 1024) from a passphrase
+and a salt over `rounds` rounds, an OpenSSH key file's KDF. It takes about
+6 ms a round: a key file's 16 take 0.1 s. At most 64 rounds; more is
+`Nothing`.
+-}
+bcryptPbkdf : { passphrase : Bytes, salt : Bytes, rounds : Int, length : Int } -> Maybe Bytes
+bcryptPbkdf p =
+    nonEmpty (bcryptPbkdfExtern p.passphrase p.salt p.rounds p.length)
+
+
+nonEmpty : Bytes -> Maybe Bytes
+nonEmpty b =
+    if Bytes.isEmpty b then
+        Nothing
+
+    else
+        Just b
+
+
+@externPure(c, "ssh_crypto_aesCtr")
+aesCtrExtern : Bytes -> Bytes -> Bytes -> Bytes
+
+
+@externPure(c, "ssh_crypto_bcryptPbkdf")
+bcryptPbkdfExtern : Bytes -> Bytes -> Int -> Int -> Bytes

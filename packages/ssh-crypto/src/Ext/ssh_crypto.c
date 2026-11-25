@@ -423,7 +423,9 @@ void *ssh_crypto_aesCtr(void *key, void *iv, void *data) {
 /* OpenSSH's bcrypt_pbkdf: `length` bytes from a passphrase and a salt over
  * `rounds` rounds. */
 void *ssh_crypto_bcryptPbkdf(void *passphrase, void *salt, int32_t rounds, int32_t length) {
-    if (rounds < 1 || length < 1 || length > 1024 || len(salt) == 0) return none();
+    /* at most 64 rounds: a test's, never a key file's, which load_now
+     * decrypts on a thread of its own (the code review's SC24) */
+    if (rounds < 1 || rounds > 64 || length < 1 || length > 1024 || len(salt) == 0) return none();
     geng_bytes *out = bytes_alloc((size_t) length);
     openssh_bcrypt(pl(passphrase), pl(salt), rounds, out->data, (size_t) length);
     return out;

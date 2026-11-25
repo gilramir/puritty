@@ -5,8 +5,6 @@ module SshCrypto exposing
     , KeyProblem(..)
     , Keyed
     , Mac(..)
-    , aesCtr
-    , bcryptPbkdf
     , blockSize
     , equal
     , forget
@@ -19,6 +17,7 @@ module SshCrypto exposing
     , publicKeyOf
     , seal
     , sign
+    , signOnce
     , signatureAlgorithms
     , tagLength
     , verify
@@ -36,7 +35,7 @@ Nothing here draws random bytes: a private value is the caller's, from
 packet cipher is keyed again for each packet from the sequence number and
 how many packets the keys have sealed or opened.
 
-@docs Key, KeyProblem, keyFileInfo, loadKey, publicKeyOf, sign, forget, Hash, hash, Mac, hmac, equal, x25519Public, x25519Shared, signatureAlgorithms, verify, Cipher, Keyed, tagLength, blockSize, seal, openLength, open, aesCtr, bcryptPbkdf
+@docs Key, KeyProblem, keyFileInfo, loadKey, publicKeyOf, sign, signOnce, forget, Hash, hash, Mac, hmac, equal, x25519Public, x25519Shared, signatureAlgorithms, verify, Cipher, Keyed, tagLength, blockSize, seal, openLength, open
 
 -}
 
@@ -238,29 +237,6 @@ open k sealed =
     nonEmpty (openExtern (cipherCode k.cipher) k.key k.iv k.sequence k.count sealed)
 
 
-{-| AES in counter mode, a 16- or 32-byte key and a 16-byte counter block,
-over whole blocks: an OpenSSH key file's `aes256-ctr`. Encrypting and
-decrypting are the same. `Nothing` for other lengths.
--}
-aesCtr : { key : Bytes, iv : Bytes } -> Bytes -> Maybe Bytes
-aesCtr k data =
-    if (Bytes.length k.key /= 16 && Bytes.length k.key /= 32) || Bytes.length k.iv /= 16 || modBy 16 (Bytes.length data) /= 0 then
-        Nothing
-
-    else
-        Just (aesCtrExtern k.key k.iv data)
-
-
-{-| OpenSSH's `bcrypt_pbkdf`: `length` bytes (1 to 1024) from a passphrase
-and a salt over `rounds` rounds, an OpenSSH key file's KDF. It takes about
-6 ms a round: a key file's 16 take 0.1 s, so a program with a window to
-keep drawing runs it apart.
--}
-bcryptPbkdf : { passphrase : Bytes, salt : Bytes, rounds : Int, length : Int } -> Maybe Bytes
-bcryptPbkdf p =
-    nonEmpty (bcryptPbkdfExtern p.passphrase p.salt p.rounds p.length)
-
-
 nonEmpty : Bytes -> Maybe Bytes
 nonEmpty b =
     if Bytes.isEmpty b then
@@ -364,6 +340,16 @@ sign (Key handle) algorithm data =
     signExtern handle (Bytes.fromString algorithm) data |> Task.mapError problemOf
 
 
+{-| As [`sign`](#sign), and the key's numbers freed and cleared when the
+signature ends, taken or canceled: for a key loaded to sign once, so that
+a task canceled before its `forget` leaves no private key in memory (the
+code review's SC23). The key cannot sign again; `forget` it still.
+-}
+signOnce : Key -> String -> Bytes -> Task KeyProblem Bytes
+signOnce (Key handle) algorithm data =
+    signOnceExtern handle (Bytes.fromString algorithm) data |> Task.mapError problemOf
+
+
 {-| The key freed and its numbers cleared, once no signature needs it.
 Forgetting a key twice is not an error.
 -}
@@ -419,14 +405,6 @@ openLengthExtern : Int -> Bytes -> Int -> Bytes -> Int
 openExtern : Int -> Bytes -> Bytes -> Int -> Int -> Bytes -> Bytes
 
 
-@externPure(c, "ssh_crypto_aesCtr")
-aesCtrExtern : Bytes -> Bytes -> Bytes -> Bytes
-
-
-@externPure(c, "ssh_crypto_bcryptPbkdf")
-bcryptPbkdfExtern : Bytes -> Bytes -> Int -> Int -> Bytes
-
-
 @externPure(c, "ssh_crypto_keyFileInfo")
 keyFileInfoExtern : Bytes -> Bytes
 
@@ -441,6 +419,10 @@ keyPublicBlobExtern : Extern.Handle -> Task Int Bytes
 
 @extern(c, "ssh_crypto_sign")
 signExtern : Extern.Handle -> Bytes -> Bytes -> Task Int Bytes
+
+
+@extern(c, "ssh_crypto_signOnce")
+signOnceExtern : Extern.Handle -> Bytes -> Bytes -> Task Int Bytes
 
 
 @extern(c, "ssh_crypto_forgetKey")
