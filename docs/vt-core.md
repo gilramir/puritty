@@ -5158,3 +5158,32 @@ length of `selectionText` from the first row to the last: 25,000 rows of
 200 columns, 5,050,000 characters, 0.66 s, where feeding them alone is
 0.65 s; 20,000 rows of 80, 1,640,000 characters, 0.20 s. Natively a
 string held once is appended in place, so it is left as it is.
+
+## VC79 · A row's text end found without its cells; imports the split left (2026-11-25)
+
+The code review's VS9 and VS10.
+
+**VS9.** A resize reads each paged row as a `Source`; for a row that is
+not single-column (`scan` answers -1: a wide character, a cluster, a
+spacer head, a cell in a background color alone) `gather` and
+`lastSource` ran `unpackText` to find where the row's text ends, making
+its cells and dropping them, and `slowLine` then made them again through
+`rowAt`. Now `Pages.textEnd` walks the bytes by `unpackText`'s own steps
+and makes nothing. Measured with `core-bench FILE drag 10 100 40` on
+25,000 rows of Korean (10 to 74 syllables a row, 2.9 MB), three runs:
+1,345 to 1,363 ms before, 1,080 to 1,087 ms after, the dump's hash the
+same. And `drag` 6 to 97 and 211 columns and 4 to 33 by 20, over five
+inputs of 6,000 rows mixing wide characters at rows' ends, combining
+marks, emoji, Devanagari clusters, DECSCA-protected cells, cells in a
+background alone and erases in a background color: the same dump before
+and after in all fifteen. `harness/perf.py`'s inputs are not on gmktec7
+(vtebench's captures), so its record was not run against this.
+
+**VS10.** The split of `Vt.geng` (§VC23, §VC45) left imports behind:
+`Pages`, `Resize` and `Dump` imported some modules twice, and `Prompt`,
+which sets a row's prompt mark, imported `Resize`, `Dump`, `Pages`,
+`Base64`, `Keys` and seven more it does not use, so the module graph
+put it above the resize and the dump. 44 import lines are gone: the
+repeats, the qualified ones nothing names, and each `exposing (..)` one
+whose removal still built (`Prompt`'s of `Dump`, `Pages`, `Palette`,
+`Resize` and `Style`).

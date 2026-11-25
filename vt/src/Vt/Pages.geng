@@ -27,6 +27,7 @@ module Vt.Pages exposing
     , pushUtf8
     , startsMark
     , takePages
+    , textEnd
     , u16At
     , unpackPage
     , unpackRows
@@ -41,19 +42,12 @@ import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
 import Bytes.Owned as Owned exposing (Owned)
-import Dict exposing (Dict)
 import Int64
-import Math
 import UInt8
-import Vt.Cell exposing (..)
 import Vt.Cell exposing (..)
 import Vt.Reason as Reason
 import Vt.Screen exposing (..)
-import Vt.Screen exposing (..)
 import Vt.Style exposing (..)
-import Vt.Style exposing (..)
-import Vt.Term exposing (..)
-import Vt.Term as State
 import Vt.Term exposing (..)
 import Vt.Width as Width
 
@@ -843,6 +837,43 @@ unpackText text i left acc =
 
         else
             unpackText text d.next (left - 1) (Array.pushLast { points = [ d.cp ], wide = 0, style = 0 } acc)
+
+
+{-| Where `unpackText text i left` stops, by the same steps, with no cell
+made: what a row's text spans when only its end is wanted (the code
+review's VS9). -}
+textEnd : Owned -> Int -> Int -> Int
+textEnd text i left =
+    if left <= 0 && not (startsMark text i) then
+        i
+
+    else
+        let
+            b =
+                ownedAt text i
+        in
+        if b == 0xFF || b == 0xFE then
+            textEnd text (i + 1) (left - 1)
+
+        else if b == 0xFD then
+            textEnd text (i + 1) left
+
+        else
+            let
+                d =
+                    decodeAt text i
+            in
+            if d.cp == 0 then
+                textEnd text d.next (left - 1)
+
+            else if d.cp >= 0x80 && Width.width d.cp == 0 then
+                textEnd text d.next left
+
+            else if d.cp >= 0x80 && Width.width d.cp == 2 then
+                textEnd text d.next (left - 2)
+
+            else
+                textEnd text d.next (left - 1)
 
 
 startsMark : Owned -> Int -> Bool

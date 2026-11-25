@@ -99,6 +99,7 @@ and its callers.
 - What: when `scan` answers -1 (a wide character, a cluster, a spacer head or a background-only cell in the row), `gather` runs `(unpackText page.text ti ext []).next` to find where the row's text ends, building and dropping the row's cell records; `slowLine` then calls `rowAt`, which runs `unpackText` on the same row again. `lastSource` does the same for every such row of the last page at each resize.
 - Scenario: a scrollback of CJK text (every row takes the slow path) during a window drag: each row of each page is decoded twice per resize step, where `docs/vt-core.md` §VC34 already names the cut of lines that are not plain as the resize's cost.
 - Fix: a text-only walk that answers the end offset without building cells (as `skipCells` does for the narrow case, extended to wide and zero-width code points and the 0xFE/0xFF bytes), or keep the first decode's cells in the `Source`.
+- Fixed: 2026-11-25, `docs/vt-core.md` VC79. `Pages.textEnd` finds a row's text end by `unpackText`'s steps without making cells: 10 resizes over 25,000 Korean rows 1,355 ms to 1,083 ms, dumps the same.
 
 ### VS10 · `Prompt.geng`, `Pages.geng`, `Resize.geng` and `Dump.geng` import what they do not use, some of it twice
 - Where: vt/src/Vt/Prompt.geng:13-34; vt/src/Vt/Pages.geng:46-56; vt/src/Vt/Resize.geng:61-74; vt/src/Vt/Dump.geng:28-42
@@ -131,3 +132,4 @@ and its callers.
 - The reflow's results cell by cell against Ghostty (spacer heads in rows that no longer wrap, saved-cursor placement): not re-derived by hand.
 - `Placeholder.geng`'s diacritics table (lines 330 on), `KeyTables.geng`, `Width.geng`'s tables, `EucKrIndex.geng`: generated, not read.
 - No harness or test was run; the keys, mouse, paste and charset gates were taken as described in the documents.
+- Fixed: 2026-11-25, `docs/vt-core.md` VC79. 44 import lines removed; `Prompt` no longer imports `Resize`, `Dump` or `Pages`.
