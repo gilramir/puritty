@@ -412,11 +412,11 @@ covered" sections. The larger gaps:
 | [SC26](04-ssh-core.md) | bug | confirmed | **fixed** `IdentitiesOnly true` is read as `no`, and a `known_hosts` that cannot be read is read as empty |
 | [SC27](04-ssh-core.md) | design | confirmed | **fixed** The glob matcher is written twice and backtracks exponentially |
 | [ST8](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A side channel closed while it is still opening is never closed: quick Esc in the folder chooser leaks a server session each time |
-| [ST9](05-ssh-session-transfer.md) | bug | confirmed | `Sending.owns` claims every later side channel while a shell transfer runs |
-| [ST10](05-ssh-session-transfer.md) | inaccuracy | confirmed | `ConnectTimeout` is read and ignored, and nothing is read from the window while connecting |
+| [ST9](05-ssh-session-transfer.md) | bug | confirmed | **fixed** `Sending.owns` claims every later side channel while a shell transfer runs |
+| [ST10](05-ssh-session-transfer.md) | inaccuracy | confirmed | **in part** `ConnectTimeout` is read and ignored, and nothing is read from the window while connecting |
 | [ST11](05-ssh-session-transfer.md) | security | plausible | Nothing holds the server back when the window reads slower than the network: output queues without bound |
 | [ST12](05-ssh-session-transfer.md) | bug | plausible | The link is not closed when the loop ends by an error, and an agent's socket is never closed |
-| [ST13](05-ssh-session-transfer.md) | bug | confirmed | The keepalive timer starts again on every turn of the loop, so a dead link is not noticed while anything else happens |
+| [ST13](05-ssh-session-transfer.md) | bug | confirmed | **fixed** The keepalive timer starts again on every turn of the loop, so a dead link is not noticed while anything else happens |
 | [ST14](05-ssh-session-transfer.md) | bug | confirmed | A second `SSH_FXP_VERSION` restarts the transfer's checks in the middle of a batch |
 | [ST15](05-ssh-session-transfer.md) | efficiency | confirmed | `Sftp.received` copies the whole unfinished packet for every piece that arrives |
 | [ST16](05-ssh-session-transfer.md) | bug | confirmed | A shell-fallback job that succeeded is reported failed when the host's startup files print anything |

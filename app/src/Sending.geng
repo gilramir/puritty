@@ -1,4 +1,4 @@
-module Sending exposing (Out(..), Sending, answer, begin, cancel, conflictBox, isAsking, isOver, jobsFor, localFailed, localRead, owns, progressText, side, summary)
+module Sending exposing (Out(..), Sending, answer, begin, cancel, conflictBox, isAsking, isOver, jobsFor, localFailed, localRead, owns, progressText, refsKept, side, summary)
 
 {-| Files dropped on an ssh tab, sent to the folder chosen (`docs/sftp.md`
 FT25): `Ssh.Transfer` over an SFTP channel of its own, or, where the host
@@ -199,7 +199,18 @@ begin b =
 the shell's channels after it. -}
 owns : Int -> Sending -> Bool
 owns ref s =
-    ref == s.ref || (s.shellRefs && ref > s.ref)
+    -- the shell's channels are numbered within the block kept for the
+    -- transfer, not every ref after it: a chooser's or a picture's channel
+    -- opened after it is its own (the code review's ST9)
+    ref == s.ref || (s.shellRefs && ref > s.ref && ref <= s.ref + refsKept)
+
+
+{-| The channel numbers kept for a transfer, from its own on: the shell
+fallback numbers its commands' channels within them, and a later side
+channel is numbered after them. -}
+refsKept : Int
+refsKept =
+    100000
 
 
 {-| A side channel's event. -}

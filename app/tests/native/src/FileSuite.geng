@@ -14,7 +14,9 @@ import Os.Path as Path
 import Os.Process as Process
 import Platform
 import Schema
+import Sending
 import SettingsFile
+import Ssh.Connection as Connection
 import Task
 import Test.Runner.UnitNode as U
 
@@ -67,6 +69,25 @@ settingsFile =
                                         |> Task.andThen (\seen -> Directory.removeAll go.fs (Path.fromString dir) |> Task.map (\_ -> seen) |> Task.onError (\_ -> Task.succeed seen))
                                         |> Task.map (Expect.equal "link\n600\n[window]\ntitle = \"b\"\nconfig.toml\nreal.toml\nreal.toml.bak\nreal.toml.lock\n")
                                 )
+                )
+            , U.test "a shell upload owns its own block of channels, not every channel after it (review ST9)"
+                (\_ ->
+                    let
+                        begun =
+                            Sending.begin { ref = 10, tab = 1, folder = Bytes.fromString "/tmp", jobs = [], refused = [], allowShell = True, ms = 0 }
+
+                        -- the host refuses SFTP: the shell's commands, on
+                        -- channels after the transfer's own
+                        shell =
+                            (Sending.side { ref = 10, event = Connection.Refused "no sftp" } begun.sending).sending
+                    in
+                    Task.succeed
+                        (Expect.equal { first = True, last = True, after = False }
+                            { first = Sending.owns 11 shell
+                            , last = Sending.owns (10 + Sending.refsKept) shell
+                            , after = Sending.owns (10 + Sending.refsKept + 1) shell
+                            }
+                        )
                 )
             , U.test "a setting written to config.toml of mode 600: the mode kept, no temporary left (review PS12)"
                 (\_ ->

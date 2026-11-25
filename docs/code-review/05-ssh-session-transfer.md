@@ -103,6 +103,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: `owns ref s = ref == s.ref || (s.shellRefs && ref > s.ref)` has no upper bound, though the caller reserves `ref+1 … ref+100000` for the shell's channels and gives later channels (the chooser, a pasted picture's upload) refs above that. `sideEvent` gives an owned event to `Sending.side`, and `ShellTransfer.told` drops one that is not its running command's.
 - Scenario: a shell-fallback upload is running; the user drops more files on a pane with no known folder (the chooser opens) or pastes a picture. Every event of the new channel, including its `Refused` and `Ended`, goes to the transfer and is dropped: the chooser sits waiting for a listing with no message, and the picture's upload state never ends, until the session does.
 - Fix: bound it: `ref > s.ref && ref <= s.ref + 100000` (one named constant shared with `startPending`), or have `ShellTransfer` say which refs it has opened.
+- Fixed: 2026-11-25, `docs/sftp.md` FT39. `owns` stops at the kept block's end (`Sending.refsKept`, shared with `Main`); native app test.
 
 ### ST10 · `ConnectTimeout` is read and ignored, and nothing is read from the window while connecting
 - Where: packages/ssh/src/Ssh/Session.geng:317-328 (`through`), 400-423 (`connectTo`), 1547-1575 (options built with no timeout); docs/ssh-client.md:510-516 lists `ConnectTimeout` among "keywords the client acts on in v1"
@@ -112,6 +113,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: `Net.connect` is awaited alone, with the system's own wait (minutes for a host that drops SYNs); the `inputs` source is first read in `loop`, after the connection and the reading of keys and agent. `Config` knows `connecttimeout` (Config.geng:733) but `resolveOne` never takes it. There is also no limit on the wait for the server's banner or key exchange, though there the user's `Hangup` is read.
 - Scenario: `ConnectTimeout 5` in `~/.ssh/config` and an unreachable host: puritty says "connecting to …" for the system's two minutes; closing the tab meanwhile queues a `Hangup` that is not seen until the connect fails. With a jump host each hop repeats it.
 - Fix: race `Net.connect` against `Process.sleep` (the option's seconds, a default when unset) and against `Source.next inputs` so a hang-up ends it; either act on the keyword or take it out of the document's list and report it as not acted on.
+- Fixed: In part, 2026-11-25, `docs/ssh-client.md` SC41: `ConnectTimeout` read as a time and the connection raced against it. A hang-up while connecting is still seen only after the connect.
 
 ### ST11 · Nothing holds the server back when the window reads slower than the network: output queues without bound
 - Where: packages/ssh/src/Ssh/Session.geng:1312-1316 (`tell (Output bytes)`), 289-303; packages/ssh/src/Ssh/Connection.geng:690-700 (`consume` gives the window back on receipt); app/src/Backend.geng:109-123
@@ -139,6 +141,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: `Process.sleep (keepaliveSeconds * 1000)` is a new task in each race, so any turn (a key, a resize, a `SideWrite`, a pump) restarts the interval. OpenSSH resets its timer on data from the server only.
 - Scenario: `ServerAliveInterval 60`, the NAT entry is gone. The user types (no echo comes), waits, types again: each key within a minute of the last puts the keepalive off, so the "server stopped answering" end comes `60 × (CountMax + 1)` seconds after the last key, not after the link died. (`keepaliveSeconds * 1000` also wraps for an interval over 2,147,483 s, an `Int` being 32 bits.)
 - Fix: keep the monotonic time the server was last heard from in `State` and sleep only for what is left of the interval; reset it in `FromServer` alone.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC41. The interval runs from when the server was last heard from (`heardAt`, `keepaliveLeft`), held below 2,000,000 s; arithmetic tested, the loop not driven.
 
 ### ST14 · A second `SSH_FXP_VERSION` restarts the transfer's checks in the middle of a batch
 - Where: packages/ssh/src/Ssh/Sftp.geng:378-391 (type 2 accepted at any time); packages/ssh/src/Ssh/Transfer.geng:324-325 (`Sftp.Ready _ -> check st`)

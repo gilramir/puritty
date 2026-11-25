@@ -214,8 +214,9 @@ SUITES = [
         # line cut first; 611 since PS7: names sorted in the host's
         # character set; 612 since PS6: two listings of a folder kept apart;
         # 615 since PS12: config.toml written through a link, its mode and
-        # a lock kept
-        615,
+        # a lock kept; 616 since ST9: a
+        # shell upload's block of channels bounded
+        616,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

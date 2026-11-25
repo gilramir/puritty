@@ -2373,3 +2373,17 @@ whole or marked incomplete.
 Ctrl+R (request 2), request 2's `a b`, request 1's `c` (its end), request
 2's `c` (its end). Before, the picker showed `c` alone, complete; now
 `a b c`, complete.
+
+## FT39 · A shell upload's channels are its own block, not every one after it (2026-11-25)
+
+The code review's ST9. A transfer keeps the 100,000 channel numbers from
+its own (`Main` numbers later side channels after them), and when SFTP is
+refused the shell fallback numbers its commands' channels within them;
+but `Sending.owns` claimed every channel above the transfer's, with no
+top. A chooser opened or a picture pasted while a shell upload ran had
+its channel's events, `Refused` and `Ended` among them, taken by the
+upload and dropped: the chooser waited for a listing for good. `owns` now
+stops at the block's end, `Sending.refsKept`, which `Main` uses too. The
+native app suite holds it (616): after SFTP is refused, refs 11 and
+10 + 100,000 are the upload's, 10 + 100,001 is not; the old rule took the
+last.

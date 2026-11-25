@@ -2042,3 +2042,30 @@ only the tests' vectors use them. They are now `SshCrypto.Testing`'s,
 and the C `bcryptPbkdf` takes at most 64 rounds (a pure call holds the
 loop about 6 ms a round; the vectors use 16 at most). The ssh-crypto
 fuzz's answers are as before (checksum 658983976).
+
+## SC41 · ConnectTimeout acted on, and the keepalive's interval from the server's last word (2026-11-25)
+
+The code review's ST10 and ST13.
+
+**ST10, in part.** SC7's list has `ConnectTimeout` among the keywords the
+client acts on, but it was only read: the connection waited as long as
+the system does, minutes for a host that drops what it is sent. `Config`
+now reads it as a time, as OpenSSH's `convtime` does (`1m5` is 65; the
+config case `connecttimeout`, from `ssh -G`, printed `1m5` before), and
+the session races the connection against it (`connectWithin`), failing
+`TimedOut`, "no answer in N s (ConnectTimeout)". A hang-up while
+connecting is still seen only when the connection is made or fails: the
+window's inputs are first read in the loop, and reading them in the race
+would take a key typed meanwhile. No case makes a host that never answers
+a connection, so the race itself is not driven by a test.
+
+**ST13.** The keepalive's timer was a new `Process.sleep` in each turn's
+race, so any turn (a key, a resize, a pump) put it off: with a dead link
+and a user typing, the end came the interval times `CountMax + 1` after
+the last key. OpenSSH counts from what the server last sent. The session
+now keeps `heardAt`, the monotonic time the server was last heard from or
+a keepalive last sent, set on data from the server and on a keepalive
+alone, and each turn sleeps for what is left (`keepaliveLeft`, which also
+holds the interval below 2,000,000 s so that its milliseconds cannot wrap
+an `Int`). `ssh-tests connection` holds the arithmetic (27); no case
+drives a silent server with keys typed into the loop.

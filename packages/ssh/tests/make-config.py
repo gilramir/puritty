@@ -52,6 +52,8 @@ CASES = [
     # %% is a percent, not the start of %h (the code review's SC21)
     ("hostname-percent", "box", [("config", "Host box\n  HostName a%%h\n")]),
     ("identitiesonly-true", "h", [("config", "Host h\n  IdentitiesOnly true\n")]),
+    # a time the connection is given (the code review's ST10)
+    ("connecttimeout", "h", [("config", "Host h\n  ConnectTimeout 1m5\n")]),
     # ten stars against thirty a's: one pass, not a backtrack at each star
     # (SC27)
     ("pattern-many-stars", "a" * 30, [("config", "Host *a*a*a*a*a*a*a*a*a*b\n  User no\nHost *a*a*a*a*a*a*a*a*a*a\n  User yes\n")]),

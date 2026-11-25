@@ -607,6 +607,25 @@ connectionSuite =
                                        )
                                 )
                     )
+               , caseTest "a keepalive is due an interval after the server was last heard from, not after the last turn (review ST13)"
+                    (\_ ->
+                        let
+                            at ms =
+                                Int64.fromInt ms
+                        in
+                        if
+                            [ Session.keepaliveLeft 60 (at 70000) (at 60000)
+                            , Session.keepaliveLeft 60 (at 130000) (at 60000)
+                            , Session.keepaliveLeft 60 (at 200000) (at 60000)
+                            , Session.keepaliveLeft 3000000 (at 0) (at 0)
+                            ]
+                                == [ 50000, 0, 0, 2000000000 ]
+                        then
+                            Nothing
+
+                        else
+                            Just "the interval left is wrong"
+                    )
                , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
                     (\_ ->
                         let
@@ -2796,6 +2815,7 @@ sessionMode r target =
             , session = sessionOf r.args
             , keepaliveSeconds = 0
             , keepaliveCountMax = 3
+            , connectSeconds = 0
             , methods = [ "publickey", "keyboard-interactive", "password" ]
             , kex = Transport.defaultConfig.kex
             , hostKeyAlgorithms = Transport.defaultConfig.hostKeys

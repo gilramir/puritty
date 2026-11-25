@@ -8,6 +8,7 @@ module Ssh.Session exposing
     , Pacing
     , Permissions
     , fingerprint
+    , keepaliveLeft
     , optionsFor
     , pacing
     , resized
@@ -86,6 +87,9 @@ type alias Options =
     , session : Connection.Session
     , keepaliveSeconds : Int
     , keepaliveCountMax : Int
+    -- `ConnectTimeout`'s seconds, 0 for none: the system's own wait (the
+    -- code review's ST10)
+    , connectSeconds : Int
     , pacing : Pacing
     -- what `ssh_config` leaves the client (puritty `docs/ssh-client.md`
     -- SC31): the authentication methods in order, the key exchanges, host
@@ -307,6 +311,10 @@ type alias State =
     , waiting : Waiting
     , exitStatus : Maybe Int
     , unanswered : Int
+    -- when the server was last heard from, or a keepalive last sent, on
+    -- the monotonic clock: the keepalive's interval runs from it, so a key
+    -- or a resize does not put it off (the code review's ST13)
+    , heardAt : Int64
     , done : Bool
     -- when a key was last typed, on the monotonic clock, and whether the
     -- link is paced for quiet (FT17); `keysAt` until the code review's SC9
@@ -467,8 +475,25 @@ connectTo permissions options notices label given =
                         Task.succeed link
 
                     Nothing ->
-                        meant Reason.NotSet Net.connect permissions.net { host = options.host, port = options.port } |> Task.andThen (limited options.pacing.unsent)
+                        meant Reason.NotSet
+                            (connectWithin options.connectSeconds (Net.connect permissions.net { host = options.host, port = options.port })
+                                |> Task.andThen (limited options.pacing.unsent)
+                            )
             )
+
+
+{-| A connection given up after `seconds` (0: as long as the system waits),
+as `ConnectTimeout` says (the code review's ST10). -}
+connectWithin : Int -> Task Os.Error.Error a -> Task Os.Error.Error a
+connectWithin seconds connecting =
+    if seconds <= 0 then
+        connecting
+
+    else
+        Task.race connecting
+            [ Process.sleep (toFloat (clamp 1 2000000 seconds * 1000))
+                |> Task.andThen (\_ -> Task.fail { kind = Os.Error.TimedOut, operation = "connect", path = Nothing, detail = "no answer in " ++ String.fromInt seconds ++ " s (ConnectTimeout)" })
+            ]
 
 
 {-| A session begun over `link`: its known hosts, keys and agent read, and
@@ -528,6 +553,7 @@ session permissions options role label link notices =
                                                         , waiting = NotWaiting
                                                         , exitStatus = Nothing
                                                         , unanswered = 0
+                                                        , heardAt = Int64.fromInt 0
                                                         , done = False
                                                         , typedAt = Int64.fromInt 0
                                                         , quiet = False
@@ -765,96 +791,119 @@ loop other st =
         Task.succeed st
 
     else
-        let
-            timer =
-                if st.options.keepaliveSeconds > 0 && isJust st.connection then
-                    [ Process.sleep (toFloat (st.options.keepaliveSeconds * 1000)) |> Task.map (\_ -> Tick) ]
+        Time.monotonic |> Task.andThen (\now -> loopAt (Time.inMilliseconds now) other st)
 
-                else
-                    []
 
-            -- side channels' bytes go only when the link has room, so
-            -- the session's keys never wait behind more than a pump
-            pumping =
-                when st.connection is
-                    Just c ->
-                        if Connection.sideWaiting c > 0 then
-                            [ st.link.writable |> Task.map (\_ -> Pump) ]
+{-| The milliseconds left until a keepalive is due: `seconds` (held below
+2,000,000, so that its milliseconds cannot wrap an `Int`) since the server
+was last heard from, or a keepalive last sent, at `heardAt`; 0 when it is
+due already (the code review's ST13). -}
+keepaliveLeft : Int -> Int64 -> Int64 -> Float
+keepaliveLeft seconds now heardAt =
+    let
+        interval =
+            Int64.fromInt (clamp 0 2000000 seconds * 1000)
+    in
+    max 0 (Int64.toFloat (interval - (now - heardAt)))
+
+
+{-| A turn of `loop`, at `turnAt`: the keepalive's timer sleeps for what is
+left of its interval since the server was last heard from. -}
+loopAt : Int64 -> Task Os.Error.Error Turn -> State -> Task Os.Error.Error State
+loopAt turnAt other st =
+    let
+        timer =
+            if st.options.keepaliveSeconds > 0 && isJust st.connection then
+                [ Process.sleep (keepaliveLeft st.options.keepaliveSeconds turnAt st.heardAt) |> Task.map (\_ -> Tick) ]
+
+            else
+                []
+
+        -- side channels' bytes go only when the link has room, so
+        -- the session's keys never wait behind more than a pump
+        pumping =
+            when st.connection is
+                Just c ->
+                    if Connection.sideWaiting c > 0 then
+                        [ st.link.writable |> Task.map (\_ -> Pump) ]
+
+                    else
+                        []
+
+                Nothing ->
+                    meant Reason.NotYet []
+
+        -- our first KEXINIT waits for the server's (SC34); a server
+        -- that waits for ours instead is sent it after a second
+        unheard =
+            if Transport.awaitingServer st.transport then
+                [ Process.sleep 1000 |> Task.map (\_ -> Unheard) ]
+
+            else
+                []
+    in
+    Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer ++ pumping ++ unheard)
+        |> Task.andThen
+            (\turn ->
+                when turn is
+                    FromServer chunk ->
+                        if Bytes.isEmpty chunk then
+                            ending "the server closed the connection" st
 
                         else
-                            []
-
-                    Nothing ->
-                        meant Reason.NotYet []
-
-            -- our first KEXINIT waits for the server's (SC34); a server
-            -- that waits for ours instead is sent it after a second
-            unheard =
-                if Transport.awaitingServer st.transport then
-                    [ Process.sleep 1000 |> Task.map (\_ -> Unheard) ]
-
-                else
-                    []
-        in
-        Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer ++ pumping ++ unheard)
-            |> Task.andThen
-                (\turn ->
-                    when turn is
-                        FromServer chunk ->
-                            if Bytes.isEmpty chunk then
-                                ending "the server closed the connection" st
-
-                            else
-                                onTransport (Transport.receive chunk st.transport) st
-
-                        FromWindow (Just input) ->
-                            onInput input st
-
-                        FromWindow Nothing ->
-                            onTransport (Transport.disconnect 11 "the window closed" st.transport) { st | done = True }
-
-                        FromInner (Just bytes) ->
-                            withConnection (Connection.write bytes) st
-
-                        FromInner Nothing ->
-                            -- the connection inside is over
-                            onTransport (Transport.disconnect 11 "the session through it ended" st.transport) { st | done = True }
-
-                        Tick ->
-                            if st.unanswered >= st.options.keepaliveCountMax then
-                                ending "the server stopped answering keepalives" st
-                                    |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "keepalives unanswered" s.transport) s)
-
-                            else
-                                withConnection Connection.keepalive st
-
-                        Unheard ->
-                            onTransport (Transport.rekey st.transport) st
-
-                        Pump ->
                             Time.monotonic
-                                |> Task.andThen
-                                    (\now ->
-                                        let
-                                            p =
-                                                st.options.pacing
+                                |> Task.andThen (\heard -> onTransport (Transport.receive chunk st.transport) { st | heardAt = Time.inMilliseconds heard })
 
-                                            quiet =
-                                                Time.inMilliseconds now - st.typedAt >= Int64.fromInt p.quietMs
-                                        in
-                                        if quiet && not st.quiet then
-                                            -- no key for a while: more at once
-                                            st.link.setUnsent p.quietUnsent
-                                                |> Task.andThen (\_ -> withConnection (Connection.pump p.quietPump) { st | quiet = True })
+                    FromWindow (Just input) ->
+                        onInput input st
 
-                                        else if st.quiet then
-                                            withConnection (Connection.pump p.quietPump) st
+                    FromWindow Nothing ->
+                        onTransport (Transport.disconnect 11 "the window closed" st.transport) { st | done = True }
 
-                                        else
-                                            withConnection (Connection.pump p.pump) st
-                                    )
-                )
-            |> Task.andThen (loop other)
+                    FromInner (Just bytes) ->
+                        withConnection (Connection.write bytes) st
+
+                    FromInner Nothing ->
+                        -- the connection inside is over
+                        onTransport (Transport.disconnect 11 "the session through it ended" st.transport) { st | done = True }
+
+                    Tick ->
+                        if st.unanswered >= st.options.keepaliveCountMax then
+                            ending "the server stopped answering keepalives" st
+                                |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "keepalives unanswered" s.transport) s)
+
+                        else
+                            -- the next interval runs from this one
+                            Time.monotonic
+                                |> Task.andThen (\sent -> withConnection Connection.keepalive { st | heardAt = Time.inMilliseconds sent })
+
+                    Unheard ->
+                        onTransport (Transport.rekey st.transport) st
+
+                    Pump ->
+                        Time.monotonic
+                            |> Task.andThen
+                                (\now ->
+                                    let
+                                        p =
+                                            st.options.pacing
+
+                                        quiet =
+                                            Time.inMilliseconds now - st.typedAt >= Int64.fromInt p.quietMs
+                                    in
+                                    if quiet && not st.quiet then
+                                        -- no key for a while: more at once
+                                        st.link.setUnsent p.quietUnsent
+                                            |> Task.andThen (\_ -> withConnection (Connection.pump p.quietPump) { st | quiet = True })
+
+                                    else if st.quiet then
+                                        withConnection (Connection.pump p.quietPump) st
+
+                                    else
+                                        withConnection (Connection.pump p.pump) st
+                                )
+            )
+        |> Task.andThen (loop other)
 
 
 {-| The session over: why, unless it already said how the program ended. -}
@@ -1833,6 +1882,7 @@ resolveOne permissions given =
                                     }
                                 , keepaliveSeconds = Dict.get "serveraliveinterval" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 0)
                                 , keepaliveCountMax = Dict.get "serveralivecountmax" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 3)
+                                , connectSeconds = Dict.get "connecttimeout" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 0)
                                 , pacing = pacing
                                 , methods = acts.methods
                                 , kex = acts.kex
