@@ -1252,3 +1252,37 @@ promise that a draw never waits on the server holds.
 then xclip takes the clipboard with `other`, then the tab's program
 copies `mine` with OSC 52. Before, the clipboard read `other`; now
 `mine`, twice.
+
+## 28. A paste's CR LF is one CR, in one piece or across two (2026-11-25)
+
+The code review's VS5. TM95 made a paste's line ends CR, bracketed or not,
+and CR LF one CR. Its check of CR LF was made with brackets on. Without
+them it did not hold: `lineEnds` ran on what `Vt.Paste.piece` had made,
+and the unbracketed encoder (Ghostty's) had made each LF CR already, so
+`lineEnds` saw CR CR and kept both. And a paste in pieces (INCR) started
+each piece afresh, so a CR at one's end and an LF at the next's start were
+two CRs, brackets or not. Text with DOS line ends on Linux's clipboard
+(a file's, or a remote desktop's) came as two Enters a line to a program
+without mode 2004, `cat > file` or a `read` loop. Windows' clipboard read
+makes CR LF LF already.
+
+Now `lineEnds` runs on the text as it came, before `Vt.Paste.piece`, which
+then has no LF to change; and the model keeps `pastedCr`, whether the
+paste's last piece ended in CR, beside `pasting`, per tab, so that the
+next piece's first LF is taken as that CR's.
+
+`harness/crlfpaste.py` (Xvfb, xclip, a program recording what it
+receives on a raw terminal, no brackets) holds three pastes to the text
+with each CR LF and LF made CR:
+
+| case | text | before | after |
+|---|---|---|---|
+| small | `one\r\ntwo\r\nthree\nfour\rfive\r\n`, one piece | 27 bytes, 3 CR CR | ok |
+| large | 4 MB of lines of 39 bytes ending CR LF, INCR | 4,065,962 bytes, 106,999 CR CR | ok |
+| split | `x` and 2,000,000 CR LF, INCR | | ok |
+
+The split case is for the pieces: every even offset in it falls between a
+CR and its LF. With `pastedCr` left out (each piece afresh) it received
+2,000,002 bytes for 2,000,001, the one CR LF a piece boundary split made
+two CRs; the large case passed so, as no boundary fell inside a CR LF.
+The tab paste gate (§25) passes 2 of 2.

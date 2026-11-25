@@ -183,6 +183,9 @@ type alias Model =
     -- text comes (docs/phase3-select.md §15)
     , toPaste : Maybe Window.Selection
     , pasting : Maybe Bool
+    -- the last piece of the paste under way ended in CR, so an LF that
+    -- begins the next is its CR LF's (the code review's VS5)
+    , pastedCr : Bool
     -- the tab a paste, a pasted picture or an OSC 52 read under way was
     -- asked for: its pieces go there, whichever tab is shown when they
     -- come, and nowhere once it is gone (the code review's MA9, MB3;
@@ -320,6 +323,7 @@ type alias Tab =
     , back : Int
     , selection : Maybe Selection
     , pasting : Maybe Bool
+    , pastedCr : Bool
     , clips : Array Vt.Clip
     , clipRead : Maybe { letter : Int, bel : Bool, text : Bytes }
     , ssh : Maybe SshScreen
@@ -1519,6 +1523,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , toPaste = Nothing
                      , pasteTab = Nothing
                      , pasting = Nothing
+                     , pastedCr = False
                      , clips = []
                      , clipRead = Nothing
                      , settings = settings
@@ -7629,10 +7634,38 @@ xterm, VTE, PuTTY and Windows Terminal paste them; CRLF one CR (docs/tmux.md
 TM95). Ghostty's encoder (`Vt.Paste`, held to it by the paste gate) keeps LF
 in a bracketed paste, and a program that never asked for brackets gets it
 through tmux, which brackets a paste only for the programs that asked: LF is
-Ctrl-J to it, Justify to an older nano, which joined the pasted lines. -}
-lineEnds : Bytes -> Bytes
-lineEnds bytes =
-    Bytes.fromUInt8s (lineEndsFrom bytes 0 (Bytes.length bytes) -1 [])
+Ctrl-J to it, Justify to an older nano, which joined the pasted lines.
+
+Made of the text as it came, before `Vt.Paste` encodes it, which makes an
+unbracketed paste's LF CR, so that CR LF was CR CR here; and `crBefore`
+when the piece before it ended in CR, so that a CR LF split between two
+pieces is one CR (the code review's VS5; harness/crlfpaste.py). -}
+lineEnds : Bool -> Bytes -> Bytes
+lineEnds crBefore bytes =
+    Bytes.fromUInt8s
+        (lineEndsFrom bytes
+            0
+            (Bytes.length bytes)
+            (if crBefore then
+                0x0D
+
+             else
+                -1
+            )
+            []
+        )
+
+
+{-| Whether a piece of a paste ends in CR; when it is empty, whether the
+one before it did. -}
+endsInCr : Bool -> Bytes -> Bool
+endsInCr crBefore bytes =
+    when Bytes.get (Bytes.length bytes - 1) bytes is
+        Just b ->
+            UInt8.toInt b == 0x0D
+
+        Nothing ->
+            meant Reason.NotSet crBefore
 
 
 lineEndsFrom : Bytes -> Int -> Int -> Int -> Array UInt8 -> Array UInt8
@@ -7682,7 +7715,7 @@ pasteInto more text m =
 
                       else
                         Bytes.empty
-                    , lineEnds (Paste.piece bracketed text)
+                    , Paste.piece bracketed (lineEnds m.pastedCr text)
                     , if not more && bracketed then
                         Paste.bracketEnd
 
@@ -7702,7 +7735,7 @@ pasteInto more text m =
                 Bytes.empty
 
             else
-                lineEnds (Paste.piece True text)
+                Paste.piece True (lineEnds m.pastedCr text)
 
         updated =
             { m
@@ -7749,6 +7782,7 @@ pasteInto more text m =
 
                     else
                         Nothing
+                , pastedCr = more && endsInCr m.pastedCr text
                 , back =
                     if empty then
                         m.back
@@ -9243,6 +9277,7 @@ swapTab t m =
         , back = m.back
         , selection = m.selection
         , pasting = m.pasting
+        , pastedCr = m.pastedCr
         , clips = m.clips
         , clipRead = m.clipRead
         , ssh = m.ssh
@@ -9266,6 +9301,7 @@ swapTab t m =
             , back = t.back
             , selection = t.selection
             , pasting = t.pasting
+            , pastedCr = t.pastedCr
             , clips = t.clips
             , clipRead = t.clipRead
             , ssh = t.ssh
@@ -9619,6 +9655,7 @@ freshTab id remote host name color cols rows m =
     , back = 0
     , selection = Nothing
     , pasting = Nothing
+    , pastedCr = False
     , clips = []
     , clipRead = Nothing
     , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] }) host
@@ -9663,6 +9700,7 @@ reopened k id remote host m =
         , back = 0
         , selection = Nothing
         , pasting = Nothing
+        , pastedCr = False
         , clips = []
         , clipRead = Nothing
         , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] }) host

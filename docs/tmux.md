@@ -3858,6 +3858,8 @@ newer nano) CR inside them, and a CRLF clipboard one CR a line; a real
 nano, which asks for brackets, saves the four lines as copied in all three
 ways and through puritty's own ssh client to tmux 3.8, plain and `-CC`.
 
+*Without brackets CR LF was CR CR, and a CR LF split between two pieces two CRs, brackets or not: fixed 2026-11-25, `phase3-select.md` §28 (the code review's VS5).*
+
 ## TM96 · Tab at the prompt as each tmux completes (2026-11-16)
 
 The third of TM85's items. TM57 completed a first word from the
