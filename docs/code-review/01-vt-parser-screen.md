@@ -111,6 +111,7 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - What: `Scroll.geng:182`: `inPlace = not (t.top == 0 && t.left == 0 && t.right == t.cols - 1 && (not (isAlt t) || t.bottom == 0))`. `Dispatch.geng:511` (SU, the same decision): `... (not (isAlt t) || t.bottom == t.rows - 1))`. The two were one rule written twice and now differ. The SU form says: rows leave the screen (rather than being lost in place) when the region starts at the top and, on the alternate screen, is the whole screen. The line-feed form's `t.bottom == 0` is only true for a one-row region.
 - Scenario: on the alternate screen with a region `1;1` (top and bottom both row 0) and a Kitty placement in that row, a line feed takes `inPlace = False`, so `imagesMoved` treats the row as pushed to a scrollback the alternate screen does not have, and the placement is not scrolled off. Also the full-screen alt case is caught by `whole` before this in both places, so the only effect of the difference is that edge; it reads as a typo for `t.rows - 1`.
 - Fix: make the rule one function (`leavesScreen : Term -> Bool`) used by SU and the line feed.
+- Fixed: 2026-11-25, `docs/vt-core.md` VC75. One function, `Scroll.leavesScreen` (SU's form), for SU and the line feed. Checked unreachable: DECSTBM refuses a one-row region, so `t.bottom == 0` with top 0 is a one-row terminal; nothing a program sends changes.
 
 ### VP12 · BS at the left margin above the scroll region, with reverse wraparound, moves the cursor down to the region's top
 - Where: `vt/src/Vt/Dispatch.geng:748-749` (`cursorLeft`)
@@ -120,6 +121,7 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - What: `else if t.x == lm && mode == 1 && t.y <= t.top then { t | x = lm, y = t.top, wrapNext = False }`. For `t.y == t.top` this is a no-op, as meant ("stops at the region's top"). For `t.y < t.top` it sets `y = t.top`.
 - Scenario: `ESC [ ? 45 h`, `ESC [ 5 ; 20 r`, `ESC [ 2 ; 1 H`, then BS: the cursor jumps from row 2 to row 5. The general path (`reverseLeft`) with the cursor one column further right would instead stay on its row or go up to a wrapped row.
 - Fix: leave `y` as it is in that branch (`{ t | wrapNext = False }`), or restrict the branch to `t.y == t.top` and let `reverseLeft` take the rest.
+- Fixed: Not a bug, 2026-11-25, `docs/vt-core.md` VC75: Ghostty's documented CUB V-6 (Reverse Wrap Outside of Margins) does the same; replay case `cub-reverse-above-region` pins it.
 
 ### VP13 · DECRQSS's SGR report leaves out the underline color
 - Where: `vt/src/Vt/Dcs.geng:233-291` (`sgrText`)
@@ -129,6 +131,7 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - What: `sgrText` writes flags, the underline's kind, `fg` and `bg`; `Attrs.ulc` (SGR 58) is never written, though SGR 58/59 are kept (`Sgr.geng:282-290`).
 - Scenario: `ESC [ 4 : 3 ; 58 : 2 : : 255 : 0 : 0 m` then `DCS $ q m ST` answers `0;4:3` with no `58`; a program that saves and restores SGR through DECRQSS loses the underline color.
 - Fix: add `color "58" ...` in the colon form for `a.ulc` (it has no 30-37 short form, so only the `58:5:n` and `58:2::r:g:b` branches).
+- Fixed: 2026-11-25, `docs/vt-core.md` VC76, a divergence from Ghostty (which leaves it out too): `58:5:n` or `58:2::r:g:b` after the background; vt Replies test.
 
 ### VP14 · A truecolor SGR copies the parameter array for each color, against the comment beside it
 - Where: `vt/src/Vt/Sgr.geng:393-403` (`rgbAt`); comment at `:309-311` ("one `Int`, so that a color allocates nothing")

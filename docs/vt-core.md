@@ -5049,3 +5049,50 @@ private mode a new terminal's state": 41 modes (Ghostty's known ones, 2,
 6, 7, 25, 117 and 9999), each set and then restored, and reset and then
 restored, answer DECRQM as a new terminal does. The replay case `xtsave`
 restores 6 unsaved as before.
+
+## VC75 · One rule for whether a scroll's rows leave the screen; BS above the region as Ghostty documents it (2026-11-25)
+
+The code review's VP11 and VP12.
+
+**VP11.** SU and a line feed at the region's bottom each decided whether
+the rows scrolled out of the region leave the screen (and so whether a
+Kitty placement in them is pushed with them, IM14), in two copies of one
+expression that had come to differ: SU asked, on the alternate screen,
+`t.bottom == t.rows - 1`, the line feed `t.bottom == 0`. It is now
+`Scroll.leavesScreen`, SU's form, used by both. Nothing a program can
+send reaches the difference: DECSTBM refuses a region whose top is not
+above its bottom, and a resize makes the region the whole screen, so
+`t.bottom == 0` with `t.top == 0` is a terminal one row tall, where it
+is `t.rows - 1`; and on the alternate screen a region of every row and
+column is taken by `whole` before either. A region `1;1` was tried: it
+is refused, the line feed moves the cursor down, and the placement stays
+as it was before and after.
+
+**VP12.** The review asked whether BS at the left margin with reverse
+wraparound (mode 45), the cursor above the region's top, should move
+the cursor down to the top. It should: Ghostty's `cursorLeft` does it
+(`.reverse => if (cursor.y <= top) cursorAbsolute(left_margin, top)`),
+and its documentation of CUB has it as "CUB V-6: Reverse Wrap Outside of
+Margins" since 2023 (`website/app/vt/cub/page.mdx`, e6a23be99). The core
+was already so; the replay case `cub-reverse-above-region` is that
+example (`ESC [ 3 r`, BS, `X` on a screen of five rows: `X` on the third
+row). Its Ghostty side is to be run on nene, where the oracle builds.
+
+## VC76 · DECRQSS's SGR reports the underline's colour: a divergence from Ghostty (2026-11-25)
+
+The code review's VP13. DECRQSS `m` answered the flags, the underline's
+kind and the two colours, but not SGR 58, the underline's colour, which
+the core keeps; a program that saves its rendition through DECRQSS and
+sets it again lost the colour. Ghostty's answer leaves it out the same
+way (`Terminal.printAttributes` writes `fg_color` and `bg_color` only).
+The core now adds it after the background, in the colon form the others
+take, `58:5:n` for a palette colour (there is no short form below 16)
+and `58:2::r:g:b` for a direct one. Gilbert's rule for VP9 (VC73) is
+taken: where Ghostty's answer drops what a program asked to keep, the
+core diverges. No replay case asks DECRQSS with SGR 58 set, so none
+changes; one pinning Ghostty's side is for nene.
+
+Tested: vt's Replies suite, "DECRQSS's SGR reports the underline's
+colour": `4:3;58:2::255:0:0` answers `0;4:3;58:2::255:0:0`, `0;4;58;5;3`
+`0;4;58:5:3`, then `58:5:200` `0;4;58:5:200`, then SGR 59 `0;4`. It
+fails on the old answer.

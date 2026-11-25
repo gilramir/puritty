@@ -6,6 +6,7 @@ module Vt.Scroll exposing
     , historyBound
     , imagesMoved
     , keepsScrollback
+    , leavesScreen
     , lineFeed
     , noteReach
     , pushedRows
@@ -179,7 +180,7 @@ feedImaged t =
             pushedRows t
 
         inPlace =
-            not (t.top == 0 && t.left == 0 && t.right == t.cols - 1 && (not (isAlt t) || t.bottom == 0))
+            not (leavesScreen t)
 
         whole =
             isAlt t && wholeRegion t
@@ -227,6 +228,15 @@ imagesMoved delta inPlace pushed t =
                 pushedRows t
         in
         Placed.scrollMoved delta inPlace pushed now t
+
+
+{-| Whether rows scrolled up out of the region leave the screen, rather
+than being lost in place: the region starts at the top, spans every
+column, and on the alternate screen, which keeps no scrollback, is every
+row. SU and a line feed decide it so (review VP11, §VC75). -}
+leavesScreen : Term -> Bool
+leavesScreen t =
+    t.top == 0 && t.left == 0 && t.right == t.cols - 1 && (not (isAlt t) || t.bottom == t.rows - 1)
 
 
 {-| RI at the region's top with Kitty graphics placements (IM14; a

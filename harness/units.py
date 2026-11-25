@@ -106,8 +106,9 @@ SUITES = [
     # replies; 232 since VP9: APC, PM and SOS text read as UTF-8; 234 since
     # VI4's decoders in bytes: a GIF's indices a byte each; 235 since SX4:
     # a Sixel band's top where the band before ended; 236 since VP10:
-    # XTRESTORE with nothing saved, every private mode
-    Suite("vt", 236, runs_of("vt/tests")),
+    # XTRESTORE with nothing saved, every private mode; 237 since VP13:
+    # DECRQSS's SGR with the underline's colour
+    Suite("vt", 237, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

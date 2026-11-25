@@ -370,9 +370,9 @@ covered" sections. The larger gaps:
 |---|---|---|---|
 | [VP9](01-vt-parser-screen.md) | bug | confirmed | **fixed** A C1 byte inside an APC, SOS or PM string ends it, so UTF-8 text in such a string is cut and its tail printed |
 | [VP10](01-vt-parser-screen.md) | efficiency | confirmed | **fixed** XTRESTORE of a mode never saved builds a whole new terminal to read one default |
-| [VP11](01-vt-parser-screen.md) | bug | plausible | `feedImaged` decides "in place" with `t.bottom == 0` where SU uses `t.bottom == t.rows - 1` |
-| [VP12](01-vt-parser-screen.md) | bug | plausible | BS at the left margin above the scroll region, with reverse wraparound, moves the cursor down to the region's top |
-| [VP13](01-vt-parser-screen.md) | inaccuracy | confirmed | DECRQSS's SGR report leaves out the underline color |
+| [VP11](01-vt-parser-screen.md) | bug | plausible | **fixed** `feedImaged` decides "in place" with `t.bottom == 0` where SU uses `t.bottom == t.rows - 1` |
+| [VP12](01-vt-parser-screen.md) | bug | plausible | **checked, as Ghostty** BS at the left margin above the scroll region, with reverse wraparound, moves the cursor down to the region's top |
+| [VP13](01-vt-parser-screen.md) | inaccuracy | confirmed | **fixed** DECRQSS's SGR report leaves out the underline color |
 | [VP14](01-vt-parser-screen.md) | efficiency | confirmed | A truecolor SGR copies the parameter array for each color, against the comment beside it |
 | [VP15](01-vt-parser-screen.md) | inaccuracy | confirmed | Unknown private modes are stored for a DECRQM that never reads them |
 | [VP16](01-vt-parser-screen.md) | speed | plausible | Copying a long selection concatenates a string per cell and per row |
