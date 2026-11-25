@@ -2387,3 +2387,47 @@ stops at the block's end, `Sending.refsKept`, which `Main` uses too. The
 native app suite holds it (616): after SFTP is refused, refs 11 and
 10 + 100,000 are the upload's, 10 + 100,001 is not; the old rule took the
 last.
+
+## FT40 · One version, packets joined once, a chatty login shell, and counts that add up (2026-11-25)
+
+The code review's ST14 to ST18.
+
+**ST14.** `Sftp` took a VERSION packet whenever it came, and `Transfer`
+began its checks again at every `Ready`: in the middle of a batch the
+targets were stat'ed anew, the file moving replaced, its handle never
+closed and its job never counted. A second version is now `Broken` ("a
+second version"), and `Transfer` begins its checks on `Ready` only while
+it is `Starting`. `ssh-tests connection` holds it; the old code took the
+second as ready again.
+
+**ST15.** `Sftp.received` joined the bytes kept with each piece that
+came, so a packet announced at up to 16 MiB and sent a kilobyte a channel
+packet was copied whole for every piece, in the window's own loop. The
+pieces are now kept apart with their total, the announced length read
+from the first four bytes, and joined once the packet is whole.
+`ssh-tests connection` feeds a version a byte at a time and holds that it
+is read once whole; the old code read it too (the cost was the copies,
+which no test times).
+
+**ST16.** A shell job's status 0 was taken as done only when the whole of
+its output, trimmed, was the number of the name written; a login shell's
+startup files that print anything (an `echo` in `.bashrc`, which FT7
+already notes is common) made every upload "the command did not say which
+name it wrote", though it was written. The number is now read from the
+output's last line. `shell-transfer.py`'s `startup-prints` (sshd's
+`ForceCommand` printing "Welcome to the host" before each command): the
+old code failed the upload; it is done now.
+
+**ST17.** A shell upload that failed took its whole size off the total,
+though the bytes sent stayed in what was moved: `run` was cleared before
+`failJob` asked what was unsent. `ended` now gives back what the run had
+sent. No case fails an upload part way through, so this is not held by a
+test.
+
+**ST18.** `Transfer.remaining` said it counted the file moving but did
+not, so a broken stream's `Finished` was a file short of the jobs, and
+`cancel` added it by hand; and a broken download's part here was left.
+`remaining` counts the file moving, `cancel` no longer adds it, and a
+broken stream removes a download's part (the host's cannot be, the
+channel going). `ssh-tests connection` breaks a one-file upload once its
+part is opened: the old code finished it 0 failed, it is 1 now.

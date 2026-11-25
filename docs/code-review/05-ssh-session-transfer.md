@@ -150,6 +150,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - Confidence: confirmed (hostile or broken server only)
 - What: `onPacket` treats a type 2 packet as the version whenever it comes, and `Transfer.onEvent` answers every `Ready` with `check`: phase back to `Checking`, every target stat'ed again, and when those answer `checked` calls `startNext` (or asks `Conflicts` again) while a file may be moving. The moving run is replaced; its handle is never closed, its job gets no `Done` or `Failed`, and `Finished`'s counts no longer add up to the jobs. An `answer` given meanwhile is dropped because the phase is not `Asking`.
 - Fix: in `Sftp.onPacket`, a version after `ready` is `Broken`; in `Transfer`, `check` only from `Starting`.
+- Fixed: 2026-11-25, `docs/sftp.md` FT40. A second version is broken; checks begin on `Ready` only while starting; test.
 
 ### ST15 · `Sftp.received` copies the whole unfinished packet for every piece that arrives
 - Where: packages/ssh/src/Ssh/Sftp.geng:325-331 (`Bytes.flatten [ c.buffer, bytes ]`), 340-350
@@ -159,6 +160,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: each call joins the kept bytes and the new ones into a new `Bytes` before looking at the length. For answers that fit a channel packet this is one copy a piece; for a packet announced as up to 16 MiB it is a copy of everything so far for each piece.
 - Scenario: a server that sends a 16 MiB packet in 1 KiB channel packets makes the client copy about 128 GB in the window's own loop (the transfer and picker run in `Main`'s update), a stall of many seconds for 16 MiB of traffic. Honest servers stay under 256 KiB a packet, where it costs little.
 - Fix: keep the pieces in an array with their total length and join only once the announced length is there (the length itself needs at most the first 4 bytes); a much lower cap than 16 MiB would also do, since this client never asks for more than 32 KiB.
+- Fixed: 2026-11-25, `docs/sftp.md` FT40. Pieces kept apart and joined once the packet is whole; test of a byte-at-a-time version.
 
 ### ST16 · A shell-fallback job that succeeded is reported failed when the host's startup files print anything
 - Where: packages/ssh/src/Ssh/ShellTransfer.geng:646-657
@@ -168,6 +170,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: after status 0 the whole of standard output, trimmed, must be an integer (`String.trim |> String.toInt`), the number of the name written. The command runs under the login shell, and bash started by sshd sources `.bashrc` even for a command, zsh `.zshenv`. docs/sftp.md:226 itself notes that an `echo` in `.bashrc` is common.
 - Scenario: a host without SFTP whose `.bashrc` prints a line. Every upload is written, checked and renamed on the host, and then told "the command did not say which name it wrote: Welcome…" and counted failed; a retry meets its own file as a conflict.
 - Fix: read the last non-empty line of the output (as `lastLine` already does for errors), or print the number behind a marker the engine looks for.
+- Fixed: 2026-11-25, `docs/sftp.md` FT40. The name's number from the output's last line; shell-transfer case `startup-prints`.
 
 ### ST17 · `ShellTransfer.unsent` never sees the running command, so a failed upload leaves the total below what was moved
 - Where: packages/ssh/src/Ssh/ShellTransfer.geng:608-612 (`ended` clears `run` first), 715-749
@@ -177,6 +180,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: `failJob` and `skipJob` are reached only from `ended` (after `st = { st0 | run = Nothing }`) and from `startNext`/`upload` (no command running), so `unsent`'s `Just run -> if run.job == job then u.size - run.offset` branch is never taken and the whole size is always subtracted from `total`, while `moved` keeps the bytes already written.
 - Scenario: a 100 MB upload fails at 60 MB (the disk is full): `total` drops by 100 MB, `moved` keeps 60 MB, and the next `Progress` shows more bytes than the total and a negative time left.
 - Fix: pass the ended `Run` to `failJob` (or subtract `u.size - run.offset` in `ended` before clearing `run`).
+- Fixed: 2026-11-25, `docs/sftp.md` FT40. A failed upload's sent bytes kept in the total; no case drives it.
 
 ### ST18 · `Transfer`'s broken-stream path miscounts, and leaves the part
 - Where: packages/ssh/src/Ssh/Transfer.geng:327-329, 377-380 (`remaining`: "those from `next` on, and the one moving")
@@ -185,6 +189,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - Confidence: confirmed
 - What: `remaining st = Array.length st.jobs - st.next` does not include the file moving (`next` was advanced when it began), though its comment says it does; `cancel` adds `stopped` by hand for the same reason, the `Broken` branch does not. So after `Broken`, done + skipped + failed is one short of the jobs. The branch also sets `run = Nothing` without `dropRun`, so a download's local `.part` file is left (the channel is going, so the host's part cannot be removed, but the local one can).
 - Fix: count the moving job in `remaining` (and drop `stopped`), and queue the `RemoveFile` for a download's part on `Broken`.
+- Fixed: 2026-11-25, `docs/sftp.md` FT40. `remaining` counts the file moving; a broken download's part removed; test.
 
 ### ST19 · Every refusal of the SFTP channel is taken as "SFTP is turned off", and with the setting on it switches to shell commands
 - Where: app/src/Sending.geng:205-213; packages/ssh/src/Ssh/Session.geng:791-794; packages/ssh/src/Ssh/Connection.geng:573-618, 711-712

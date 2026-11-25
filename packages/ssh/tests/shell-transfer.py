@@ -130,6 +130,10 @@ CASES = [(name, setup, True, []) for name, setup in transfer.CASES if name != "r
     ("quotes-and-backslashes-tcsh", c_quotes_and_backslashes, True, login_shell("tcsh")),
     ("odd-names-fish", c_odd_names, True, login_shell("fish")),
     ("odd-names-tcsh", c_odd_names, True, login_shell("tcsh")),
+    # a host whose startup files print a line before every command, as a
+    # chatty .bashrc does: the name's number is still read (the code
+    # review's ST16)
+    ("startup-prints", c_not_allowed, True, ['ForceCommand /bin/sh -c "echo Welcome to the host; $SSH_ORIGINAL_COMMAND"']),
 ]
 # the EUC-KR and CP949 cases again, the host's commands run in a locale of
 # that character set, as on a host set up in it

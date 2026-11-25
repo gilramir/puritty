@@ -417,11 +417,11 @@ covered" sections. The larger gaps:
 | [ST11](05-ssh-session-transfer.md) | security | plausible | Nothing holds the server back when the window reads slower than the network: output queues without bound |
 | [ST12](05-ssh-session-transfer.md) | bug | plausible | The link is not closed when the loop ends by an error, and an agent's socket is never closed |
 | [ST13](05-ssh-session-transfer.md) | bug | confirmed | **fixed** The keepalive timer starts again on every turn of the loop, so a dead link is not noticed while anything else happens |
-| [ST14](05-ssh-session-transfer.md) | bug | confirmed | A second `SSH_FXP_VERSION` restarts the transfer's checks in the middle of a batch |
-| [ST15](05-ssh-session-transfer.md) | efficiency | confirmed | `Sftp.received` copies the whole unfinished packet for every piece that arrives |
-| [ST16](05-ssh-session-transfer.md) | bug | confirmed | A shell-fallback job that succeeded is reported failed when the host's startup files print anything |
-| [ST17](05-ssh-session-transfer.md) | dead-code | confirmed | `ShellTransfer.unsent` never sees the running command, so a failed upload leaves the total below what was moved |
-| [ST18](05-ssh-session-transfer.md) | bug | confirmed | `Transfer`'s broken-stream path miscounts, and leaves the part |
+| [ST14](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A second `SSH_FXP_VERSION` restarts the transfer's checks in the middle of a batch |
+| [ST15](05-ssh-session-transfer.md) | efficiency | confirmed | **fixed** `Sftp.received` copies the whole unfinished packet for every piece that arrives |
+| [ST16](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A shell-fallback job that succeeded is reported failed when the host's startup files print anything |
+| [ST17](05-ssh-session-transfer.md) | dead-code | confirmed | **fixed** `ShellTransfer.unsent` never sees the running command, so a failed upload leaves the total below what was moved |
+| [ST18](05-ssh-session-transfer.md) | bug | confirmed | **fixed** `Transfer`'s broken-stream path miscounts, and leaves the part |
 | [ST19](05-ssh-session-transfer.md) | inaccuracy | confirmed | Every refusal of the SFTP channel is taken as "SFTP is turned off", and with the setting on it switches to shell commands |
 | [ST20](05-ssh-session-transfer.md) | speed | confirmed | An upload opens, seeks and closes the local file for every 32 KiB, and reads 64 KiB to use 32 |
 | [ST21](05-ssh-session-transfer.md) | bug | plausible | A batch that has shown no progress cannot be cancelled, and nothing times it out |

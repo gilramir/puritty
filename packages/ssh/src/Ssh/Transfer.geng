@@ -322,11 +322,36 @@ onEvent e st =
     else
         when e is
             Sftp.Ready _ ->
-                check st
+                if st.phase == Starting then
+                    check st
+
+                else
+                    -- a second version, which `Sftp` refuses; the checks are
+                    -- not begun again in the middle of the batch (the code
+                    -- review's ST14)
+                    st
 
             Sftp.Broken why ->
+                let
+                    -- a download's part here removed; the host's cannot
+                    -- be, the channel going (ST18)
+                    parted =
+                        when st.run is
+                            Just run ->
+                                when Array.get run.job st.jobs is
+                                    Just (Download d) ->
+                                        doLocal (RemoveFile { job = run.job, path = d.part }) st
+
+                                    _ ->
+                                        -- an upload's part is the host's
+                                        meant Reason.NotSet st
+
+                            Nothing ->
+                                -- no file moving
+                                meant Reason.NotOpen st
+                in
                 emit (Finished { done = st.done, skipped = st.skipped, failed = st.failed + remaining st, cancelled = False })
-                    (emit (Broken why) { st | phase = Over, run = Nothing })
+                    (emit (Broken why) { parted | phase = Over, run = Nothing })
 
             Sftp.Answer a ->
                 when Dict.get a.id st.waiting is
@@ -377,7 +402,16 @@ ended st =
 {-| Jobs not yet over: those from `next` on, and the one moving. -}
 remaining : State -> Int
 remaining st =
-    Array.length st.jobs - st.next
+    -- `next` is past the moving one, which is counted too (the code
+    -- review's ST18)
+    Array.length st.jobs
+        - st.next
+        + (if st.run /= Nothing then
+            1
+
+           else
+            0
+          )
 
 
 {-| Every upload's target looked at, and every download's source, before
@@ -512,16 +546,9 @@ cancel (Transfer st) =
 
                     Nothing ->
                         meant Reason.NotOpen st
-
-            -- the file stopped is not done either
-            stopped =
-                if st.run /= Nothing then
-                    1
-
-                else
-                    0
         in
-        finish (over True { cleaned | skipped = cleaned.skipped + remaining cleaned + stopped, next = Array.length cleaned.jobs })
+        -- the file stopped is not done either: `remaining` counts it
+        finish (over True { cleaned | skipped = cleaned.skipped + remaining st, next = Array.length cleaned.jobs })
 
 
 {-| A run given up: its handle closed, and its part removed, on the host

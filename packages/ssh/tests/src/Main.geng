@@ -626,6 +626,129 @@ connectionSuite =
                         else
                             Just "the interval left is wrong"
                     )
+               , caseTest "SFTP's version is taken once; a second is broken (review ST14)"
+                    (\_ ->
+                        let
+                            version =
+                                Bytes.flatten [ Wire.writeUint32 5, Wire.writeByte 2, Wire.writeUint32 3 ]
+
+                            first =
+                                Sftp.received version Sftp.start.client
+
+                            second =
+                                Sftp.received version first.client
+
+                            kinds events =
+                                Array.map
+                                    (\e ->
+                                        when e is
+                                            Sftp.Ready _ ->
+                                                "ready"
+
+                                            Sftp.Broken _ ->
+                                                "broken"
+
+                                            _ ->
+                                                "other"
+                                    )
+                                    events
+                        in
+                        when kinds first.events ++ kinds second.events is
+                            [ "ready", "broken" ] ->
+                                Nothing
+
+                            got ->
+                                Just (String.join "," got)
+                    )
+               , caseTest "a packet that comes a byte at a time is read whole once it is there (review ST15)"
+                    (\_ ->
+                        let
+                            version =
+                                Bytes.flatten [ Wire.writeUint32 5, Wire.writeByte 2, Wire.writeUint32 3 ]
+
+                            fed =
+                                Array.foldl
+                                    (\i acc ->
+                                        let
+                                            step =
+                                                Sftp.received (Bytes.slice i (i + 1) version) acc.client
+                                        in
+                                        { client = step.client, events = acc.events + Array.length step.events }
+                                    )
+                                    { client = Sftp.start.client, events = 0 }
+                                    (Array.range 0 (Bytes.length version - 1))
+                        in
+                        if fed.events == 1 then
+                            Nothing
+
+                        else
+                            Just (String.fromInt fed.events ++ " events")
+                    )
+               , caseTest "a transfer broken while a file moves counts that file failed (review ST18)"
+                    (\_ ->
+                        let
+                            upload =
+                                Transfer.Upload { local = Path.fromString "/tmp/a", size = Int64.fromInt 100, mtime = Nothing, dir = Bytes.fromString "/r", name = Bytes.fromString "a" }
+
+                            -- every request the transfer sent, answered "no such file"
+                            answers sent =
+                                answersFrom sent 0 []
+
+                            begun =
+                                Transfer.start { piece = 32768, most = 64 } [ upload ]
+
+                            versioned =
+                                Transfer.received (Bytes.flatten [ Wire.writeUint32 5, Wire.writeByte 2, Wire.writeUint32 3 ]) begun.transfer
+
+                            -- the checks answered until the file is begun: its
+                            -- part opened
+                            moving =
+                                Array.foldl
+                                    (\_ acc ->
+                                        if Bytes.isEmpty acc.send || sentOpen acc.send then
+                                            acc
+
+                                        else
+                                            let
+                                                step =
+                                                    Transfer.received (answers acc.send) acc.transfer
+                                            in
+                                            { transfer = step.transfer, send = step.send }
+                                    )
+                                    { transfer = versioned.transfer, send = versioned.send }
+                                    (Array.range 1 8)
+
+                            -- a packet of no bytes: the stream is broken
+                            broken =
+                                Transfer.received (Wire.writeUint32 0) moving.transfer
+
+                            finished =
+                                Array.mapAndKeepJust
+                                    (\e ->
+                                        when e is
+                                            Transfer.Finished f ->
+                                                Just f
+
+                                            _ ->
+                                                Nothing
+                                    )
+                                    broken.events
+                        in
+                        if not (sentOpen moving.send) then
+                            Just "the file was never begun"
+
+                        else
+                            when finished is
+                                [ f ] ->
+                                    if f.failed == 1 && f.done == 0 && f.skipped == 0 then
+                                        Nothing
+
+                                    else
+                                        Just ("done " ++ String.fromInt f.done ++ ", skipped " ++ String.fromInt f.skipped ++ ", failed " ++ String.fromInt f.failed)
+
+                                _ ->
+                                    Just "not finished"
+                    )
                , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
                     (\_ ->
                         let
@@ -3290,3 +3413,46 @@ sizeOf parts =
 
         _ ->
             Nothing
+
+
+{-| The SFTP requests in `sent` (each its length, type and id), each
+answered with a status of 2, no such file; `acc` the answers so far. -}
+answersFrom : Bytes -> Int -> Array Bytes -> Bytes
+answersFrom sent at acc =
+    if at + 9 > Bytes.length sent then
+        Bytes.flatten acc
+
+    else
+        let
+            u32 i =
+                Wire.reader (Bytes.slice i (i + 4) sent) |> Wire.uint32Bits |> Result.map .value |> Result.withDefault 0
+
+            size =
+                u32 at
+
+            id =
+                u32 (at + 5)
+
+            status =
+                Bytes.flatten [ Wire.writeByte 101, Wire.writeUint32 id, Wire.writeUint32 2, Wire.writeText "no such file", Wire.writeText "" ]
+        in
+        answersFrom sent (at + 4 + max 1 size) (Array.pushLast (Bytes.flatten [ Wire.writeUint32 (Bytes.length status), status ]) acc)
+
+
+{-| Whether `sent` holds an SFTP OPEN (3). -}
+sentOpen : Bytes -> Bool
+sentOpen sent =
+    sentOpenFrom sent 0
+
+
+sentOpenFrom : Bytes -> Int -> Bool
+sentOpenFrom sent at =
+    if at + 5 > Bytes.length sent then
+        False
+
+    else
+        let
+            size =
+                Wire.reader (Bytes.slice at (at + 4) sent) |> Wire.uint32Bits |> Result.map .value |> Result.withDefault 0
+        in
+        Bytes.get (at + 4) sent == Just (UInt8.fromInt 3) || sentOpenFrom sent (at + 4 + max 1 size)

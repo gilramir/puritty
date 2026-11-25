@@ -121,7 +121,11 @@ whether the server renames as POSIX does; whether it has said its
 version, and whether the stream broke. -}
 type Client
     = Client
-        { buffer : Bytes
+        -- what has come of a packet not yet whole, its pieces kept apart
+        -- and joined once the packet's length has come (the code review's
+        -- ST15)
+        { pieces : Array Bytes
+        , have : Int
         , nextId : Int
         , posixRename : Bool
         , ready : Bool
@@ -177,7 +181,7 @@ codeName code =
 {-| The client, and its `INIT` to send first. -}
 start : { client : Client, send : Bytes }
 start =
-    { client = Client { buffer = Bytes.empty, nextId = 1, posixRename = False, ready = False, broken = False }
+    { client = Client { pieces = [], have = 0, nextId = 1, posixRename = False, ready = False, broken = False }
     , send = packet 1 (Wire.writeUint32 3)
     }
 
@@ -328,26 +332,65 @@ received bytes (Client c) =
         { client = Client c, events = [] }
 
     else
-        packets (Bytes.flatten [ c.buffer, bytes ]) 0 c []
+        let
+            pieces =
+                Array.pushLast bytes c.pieces
+
+            -- each held below 2^30: a packet is at most 16 MiB
+            have =
+                clamp 0 1000000000 c.have + clamp 0 1000000000 (Bytes.length bytes)
+
+            -- the packet's length, from its first four bytes
+            needed =
+                if have < 4 then
+                    Nothing
+
+                else
+                    Bytes.flatten (Array.takeFirst 4 pieces)
+                        |> Bytes.slice 0 4
+                        |> Wire.reader
+                        |> Wire.uint32
+                        |> Result.toMaybe
+                        |> Maybe.map (\size -> 4 + size.value)
+        in
+        when needed is
+            Just n ->
+                if have < n && n <= 4 + 16777216 then
+                    -- not whole yet: kept, not joined
+                    { client = Client { c | pieces = pieces, have = have }, events = [] }
+
+                else
+                    packets (Bytes.flatten pieces) 0 { c | pieces = [], have = 0 } []
+
+            Nothing ->
+                -- fewer than four bytes yet, or a length that does not read,
+                -- which `packets` says
+                meant Reason.NotYet
+                    (if have < 4 then
+                        { client = Client { c | pieces = pieces, have = have }, events = [] }
+
+                     else
+                        packets (Bytes.flatten pieces) 0 { c | pieces = [], have = 0 } []
+                    )
 
 
-packets : Bytes -> Int -> { buffer : Bytes, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool } -> Array Event -> { client : Client, events : Array Event }
+packets : Bytes -> Int -> { pieces : Array Bytes, have : Int, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool } -> Array Event -> { client : Client, events : Array Event }
 packets all at c events =
     let
         left =
             Bytes.length all - at
     in
     if left < 4 then
-        { client = Client { c | buffer = Bytes.slice at (Bytes.length all) all }, events = events }
+        { client = Client { c | pieces = [ Bytes.slice at (Bytes.length all) all ], have = Bytes.length all - at }, events = events }
 
     else
         when Wire.uint32 (Wire.reader (Bytes.slice at (at + 4) all)) is
             Ok size ->
                 if size.value < 1 || size.value > 16777216 then
-                    { client = Client { c | broken = True, buffer = Bytes.empty }, events = Array.pushLast (Broken ("a packet of " ++ String.fromInt size.value ++ " bytes")) events }
+                    { client = Client { c | broken = True, pieces = [], have = 0 }, events = Array.pushLast (Broken ("a packet of " ++ String.fromInt size.value ++ " bytes")) events }
 
                 else if left < 4 + size.value then
-                    { client = Client { c | buffer = Bytes.slice at (Bytes.length all) all }, events = events }
+                    { client = Client { c | pieces = [ Bytes.slice at (Bytes.length all) all ], have = Bytes.length all - at }, events = events }
 
                 else
                     let
@@ -355,16 +398,16 @@ packets all at c events =
                             onPacket (Bytes.slice (at + 4) (at + 4 + size.value) all) c
                     in
                     if read.state.broken then
-                        { client = Client { read.state | buffer = Bytes.empty }, events = Array.pushLast read.event events }
+                        { client = Client { read.state | pieces = [], have = 0 }, events = Array.pushLast read.event events }
 
                     else
                         packets all (at + 4 + size.value) read.state (Array.pushLast read.event events)
 
             Err why ->
-                meant Reason.FromOutside { client = Client { c | broken = True, buffer = Bytes.empty }, events = Array.pushLast (Broken ("a packet's length that does not read: " ++ why)) events }
+                meant Reason.FromOutside { client = Client { c | broken = True, pieces = [], have = 0 }, events = Array.pushLast (Broken ("a packet's length that does not read: " ++ why)) events }
 
 
-onPacket : Bytes -> { buffer : Bytes, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool } -> { state : { buffer : Bytes, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool }, event : Event }
+onPacket : Bytes -> { pieces : Array Bytes, have : Int, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool } -> { state : { pieces : Array Bytes, have : Int, nextId : Int, posixRename : Bool, ready : Bool, broken : Bool }, event : Event }
 onPacket p c =
     let
         r =
@@ -375,7 +418,13 @@ onPacket p c =
     in
     when Wire.byte r is
         Ok kind ->
-            if kind.value == 2 then
+            if kind.value == 2 && c.ready then
+                -- the version comes once, first: a second, in the middle of
+                -- a batch, is not SFTP as it was begun (the code review's
+                -- ST14)
+                broken "a second version"
+
+            else if kind.value == 2 then
                 when Wire.uint32Bits kind.next is
                     Ok v ->
                         if v.value /= 3 then

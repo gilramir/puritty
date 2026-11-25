@@ -623,6 +623,12 @@ ended run st0 =
         st =
             { st0 | run = Nothing }
 
+        -- a job failed: what of it was sent is still sent, so the total
+        -- loses only the rest; `run` is cleared before `failJob` reads
+        -- it, which took the whole size off (the code review's ST17)
+        failing reason =
+            failJob run.job reason { st | total = st.total + sentOf run st0 }
+
         said =
             Bytes.toStringLossy (Bytes.flatten run.err) |> String.trim
 
@@ -657,8 +663,10 @@ ended run st0 =
 
     else if run.status == Just 0 && run.why == Nothing then
         let
+            -- the name's number on the last line: a login shell's startup
+            -- files may print before it (the code review's ST16)
             n =
-                Bytes.toStringLossy (Bytes.flatten run.out) |> String.trim |> String.toInt
+                Bytes.toStringLossy (Bytes.flatten run.out) |> lastLine |> String.trim |> String.toInt
 
             named =
                 when n |> Maybe.andThen (\i -> Array.get (i - 1) run.names) is
@@ -666,7 +674,7 @@ ended run st0 =
                         doneJob run.job name st
 
                     Nothing ->
-                        meant Reason.FromOutside (failJob run.job ("the command did not say which name it wrote: " ++ Bytes.toStringLossy (Bytes.flatten run.out)) st)
+                        meant Reason.FromOutside (failing ("the command did not say which name it wrote: " ++ Bytes.toStringLossy (Bytes.flatten run.out)))
         in
         when Array.get run.job st.jobs is
             Just (MakeDir m) ->
@@ -682,7 +690,20 @@ ended run st0 =
                 meant Reason.NotKnown named
 
     else
-        failJob run.job why st
+        failing why
+
+
+{-| The bytes of an upload the run had sent, which a failure keeps in the
+total. -}
+sentOf : Run -> State -> Int64
+sentOf run st =
+    when Array.get run.job st.jobs is
+        Just (Upload _) ->
+            run.offset
+
+        _ ->
+            -- a folder made, or a job not known: nothing sent
+            meant Reason.NotSet (Int64.fromInt 0)
 
 
 lastLine : String -> String
