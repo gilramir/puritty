@@ -104,8 +104,9 @@ SUITES = [
     # 226 since VI10 and VI20: Sixel's painting held, broken files taken;
     # 230 since VP5 and VP6: the tables compacted, four; 231 since VI4's
     # replies; 232 since VP9: APC, PM and SOS text read as UTF-8; 234 since
-    # VI4's decoders in bytes: a GIF's indices a byte each
-    Suite("vt", 234, runs_of("vt/tests")),
+    # VI4's decoders in bytes: a GIF's indices a byte each; 235 since SX4:
+    # a Sixel band's top where the band before ended
+    Suite("vt", 235, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

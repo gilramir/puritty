@@ -14,11 +14,18 @@ data, the raster's size at least), the second paints. At most 10,000 by
 10,000 pixels, what is past it cut off, and none whose RGBA is over the
 terminal's image limit: refused after the first pass, before the canvas
 is allocated (`docs/images.md` IM5; review VI2).
+
+A band's top is where the band before it ended, as WT has it: `-` moves
+down six times the aspect then in force, so a band never paints above
+the one before. The second pass paints into a ring of the rows a band
+can reach, and each row above the band's top, which nothing can paint
+again, is written into the image's `Bytes` once (`images-sixel.md` SX4).
 -}
 
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
+import Bytes.Builder
 import Math
 import UInt8
 import Vt.Cell exposing (byteAt)
@@ -64,6 +71,7 @@ read (0 none) and them, the aspect, and what the first pass measures. -}
 type alias Pass =
     { x : Int
     , band : Int
+    , top : Int
     , color : Int
     , palette : Array Int
     , repeat : Int
@@ -72,6 +80,7 @@ type alias Pass =
     , aspect : Int
     , maxX : Int
     , maxBand : Int
+    , maxBottom : Int
     , rasterW : Int
     , rasterH : Int
     }
@@ -79,7 +88,7 @@ type alias Pass =
 
 start : Int -> Pass
 start aspect =
-    { x = 0, band = 0, color = 15, palette = vt340, repeat = 1, command = 0, params = [], aspect = aspect, maxX = 0, maxBand = -1, rasterW = 0, rasterH = 0 }
+    { x = 0, band = 0, top = 0, color = 15, palette = vt340, repeat = 1, command = 0, params = [], aspect = aspect, maxX = 0, maxBand = -1, maxBottom = 0, rasterW = 0, rasterH = 0 }
 
 
 {-| The image of a Sixel string's parameters and its data (what follows
@@ -103,7 +112,7 @@ decode most params data =
             clamp 0 limit (max measured.maxX measured.rasterW)
 
         height =
-            clamp 0 limit (max ((measured.maxBand + 1) * 6 * aspect) measured.rasterH)
+            clamp 0 limit (max measured.maxBottom measured.rasterH)
     in
     if width == 0 || height == 0 || width * height > most // 4 then
         Nothing
@@ -117,15 +126,27 @@ decode most params data =
                 else
                     rgbaOf (Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get 0 vt340))
 
+            -- the rows a band can reach: six of the largest aspect, 10
+            ring =
+                clamp 1 60 height
+
             canvas =
-                filled (width * height * 4) fill
+                { width = width
+                , height = height
+                , rows = ring
+                , top = 0
+                , ring = filled (ring * width * 4) fill
+                , out = Bytes.Builder.empty (width * height * 4)
+                , fill = fill
+                , budget = 16 * width * height
+                }
 
             painted =
-                run data (Bytes.length data) 0 (start (aspectOf p1)) (Just { width = width, height = height, out = canvas, budget = 16 * width * height })
+                run data (Bytes.length data) 0 (start (aspectOf p1)) (Just canvas)
         in
         when painted.out is
-            Just o ->
-                Just { width = width, height = height, pixels = Bytes.fromUInt8s (Builder.toArray o.out), aspect = aspect, bands = measured.maxBand + 1 }
+            Just c ->
+                Just { width = width, height = height, pixels = Bytes.Builder.toBytes (flushed c height False).out, aspect = aspect, bands = measured.maxBand + 1 }
 
             Nothing ->
                 meant Reason.NotKnown Nothing
@@ -160,24 +181,87 @@ rgbaOf rgb =
     [ Bitwise.and 0xFF (Bitwise.shiftRightZfBy 16 rgb), Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 rgb), Bitwise.and 0xFF rgb, 255 ]
 
 
-{-| The image painted: its size, its pixels, and how many pixel writes are
-left (`budget`): sixteen for each of its pixels, where an image paints
-each about once, so that repeats painted over and over end (the code
-review's VI10: `!10000~` is 9 bytes and up to 600,000 pixels). -}
+{-| The image painted: its size; the ring of `rows` rows from `top`, the
+band's, row `y` at `y` modulo `rows`; the rows above `top`, written; the
+pixel unset ones are; and how many pixel writes are left (`budget`):
+sixteen for each of its pixels, where an image paints each about once,
+so that repeats painted over and over end (the code review's VI10:
+`!10000~` is 9 bytes and up to 600,000 pixels). -}
 type alias Canvas =
-    { width : Int, height : Int, out : Builder UInt8, budget : Int }
+    { width : Int
+    , height : Int
+    , rows : Int
+    , top : Int
+    , ring : Builder UInt8
+    , out : Bytes.Builder.Builder
+    , fill : Array Int
+    , budget : Int
+    }
+
+
+{-| The rows from the ring's top to `to` written, as nothing paints them
+again, the image's height the most; each one's place in the ring made
+the unset pixel again when `refill` (a row below will take it). -}
+flushed : (taken c : Canvas) -> Int -> Bool -> Canvas
+flushed c to refill =
+    let
+        last =
+            min to c.height
+    in
+    if c.top >= last then
+        c
+
+    else
+        let
+            width =
+                clamp 0 10000 c.width
+
+            slot =
+                modBy (clamp 1 60 c.rows) (clamp 0 1000000 c.top)
+
+            o =
+                clamp 0 2400000 (slot * width * 4)
+
+            size =
+                width * 4
+
+            -- the row copied out whole: a slice, its bytes, appended
+            out =
+                Bytes.Builder.append (Bytes.fromUInt8s (Builder.slice o (o + size) c.ring)) c.out
+
+            ring =
+                if refill then
+                    setFill o size c.fill c.ring
+
+                else
+                    c.ring
+        in
+        flushed { c | top = c.top + 1, out = out, ring = ring } to refill
+
+
+{-| `size` bytes from `o` made the unset pixel over and over. -}
+setFill : (o : Int where 0 <= o && o <= 2400000) -> Int -> Array Int -> (taken ring : Builder UInt8) -> Builder UInt8
+setFill o size fill ring =
+    let
+        first =
+            Array.foldl
+                (\v acc -> { at = acc.at + 1, out = Builder.set (o + clamp 0 3 acc.at) (UInt8.fromInt v) acc.out })
+                { at = 0, out = ring }
+                (Array.takeFirst 4 fill)
+    in
+    doubledAt o 4 (clamp 0 40000 size) first.out
 
 
 {-| A pass over the data from `i`: measuring when there is no canvas,
 painting into it when there is. -}
-run : Bytes -> Int -> Int -> Pass -> (taken canvas : Maybe Canvas) -> { aspect : Int, maxX : Int, maxBand : Int, rasterW : Int, rasterH : Int, out : Maybe Canvas }
+run : Bytes -> Int -> Int -> Pass -> (taken canvas : Maybe Canvas) -> { aspect : Int, maxX : Int, maxBand : Int, maxBottom : Int, rasterW : Int, rasterH : Int, out : Maybe Canvas }
 run data n i p canvas =
     if i >= n then
         let
             done =
                 finish p
         in
-        { aspect = done.aspect, maxX = done.maxX, maxBand = done.maxBand, rasterW = done.rasterW, rasterH = done.rasterH, out = canvas }
+        { aspect = done.aspect, maxX = done.maxX, maxBand = done.maxBand, maxBottom = done.maxBottom, rasterW = done.rasterW, rasterH = done.rasterH, out = canvas }
 
     else
         let
@@ -254,6 +338,12 @@ run data n i p canvas =
 
                             else
                                 q.maxBand
+                        , maxBottom =
+                            if v /= 0 then
+                                max q.maxBottom (q.top + 6 * clamp 1 10 q.aspect)
+
+                            else
+                                q.maxBottom
                     }
                     painted
 
@@ -264,7 +354,23 @@ run data n i p canvas =
                 run data n (i + 1) { q | x = 0 } canvas
 
             else if b == 0x2D then
-                run data n (i + 1) { q | x = 0, band = min 10000 (q.band + 1) } canvas
+                -- down a band of the aspect in force, below the one before
+                let
+                    below =
+                        min 1000000 (clamp 0 1000000 q.top + 6 * clamp 1 10 q.aspect)
+                in
+                run data
+                    n
+                    (i + 1)
+                    { q | x = 0, band = min 10000 (q.band + 1), top = below }
+                    (when canvas is
+                        Just c ->
+                            Just (flushed c below True)
+
+                        Nothing ->
+                            -- the first pass, measuring
+                            meant Reason.NotSet Nothing
+                    )
 
             else
                 -- a control, or a byte no command has: ignored
@@ -439,7 +545,7 @@ paint c p v count =
         -- each of the six bits set, `aspect` rows each, a run of `cols`
         -- pixels a row: counters, not arrays of rows and columns built a
         -- data byte (VI10)
-        paintBits c { rgb = rgb, top = p.band * 6 * aspect, aspect = aspect, x0 = x0, cols = cols, v = v } 0
+        paintBits c { rgb = rgb, top = p.top, aspect = aspect, x0 = x0, cols = cols, v = v } 0
 
 
 paintBits : (taken c : Canvas) -> { rgb : Int, top : Int, aspect : Int, x0 : Int, cols : Int, v : Int } -> Int -> Canvas
@@ -451,7 +557,7 @@ paintBits c r k =
         paintBits c r (k + 1)
 
     else
-        -- a band's rows are at most 10,000 bands of 60: the sum stays small
+        -- a band's top is at most 1,000,000: the sum stays small
         paintBits (paintRows c r (clamp 0 1000000 (clamp 0 1000000 r.top + k * clamp 1 10 r.aspect)) 0) r (k + 1)
 
 
@@ -469,30 +575,31 @@ set copied after itself, doubling. -}
 paintRun : (taken c : Canvas) -> { rgb : Int, top : Int, aspect : Int, x0 : Int, cols : Int, v : Int } -> Int -> Canvas
 paintRun c r y =
     let
-        -- the canvas is at most 10,000 pixels a side (`limit`)
-        row =
-            clamp 0 10000 y
+        -- the canvas is at most 10,000 pixels a side (`limit`), its ring
+        -- at most 60 rows
+        slot =
+            modBy (clamp 1 60 c.rows) (clamp 0 1000000 y)
 
         width =
             clamp 0 10000 c.width
 
         o =
-            clamp 0 400080000 ((row * width + clamp 0 10000 r.x0) * 4)
+            clamp 0 2400000 ((slot * width + clamp 0 10000 r.x0) * 4)
 
         size =
             clamp 0 10000 r.cols * 4
 
         first =
-            c.out
+            c.ring
                 |> Builder.set o (UInt8.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 16 r.rgb)))
                 |> Builder.set (o + 1) (UInt8.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 r.rgb)))
                 |> Builder.set (o + 2) (UInt8.fromInt (Bitwise.and 0xFF r.rgb))
                 |> Builder.set (o + 3) (UInt8.fromInt 255)
     in
-    { c | out = doubledAt o 4 size first, budget = c.budget - r.cols }
+    { c | ring = doubledAt o 4 size first, budget = c.budget - r.cols }
 
 
-doubledAt : (o : Int where 0 <= o && o <= 400080000) -> (done : Int where 0 <= done) -> (size : Int where 0 <= size && size <= 40000) -> (taken out : Builder UInt8) -> Builder UInt8
+doubledAt : (o : Int where 0 <= o && o <= 2400000) -> (done : Int where 0 <= done) -> (size : Int where 0 <= size && size <= 40000) -> (taken out : Builder UInt8) -> Builder UInt8
 doubledAt o done size out =
     if done <= 0 || done >= size then
         out

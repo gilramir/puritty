@@ -122,3 +122,52 @@ know the cell's pixels. Done in `images.md` IM21.
   with Sixel keeps the image itself and its control mode may not pass it
   on); text written over an image erasing that cell's pixels (SX2 8).
 
+
+## SX4 · A band below the one before, and the image written a row at a time (2026-11-25)
+
+After the code review's VI4 (`images.md` IM39), whose decoders now write
+each image once into `Bytes`, Gilbert asked for Sixel's too. Its canvas
+was one `Builder UInt8` of the whole image, a byte an item natively,
+copied into `Bytes` at the end: twice the pixels at its peak.
+
+**A band's top.** A band's top was its number times six times the aspect
+in force when it painted, so raster attributes that changed the aspect
+after a `-` moved every band, those painted already too, and the image's
+height was taken from the last aspect alone. WT keeps a cursor in pixels
+instead: `-` moves it down six times the aspect then in force
+(`SixelParser::_executeNextLine`, `_imageCursor.y += _sixelHeight`), so
+a band never paints above the one before. The core now does as WT does:
+the pass keeps the band's top in pixels, and the image's height is the
+lowest bottom of a band holding data (or the raster's, if more). For an
+image whose aspect does not change after its first band, which is every
+one seen, nothing differs. `"2;1#1;2;100;0;0~-"1;1#2;2;0;100;0~` is 12
+rows of red over 6 of green, 18 tall; it was 12 tall, the green band
+painted over the red's lower half.
+
+**The canvas.** Since a band never goes up, every row above the band's
+top is done. The second pass paints into a ring of the rows a band can
+reach (six times the largest aspect, ten: sixty rows, fewer for a
+shorter image), row `y` at `y` modulo the ring's rows; at each `-` the
+rows above the new top are copied out whole (`Builder.slice`, then
+`Bytes.fromUInt8s`, appended to a `Bytes.Builder` sized to the image),
+and their places in the ring made the unset pixel again. At the end the
+rest are written, past the ring the unset pixel.
+
+Measured with `harness/dump/core-dump` built with the app's limits, peak
+RSS and time by `/usr/bin/time`:
+
+| input | its bytes | pixels | before | after |
+|---|---|---|---|---|
+| 8000 by 8004, two colours in runs | 23 KB | 256 MB | 510 MB, 1.28 s | 263 MB, 1.09 s |
+| 3000 by 2004, four colours of noise | 4.0 MB | 24 MB | 65 MB, 0.31 s | 42 MB, 0.31 s |
+
+A first form wrote each row out a byte at a time and took 1.82 s on the
+first.
+
+Tested: 230 Sixel strings, 1 to 333 columns by 1 to 25 bands, P1 0, 2,
+3, 7 and 9, P2 0 and 1, raster attributes setting the aspect and a size
+larger and smaller than the data, repeats, `$`, trailing `-`s, data past
+the raster's width: 228 give the same pixels before and after, one
+draws nothing either way, and the one whose aspect changes after a band
+is the case above. vt's Sixel suite
+gains it (235).
