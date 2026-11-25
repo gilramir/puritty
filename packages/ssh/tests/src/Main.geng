@@ -312,6 +312,74 @@ connectionSuite =
                         else
                             Nothing
                     )
+               , caseTest "a window of 2^32 - 1 adjusted by 2^32 - 1 stays open, not wrapped negative (review SC10)"
+                    (\_ ->
+                        let
+                            -- -1 writes as 0xFFFFFFFF
+                            wide =
+                                Connection.openDirect { host = "h", port = 22 }
+                                    |> .connection
+                                    |> Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 0, Wire.writeUint32 7, Wire.writeUint32 -1, Wire.writeUint32 32768 ])
+                                    |> .connection
+                                    |> Connection.received (Bytes.flatten [ Wire.writeByte 93, Wire.writeUint32 0, Wire.writeUint32 -1 ])
+                                    |> .connection
+
+                            sentData =
+                                Connection.write (Bytes.fromString "abc") wide
+                                    |> .send
+                                    |> Array.any (\p -> Bytes.get 0 p |> Maybe.map UInt8.toInt |> (==) (Just 94))
+                        in
+                        if sentData then
+                            Nothing
+
+                        else
+                            Just "nothing sent after the adjustment"
+                    )
+               , caseTest "a channel whose largest packet is below 256 bytes is refused (review SC11)"
+                    (\_ ->
+                        let
+                            tiny =
+                                Connection.openDirect { host = "h", port = 22 }
+                                    |> .connection
+                                    |> Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 0, Wire.writeUint32 7, Wire.writeUint32 1048576, Wire.writeUint32 1 ])
+                        in
+                        if refused tiny.events && not (Array.member Connection.Started tiny.events) then
+                            Nothing
+
+                        else
+                            Just "the channel was taken"
+                    )
+               , caseTest "an agent's message: waited for while short, taken whole, refused past 256 KiB (review SC12)"
+                    (\_ ->
+                        let
+                            whole =
+                                Bytes.flatten [ Wire.writeUint32 3, Bytes.fromString "abc", Bytes.fromString "de" ]
+
+                            answer b =
+                                when Agent.unframe b is
+                                    Ok (Just m) ->
+                                        "message " ++ Bytes.toStringLossy m.message ++ ", rest " ++ Bytes.toStringLossy m.rest
+
+                                    Ok Nothing ->
+                                        "more"
+
+                                    Err _ ->
+                                        "refused"
+                        in
+                        when
+                            [ answer (Bytes.slice 0 2 whole)
+                            , answer (Bytes.slice 0 6 whole)
+                            , answer whole
+                            , answer (Wire.writeUint32 262145)
+                            , answer (Wire.writeUint32 -1)
+                            ]
+                        is
+                            [ "more", "more", "message abc, rest de", "refused", "refused" ] ->
+                                Nothing
+
+                            got ->
+                                Just (String.join " / " got)
+                    )
                , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
                     (\_ ->
                         let
@@ -2314,10 +2382,13 @@ agentCall socket request =
 agentRead : Net.Socket -> Bytes -> Task Os.Error.Error Bytes
 agentRead socket got =
     when Agent.unframe got is
-        Just whole ->
+        Ok (Just whole) ->
             Task.succeed whole.message
 
-        Nothing ->
+        Err _ ->
+            Task.succeed Bytes.empty
+
+        Ok Nothing ->
             Net.read socket
                 |> Task.andThen
                     (\more ->

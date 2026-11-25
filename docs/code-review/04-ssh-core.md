@@ -99,6 +99,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: SC2 says "Rekey: after 1 GB or an hour" and SC8's table gives the timer "the rekey hour". Only the byte and packet counts in `rekeyIfDue` begin an exchange; `Transport.rekey` is called from the tests alone. SC14's "Not yet" list names a time limit on an exchange, not this.
 - Scenario: an idle or low-traffic session keeps one set of keys for days. Not a break for AEAD ciphers at these volumes, but the document says otherwise.
 - Fix: have the session's timer call `Transport.rekey` an hour after `KeysChanged`, or strike the hour from SC2 and SC8. `Session.keysAt` wants another name (`typedAt`).
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC37: the hour struck from SC2 and SC8, as OpenSSH's client has no time limit by default; `keysAt` is `typedAt`.
 
 ### SC10 · `WINDOW_ADJUST` can wrap the server's window negative, after which the channel never sends again
 - Where: packages/ssh/src/Ssh/Connection.geng:620-623
@@ -108,6 +109,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `remoteWindow = min 2147483647 (ch.remoteWindow + more.value)`. Both terms can be up to 2^31 - 1 (`uint32Clamped`), `Int` wraps, and `min` then keeps the negative sum. `flushUpTo` and `canSend` need `remoteWindow > 0`.
 - Scenario: a server opens with a window of 2^31 or more (read as 2^31 - 1; the module's own comment says "some servers send 2^32 - 1") and later sends any adjustment larger than what the client has sent since, which RFC 4254 allows up to 2^32 - 1 in total. The window goes negative, typed keys queue in `pending` for ever, and nothing is reported. A hostile server can do it at will.
 - Fix: saturate without overflowing: `if more.value > 2147483647 - ch.remoteWindow then 2147483647 else ch.remoteWindow + more.value`.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC37. The window's sum saturates before it is made; `ssh-tests connection` test.
 
 ### SC11 · A server that names a tiny maximum packet makes the client cut a write into one packet a byte, recursively
 - Where: packages/ssh/src/Ssh/Connection.geng:560 (`max 1 (min opened.most maxPacket)`), 783-801 (`flushUpTo`)
@@ -117,6 +119,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: the server's maximum packet is floored at 1. `flushUpTo` sends `min pending window maxPacket` bytes and calls itself for the rest, and the call is not a tail call (`{ rest | sent = rest.sent + n }` after it), so its depth is the number of packets. Each packet is then framed, padded and sealed with a freshly keyed cipher.
 - Scenario: a hostile server confirms the session channel with maximum packet 1 and a large window; the user pastes 1 MB. That is a million nested calls (whether the native backend survives that depth I did not test) and a million sealed packets of about 36 bytes each in one update, with the window frozen meanwhile. With an honest server the depth is at most 2 MiB / 32 KiB = 64.
 - Fix: refuse a channel whose maximum packet is below some floor (OpenSSH servers send 32768; a few hundred bytes is a safe floor), and make the loop accumulate instead of recursing after the call.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC37. A largest packet below 256 bytes is refused, and the flush is a loop; `ssh-tests connection` test.
 
 ### SC12 · `Agent.unframe` cannot tell "not all here yet" from "will never be valid", and the reader has no size limit
 - Where: packages/ssh/src/Ssh/Agent.geng:32-39; packages/ssh/src/Ssh/Session.geng:582-598 (`agentRead`)
@@ -126,6 +129,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `unframe` maps every `Err` of `Wire.string` to `Nothing`, which `agentRead` takes as "read more" and answers by `Bytes.flatten [ got, more ]`. A length of 2^31 or more (which `Wire.uint32` refuses) is therefore waited for until the agent closes, and any length below it is believed: up to 2 GiB is buffered, each read copying all that came before. OpenSSH refuses an agent reply over 256 KiB (`MAX_AGENT_REPLY_LEN`). There is also no time limit: `agentOf` runs before the transport starts, so an agent that accepts the connection and says nothing stops the session from ever connecting.
 - Scenario: `IdentityAgent` or `SSH_AUTH_SOCK` points at something that is not a healthy agent (a forwarded socket whose far end is stuck, a wrong pipe). The session hangs at "reading keys" or grows without bound.
 - Fix: `unframe : Bytes -> Result String (Maybe {...})`: `Err` for a length over 256 KiB, `Ok Nothing` for a short buffer. Keep the pieces in an array and flatten once. Race the call against a timer in the session.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC37. `unframe` answers short, whole or refused (past 256 KiB); `agentRead` flattens once. No timer on the agent yet.
 
 ### SC13 · The transport hands packets to the layers above before any keys exist when the server is not strict
 - Where: packages/ssh/src/Ssh/Transport.geng:563-565, 597-598, 603-604
@@ -135,6 +139,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: outside strict KEX, `dispatch` emits `Received payload` for any message outside 20..49 and `ExtInfo` for message 7, even while `st.ready` is `False`, that is, in the clear and before the host key's signature has been checked. OpenSSH's client has no handlers for such messages during the first exchange. The module's contract ("`Received`: a packet for the layers above") gives the caller no hint that it may be unauthenticated.
 - Scenario: none today: `Session.onEvent` drops them because `auth` and `connection` are still `Nothing`. But the safety is in the caller's ordering, not the transport, and a caller that created `Auth` early (the test driver's shape) would take a forged `USERAUTH_SUCCESS` or `server-sig-algs` from anyone on the path.
 - Fix: in `dispatch`, when `not st.ready`, fail on (or answer `UNIMPLEMENTED` to) anything that is not a transport or key exchange message, strict or not; take `EXT_INFO` only as the first packet after a `NEWKEYS` (RFC 8308 §2.4).
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC37. Before the first exchange is done only transport and exchange messages are taken, strict or not; scripted case `early-not-strict`.
 
 ### SC14 · `server-sig-algs` is thrown away when it arrives before the host key question is answered
 - Where: packages/ssh/src/Ssh/Session.geng:863-870, 1060-1076 (outside the slice; it is how `Auth.withServerSigAlgs` is fed)
@@ -144,6 +149,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `ExtInfo` is applied with `Maybe.map (Auth.withServerSigAlgs algorithms) st.auth`. `st.auth` is `Nothing` until `beginAuth`, which waits for the host key to be trusted; `beginAuth` then starts with `serverSigAlgs = []`. The server sends `EXT_INFO` once, right after `NEWKEYS`.
 - Scenario: first contact with a host (the user is looking at the trust question when `EXT_INFO` arrives) that takes only `rsa-sha2-256` for an RSA key: `algorithmFor` defaults to `rsa-sha2-512`, the key is refused, and the same login works on the second connection, when the key is known.
 - Fix: keep the list in `State` when it arrives and pass it in `Auth.begin`'s config.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC37. `server-sig-algs` kept in the session for authentication; sshd case `driver-trust-rsa-sha256-only` (refused before, logged in now).
 
 ### SC15 · `exit-status` of 2^31 or more is dropped, and a server's channel number of 2^31 or more ends the channel
 - Where: packages/ssh/src/Ssh/Connection.geng:734 (`Wire.uint32 request.rest`), 546-550 (`theirs`), 511 and 637

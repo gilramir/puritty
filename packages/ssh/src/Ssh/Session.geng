@@ -298,13 +298,17 @@ type alias State =
     -- itself only then (puritty `docs/saved-secrets.md` PW11)
     , hostKeyKnown : Bool
     , keysReady : Bool
+    -- the server's `server-sig-algs` (RFC 8308), kept when it comes, which
+    -- is before authentication begins when the host key is asked about
+    -- (the code review's SC14)
+    , serverSigAlgs : Array String
     , waiting : Waiting
     , exitStatus : Maybe Int
     , unanswered : Int
     , done : Bool
-    -- when keys last came, on the monotonic clock, and whether the link
-    -- is paced for quiet (FT17)
-    , keysAt : Int64
+    -- when a key was last typed, on the monotonic clock, and whether the
+    -- link is paced for quiet (FT17); `keysAt` until the code review's SC9
+    , typedAt : Int64
     , quiet : Bool
     }
 
@@ -518,11 +522,12 @@ session permissions options role label link notices =
                                                         , hostKeyTrusted = False
                                                         , hostKeyKnown = False
                                                         , keysReady = False
+                                                        , serverSigAlgs = []
                                                         , waiting = NotWaiting
                                                         , exitStatus = Nothing
                                                         , unanswered = 0
                                                         , done = False
-                                                        , keysAt = Int64.fromInt 0
+                                                        , typedAt = Int64.fromInt 0
                                                         , quiet = False
                                                         }
                                                 )
@@ -656,21 +661,49 @@ linkTo permissions path =
 
 agentRead : Task Os.Error.Error Bytes -> Bytes -> Task Os.Error.Error Bytes
 agentRead readMore got =
-    when Agent.unframe got is
-        Just whole ->
-            Task.succeed whole.message
+    agentReadFrom readMore [ got ] (Bytes.length got)
+
+
+{-| The pieces read so far kept apart and flattened once, when what the
+message's length asks for has come, not flattened again at every read; a
+message no agent sends ends the read as the agent closing would (the code
+review's SC12). -}
+agentReadFrom : Task Os.Error.Error Bytes -> Array Bytes -> Int -> Task Os.Error.Error Bytes
+agentReadFrom readMore pieces have =
+    let
+        -- the bytes the message takes, read from its first four, which a
+        -- few pieces at most hold
+        need =
+            Agent.needed (Bytes.flatten (Array.takeFirst 4 pieces) |> Bytes.slice 0 4)
+
+        more =
+            readMore
+                |> Task.andThen
+                    (\read ->
+                        if Bytes.isEmpty read then
+                            Task.succeed Bytes.empty
+
+                        else
+                            agentReadFrom readMore (Array.pushLast read pieces) (have + Bytes.length read)
+                    )
+    in
+    when need is
+        Just n ->
+            if have < n && n <= 4 + 262144 then
+                more
+
+            else
+                when Agent.unframe (Bytes.flatten pieces) is
+                    Ok (Just message) ->
+                        Task.succeed message.message
+
+                    _ ->
+                        -- past what an agent sends: as if it closed
+                        meant Reason.FromOutside (Task.succeed Bytes.empty)
 
         Nothing ->
-            meant Reason.NotYet
-                readMore
-                    |> Task.andThen
-                        (\more ->
-                            if Bytes.isEmpty more then
-                                Task.succeed Bytes.empty
-
-                            else
-                                agentRead readMore (Bytes.flatten [ got, more ])
-                        )
+            -- not four bytes yet
+            meant Reason.NotYet more
 
 
 -- THE LOOP
@@ -771,7 +804,7 @@ loop other st =
                                                 st.options.pacing
 
                                             quiet =
-                                                Time.inMilliseconds now - st.keysAt >= Int64.fromInt p.quietMs
+                                                Time.inMilliseconds now - st.typedAt >= Int64.fromInt p.quietMs
                                         in
                                         if quiet && not st.quiet then
                                             -- no key for a while: more at once
@@ -822,7 +855,7 @@ onInput input st =
                          else
                             Task.succeed {}
                         )
-                            |> Task.andThen (\_ -> withConnection (Connection.write bytes) { st | keysAt = Time.inMilliseconds now, quiet = False })
+                            |> Task.andThen (\_ -> withConnection (Connection.write bytes) { st | typedAt = Time.inMilliseconds now, quiet = False })
                     )
 
         { input = Resize size } ->
@@ -968,7 +1001,7 @@ onEvent event st =
                         |> Maybe.map (\x -> String.split "," (Bytes.toStringLossy x.value.value))
                         |> Maybe.withDefault (meant Reason.FromOutside [])
             in
-            Task.succeed { st | auth = Maybe.map (Auth.withServerSigAlgs algorithms) st.auth }
+            Task.succeed { st | serverSigAlgs = algorithms, auth = Maybe.map (Auth.withServerSigAlgs algorithms) st.auth }
 
         Transport.Received payload ->
             when { auth = st.auth, connection = st.connection } is
@@ -1222,7 +1255,7 @@ beginAuth st =
                 { user = st.options.user
                 , identities = Array.map .identity st.identities
                 , methods = st.options.methods
-                , serverSigAlgs = []
+                , serverSigAlgs = st.serverSigAlgs
                 , passwordTries = 3
                 }
         in

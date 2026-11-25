@@ -64,7 +64,9 @@ what matters, not the coroutines.
 - *Extension negotiation* (RFC 8308): `ext-info-c` in the client's list,
   and the server's `server-sig-algs`, without which an RSA key cannot be
   used with SHA-2 (RFC 8332).
-- *Rekey* (§9; RFC 4344 §3): after 1 GB or an hour, or when the server asks.
+- *Rekey* (§9; RFC 4344 §3): after 1 GB, or when the server asks. Not after
+  an hour: OpenSSH's client has no time limit by default (`RekeyLimit`'s
+  "default none"), and the ciphers taken are AEAD (SC37, the code review's SC9).
   Channel output waits while a rekey runs, so channels never see one
   (`putty.md` §2.1, §3.3). The host key must not change in a rekey.
 - `IGNORE`, `DEBUG`, `UNIMPLEMENTED`, `DISCONNECT` with its reason codes.
@@ -550,7 +552,7 @@ With a built-in session, the same shape, with the source changed:
 | the charset filter, `Vt.feed` | unchanged, fed the channel's data |
 | the child's exit status | `exit-status` or `exit-signal`; a lost connection keeps the screen (SC9) |
 | `Process.kill` on close | `CLOSE` and `DISCONNECT` |
-| the timer | also keepalive, the connect timeout, the rekey hour |
+| the timer | also keepalive, the connect timeout |
 | — | an agent's pipe, raced while a request is out |
 
 What stays: the window, the frame rules, the core, the outbox discipline
@@ -1871,3 +1873,59 @@ signs. Before: "logged in", signed with the text it had kept. Now: "the
 key file WORK/userkeys/edcopy holds another key now", and the login
 fails, as the file's key is not authorized. 83 of 83 sshd cases pass,
 the passphrase cases among them.
+
+## SC37 · Windows, packets, the agent, the clear and server-sig-algs held (2026-11-25)
+
+The code review's SC9 to SC14.
+
+**SC10.** `WINDOW_ADJUST` added the server's amount to the window and took
+the least of the sum and 2^31 - 1; both can be near 2^31 (a server's
+window of 2^32 - 1 is read as 2^31 - 1), so the sum wrapped negative and
+the channel never sent again. Now the sum saturates before it is made.
+`ssh-tests connection`: a direct channel opened with a window of 2^32 - 1
+and adjusted by 2^32 - 1 still sends a write.
+
+**SC11.** A server's largest packet was taken down to one byte, and
+`flushUpTo` called itself for each packet, a call nested in the one
+before. A channel whose largest packet is below 256 bytes is now refused
+(`leastPacket`; OpenSSH names 32 KiB), and the flush is a loop carrying
+what it has sent. `ssh-tests connection`: a confirmation naming 1 byte is
+refused, the channel not started.
+
+**SC12.** `Agent.unframe` took any failure to read a message as "not all
+here yet", so a length of 2^31 or more was waited for until the agent
+closed, and any smaller was believed, each read flattening everything
+read before. It now answers `Ok Nothing` while a message is short, the
+message when whole, and an error for a length past 256 KiB (OpenSSH's
+`AGENT_MAX_LEN`); `Session.agentRead` keeps the pieces apart and flattens
+them once, when the length the first four bytes name has come, and a
+message past the most ends the read as the agent closing would. A timer
+on the agent's answer is not made. `ssh-tests connection` holds the three
+answers.
+
+**SC13.** Outside strict KEX the transport handed any message outside the
+exchange's to the layers above before the first exchange was done: in the
+clear, its host key not yet checked. Now, strict or not, only the
+transport's own messages and the exchange's are taken before then; any
+other fails the connection. The scripted server's `early-not-strict`
+sends `USERAUTH_SUCCESS` before its KEXINIT, not strict: the client said
+"received message 52" and went on; it now says "message 52 before the
+first exchange was done" and ends.
+
+**SC14.** `EXT_INFO`'s `server-sig-algs` was applied to the authentication
+under way, and dropped when there was none: at first contact the server
+sends it right after `NEWKEYS`, while the user is asked about its host
+key, and authentication begins after, with an empty list. An RSA key was
+then signed `rsa-sha2-512`, which a server that takes `rsa-sha2-256` alone
+refused, and the same login worked once the host was known. The list is
+now kept in the session and given to authentication when it begins.
+`sshd.py`'s `driver-trust-rsa-sha256-only` (an empty `known_hosts`, the
+host trusted once, an RSA key, sshd's `PubkeyAcceptedAlgorithms
+rsa-sha2-256`): "the server refused publickey" before, "logged in" now.
+
+**SC9.** SC2 said a rekey comes after 1 GB or an hour, and SC8's table
+gave the timer the rekey hour, but only the byte and packet counts begin
+one. OpenSSH's client has no time limit by default (`RekeyLimit` is
+"default none"), and the ciphers taken are AEAD, so the hour is struck
+from SC2 and SC8 rather than built. `Session.keysAt`, the time a key was
+last typed, is `typedAt`.

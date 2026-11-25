@@ -1,5 +1,6 @@
 module Ssh.Agent exposing
     ( identities
+    , needed
     , requestIdentities
     , signRequest
     , signature
@@ -28,15 +29,54 @@ frame payload =
 
 
 {-| The first whole message in what has been read, and what follows it;
-`Nothing` until all of it has come. -}
-unframe : Bytes -> Maybe { message : Bytes, rest : Bytes }
+`Ok Nothing` until all of it has come; an error for a length no agent
+sends, past 256 KiB as OpenSSH holds it, so that a reader does not wait
+for gigabytes from what is not a healthy agent (the code review's SC12).
+-}
+unframe : Bytes -> Result String (Maybe { message : Bytes, rest : Bytes })
 unframe buffer =
-    when Wire.string (Wire.reader buffer) is
-        Ok m ->
-            Just { message = m.value, rest = Wire.end m.next }
+    when needed buffer is
+        Nothing ->
+            meant Reason.NotYet (Ok Nothing)
 
-        Err _ ->
-            meant Reason.NotYet Nothing
+        Just n ->
+            if n > 4 + mostMessage then
+                Err ("the agent sent a message of " ++ String.fromInt (n - 4) ++ " bytes, past " ++ String.fromInt mostMessage)
+
+            else if Bytes.length buffer < n then
+                Ok Nothing
+
+            else
+                Ok (Just { message = Bytes.slice 4 n buffer, rest = Bytes.slice n (Bytes.length buffer) buffer })
+
+
+{-| The bytes a message takes with its length, once the length has come. -}
+needed : Bytes -> Maybe Int
+needed buffer =
+    if Bytes.length buffer < 4 then
+        Nothing
+
+    else
+        let
+            byte i =
+                Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get i buffer))
+
+            -- past 2^31 - 1 reads as negative; any length past the most
+            -- is refused, so it is read as the most and one more
+            length =
+                if byte 0 >= 0x80 then
+                    mostMessage + 1
+
+                else
+                    byte 0 * 16777216 + byte 1 * 65536 + byte 2 * 256 + byte 3
+        in
+        Just (4 + length)
+
+
+{-| The longest message taken from an agent, OpenSSH's `AGENT_MAX_LEN`. -}
+mostMessage : Int
+mostMessage =
+    262144
 
 
 {-| SSH_AGENTC_REQUEST_IDENTITIES. -}

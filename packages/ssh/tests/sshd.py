@@ -144,6 +144,10 @@ SESSION_DRIVER_CASES = [
     ("driver-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "hunter2"]),
     ("driver-wrong-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "wrong"]),
     ("driver-unknown-key-then-agentless", "known", ["--identity", "{other}", "--identity", "{rsa}"]),
+    # first contact with a server that takes an RSA key as rsa-sha2-256
+    # alone: its server-sig-algs comes while the host key is asked about,
+    # and is kept for the login (the code review's SC14)
+    ("driver-trust-rsa-sha256-only", "empty-rsa256", ["--identity", "{rsa}", "--trust-once"]),
 ]
 
 
@@ -345,7 +349,8 @@ def main():
         keys["edcopy"] = str(WORK / "userkeys" / "edcopy")
         shutil.copy(keys["ed"], keys["edcopy"])
         os.chmod(keys["edcopy"], 0o600)
-        server = Server(["HostKeyAlgorithms ssh-ed25519"] if start == "other-type" else [])
+        server = Server(["HostKeyAlgorithms ssh-ed25519"] if start == "other-type"
+                        else ["PubkeyAcceptedAlgorithms rsa-sha2-256"] if start == "empty-rsa256" else [])
         kh = WORK / f"known_hosts.{name}"
         server_pub = (WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
         lookup = f"[127.0.0.1]:{server.port}"
@@ -357,7 +362,7 @@ def main():
         elif start == "alias":
             kh.write_text(f"box {' '.join(server_pub)}\n")
         else:
-            kh.write_text("" if start == "empty" else f"{names} {' '.join(server_pub) if start == 'known' else other_pub}\n")
+            kh.write_text("" if start in ("empty", "empty-rsa256") else f"{names} {' '.join(server_pub) if start == 'known' else other_pub}\n")
         try:
             got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
                               "--exec", "echo hi; exit 4", *(o.format(**keys) for o in options)])

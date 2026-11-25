@@ -143,7 +143,7 @@ class Server:
         self.host = Ed25519PrivateKey.generate()
         self.other_host = Ed25519PrivateKey.generate()
         self.session_id = None
-        self.strict = case not in ("ignore-first-not-strict", "not-strict-gcm", "not-strict-chacha")
+        self.strict = case not in ("ignore-first-not-strict", "not-strict-gcm", "not-strict-chacha", "early-not-strict")
         # a server that also has AES-GCM, which it cannot speak here: the
         # case ends at the keys (docs/ssh-client.md SC34)
         self.ciphers = ["chacha20-poly1305@openssh.com"] + (["aes256-gcm@openssh.com"] if case == "not-strict-gcm" else [])
@@ -237,6 +237,10 @@ class Server:
             return
         if case in ("ignore-first", "ignore-first-not-strict"):
             c.send(bytes([2]) + string(b"before the KEXINIT"))
+        if case == "early-not-strict":
+            # USERAUTH_SUCCESS in the clear, before any key exists, from a
+            # server that is not strict (the code review's SC13)
+            c.send(bytes([52]))
         self.exchange(c, client_version, True)
         if case == "not-strict-gcm":
             # the client's first packet under AES-GCM, which this server
@@ -342,7 +346,7 @@ SESSION_CASES = ["waits-for-ours", "not-strict-chacha"]
 
 CASES = ["ok", "banner", "ssh1", "no-version", "huge-length", "short-padding", "garbled-kexinit", "ignore-first",
          "ignore-first-not-strict", "wrong-guess", "bad-signature", "zero-public", "newkeys-early", "second-kexinit",
-         "bad-mac", "server-rekeys", "hostkey-changes", "disconnect", "not-strict-gcm"] + list(LOGIN_CASES) + list(SESSION_CASES)
+         "bad-mac", "server-rekeys", "hostkey-changes", "disconnect", "not-strict-gcm", "early-not-strict"] + list(LOGIN_CASES) + list(SESSION_CASES)
 
 
 def run_case(case):

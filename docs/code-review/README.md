@@ -392,12 +392,12 @@ covered" sections. The larger gaps:
 | [VI17](03-vt-images.md) | inaccuracy | confirmed | **fixed** PNG: a palette index past PLTE, a repeated IHDR, and PLTE/tRNS of bad length are accepted |
 | [VI18](03-vt-images.md) | speed | confirmed | **fixed** PNG: CRC-32 is worked a bit at a time, for every chunk, including those whose CRC is not checked |
 | [VI19](03-vt-images.md) | bug | plausible | **fixed** JPEG `markers` recurses through `Result.andThen` for SOF, so it is not a loop there |
-| [SC9](04-ssh-core.md) | inaccuracy | confirmed | The hourly rekey in the design is not built: `Transport.rekey` has no caller |
-| [SC10](04-ssh-core.md) | bug | confirmed | `WINDOW_ADJUST` can wrap the server's window negative, after which the channel never sends again |
-| [SC11](04-ssh-core.md) | security | plausible | A server that names a tiny maximum packet makes the client cut a write into one packet a byte, recursively |
-| [SC12](04-ssh-core.md) | security | confirmed | `Agent.unframe` cannot tell "not all here yet" from "will never be valid", and the reader has no size limit |
-| [SC13](04-ssh-core.md) | security | confirmed | The transport hands packets to the layers above before any keys exist when the server is not strict |
-| [SC14](04-ssh-core.md) | bug | confirmed | `server-sig-algs` is thrown away when it arrives before the host key question is answered |
+| [SC9](04-ssh-core.md) | inaccuracy | confirmed | **fixed** The hourly rekey in the design is not built: `Transport.rekey` has no caller |
+| [SC10](04-ssh-core.md) | bug | confirmed | **fixed** `WINDOW_ADJUST` can wrap the server's window negative, after which the channel never sends again |
+| [SC11](04-ssh-core.md) | security | plausible | **fixed** A server that names a tiny maximum packet makes the client cut a write into one packet a byte, recursively |
+| [SC12](04-ssh-core.md) | security | confirmed | **fixed** `Agent.unframe` cannot tell "not all here yet" from "will never be valid", and the reader has no size limit |
+| [SC13](04-ssh-core.md) | security | confirmed | **fixed** The transport hands packets to the layers above before any keys exist when the server is not strict |
+| [SC14](04-ssh-core.md) | bug | confirmed | **fixed** `server-sig-algs` is thrown away when it arrives before the host key question is answered |
 | [SC15](04-ssh-core.md) | bug | confirmed | `exit-status` of 2^31 or more is dropped, and a server's channel number of 2^31 or more ends the channel |
 | [SC16](04-ssh-core.md) | inaccuracy | confirmed | A channel the server opens is never answered |
 | [SC17](04-ssh-core.md) | bug | confirmed | The keepalive count reported is one behind, so a dead server is noticed one interval late |

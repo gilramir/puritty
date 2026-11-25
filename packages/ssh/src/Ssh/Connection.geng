@@ -567,6 +567,11 @@ onChannel n afterChannel id ch st =
                 else if ch.phase /= Opening then
                     st
 
+                else if opened.most < leastPacket then
+                    -- a packet a byte would make a paste a million packets
+                    -- (the code review's SC11)
+                    closing id { ch | remote = opened.remote, pending = [], pendingLength = 0 } (emitOn id (Refused ("the server's largest packet, " ++ String.fromInt opened.most ++ " bytes, is too small")) st)
+
                 else
                     let
                         open1 =
@@ -638,7 +643,18 @@ onChannel n afterChannel id ch st =
     else if n == msgWindowAdjust then
         when afterChannel |> Result.andThen (\c -> Wire.uint32Clamped c.next) is
             Ok more ->
-                running id { ch | remoteWindow = min 2147483647 (ch.remoteWindow + more.value) } st
+                running id
+                    { ch
+                        | remoteWindow =
+                            -- saturated without passing through a sum that
+                            -- wraps negative (the code review's SC10)
+                            if more.value > 2147483647 - ch.remoteWindow then
+                                2147483647
+
+                            else
+                                ch.remoteWindow + more.value
+                    }
+                    st
 
             Err _ ->
                 meant Reason.FromOutside fails "a window adjustment that does not read"
@@ -854,8 +870,16 @@ flushAll id ch st =
 the state with its payloads queued, and the bytes sent. -}
 flushUpTo : Int -> Channel -> State -> { channel : Channel, state : State, sent : Int }
 flushUpTo budget ch st =
+    flushFrom budget 0 ch st
+
+
+{-| `flushUpTo` with what is sent so far carried, so that each packet is a
+turn of a loop, not a call nested in the one before (the code review's
+SC11). -}
+flushFrom : Int -> Int -> Channel -> State -> { channel : Channel, state : State, sent : Int }
+flushFrom budget sent ch st =
     if ch.phase /= Running then
-        { channel = ch, state = st, sent = 0 }
+        { channel = ch, state = st, sent = sent }
 
     else if ch.pendingLength > 0 && ch.remoteWindow > 0 && budget > 0 then
         let
@@ -864,22 +888,28 @@ flushUpTo budget ch st =
 
             cut =
                 takePending n ch.pending
-
-            rest =
-                flushUpTo (budget - n)
-                    { ch | pending = cut.rest, pendingLength = ch.pendingLength - n, remoteWindow = ch.remoteWindow - n }
-                    (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 ch.remote, Wire.writeString cut.bytes ]) st)
         in
-        { rest | sent = rest.sent + n }
+        flushFrom (budget - n)
+            (sent + n)
+            { ch | pending = cut.rest, pendingLength = ch.pendingLength - n, remoteWindow = ch.remoteWindow - n }
+            (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 ch.remote, Wire.writeString cut.bytes ]) st)
 
     else if ch.pendingLength == 0 && ch.eofPending && not ch.sentEof then
         { channel = { ch | sentEof = True, eofPending = False }
         , state = queue (Bytes.flatten [ Wire.writeByte msgEof, Wire.writeUint32 ch.remote ]) st
-        , sent = 0
+        , sent = sent
         }
 
     else
-        { channel = ch, state = st, sent = 0 }
+        { channel = ch, state = st, sent = sent }
+
+
+{-| The least packet a server may name for a channel: OpenSSH names 32 KiB;
+below a few hundred bytes a write would be cut into a packet a handful of
+bytes long (the code review's SC11). -}
+leastPacket : Int
+leastPacket =
+    256
 
 
 {-| The first `n` bytes of what waits, as one piece, and the pieces left:
