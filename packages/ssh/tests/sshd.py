@@ -369,16 +369,25 @@ def main():
         if start == "unreadable":
             kh.write_text(f"{names} {' '.join(server_pub)}\n")
             os.chmod(kh, 0)
+        # a changed key put in place: the file's other bytes (a comment in
+        # EUC-KR) and its mode are kept (the code review's ST25)
+        replacing = "--replace-changed" in options
+        euc = "# 한글\n".encode("euc-kr")
+        if replacing:
+            kh.write_bytes(euc + kh.read_bytes())
+            os.chmod(kh, 0o600)
         try:
             got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
                               "--exec", "echo hi; exit 4", *(o.format(**keys) for o in options)])
             if start == "unreadable":
                 os.chmod(kh, 0o600)
-            got += "known_hosts holds the key: " + ("yes" if " ".join(server_pub) in kh.read_text() else "no") + "\n"
+            got += "known_hosts holds the key: " + ("yes" if " ".join(server_pub) in kh.read_text(errors="replace") else "no") + "\n"
+            if replacing:
+                got += "known_hosts keeps its EUC-KR comment and mode: " + ("yes" if kh.read_bytes().startswith(euc) and (os.stat(kh).st_mode & 0o777) == 0o600 else f"no, mode {oct(os.stat(kh).st_mode & 0o777)}") + "\n"
             if start in ("other", "shared"):
-                got += "known_hosts holds the old key: " + ("yes" if other_pub in kh.read_text() else "no") + "\n"
+                got += "known_hosts holds the old key: " + ("yes" if other_pub in kh.read_text(errors="replace") else "no") + "\n"
             if "--hash-known-hosts" in options:
-                got += "known_hosts names it hashed: " + ("yes" if kh.read_text().startswith("|1|") and lookup not in kh.read_text() else "no") + "\n"
+                got += "known_hosts names it hashed: " + ("yes" if kh.read_text(errors="replace").startswith("|1|") and lookup not in kh.read_text(errors="replace") else "no") + "\n"
                 got += "again under yes:\n" + run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
                                                           "--exec", "echo hi; exit 4", "--identity", keys["ed"], "--strict", "yes"])
         finally:

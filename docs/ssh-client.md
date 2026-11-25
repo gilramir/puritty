@@ -2069,3 +2069,34 @@ alone, and each turn sleeps for what is left (`keepaliveLeft`, which also
 holds the interval below 2,000,000 s so that its milliseconds cannot wrap
 an `Int`). `ssh-tests connection` holds the arithmetic (27); no case
 drives a silent server with keys typed into the loop.
+
+## SC42 · No host read as an option, a bare IPv6 address, and known_hosts rewritten as it was (2026-11-25)
+
+The code review's ST22, ST23 and ST25.
+
+**ST23.** The command OpenSSH is run with was `ssh <options> [-t] HOST
+[command]`, nothing ending the options before the host, so quick connect
+given `-oProxyCommand=… x` ran `ssh -t -oProxyCommand=… x`: a command on
+this computer. Harmless while only the user writes host names; the
+classic `ssh://-oProxyCommand` hole once a name comes from a link, a file
+someone else wrote, or an imported session list. `Hosts.sshCommand` and
+the `ssh -G` that reads the user's settings now put `--` before the host,
+and quick connect refuses a host or a user that starts with `-`. The app
+suite's quick-connect cases gain both.
+
+**ST22.** `SetEnv`'s first `=` was already its split, and `IdentitiesOnly
+true` is SC39's. Left was a bare IPv6 address: `ProxyJump fe80::1` and
+quick connect's `::1` were cut at their last colon into host and port. A
+host of two or more colons and no brackets is now an address with no
+port, in quick connect and in `jumpSpecs` (`[fe80::1]:22` as before for a
+port). The app suite holds `::1` and `me@fe80::1`.
+
+**ST25.** A changed key put in place rewrote each `known_hosts` through
+`Bytes.toStringLossy` and wrote a new file: every byte that is not UTF-8
+(a comment in EUC-KR) became U+FFFD, and the file had the default mode,
+not the old one's (0600 became 0664). The lines are now found in the text
+as before and taken out of the file's bytes (`KnownHosts.withoutLines`),
+and the new file is a copy of the old one first, which keeps its mode,
+then written and moved into place. `sshd.py`'s changed-key cases start
+the file with an EUC-KR comment at mode 600: `driver-changed-replace`
+gave mode 0o664 before, and keeps both now.

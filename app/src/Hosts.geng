@@ -59,10 +59,15 @@ quick given =
             Maybe.map (\i -> String.dropFirst (i + 1) target) at |> Maybe.withDefault (meant Reason.NotSet target)
 
         -- a port after the last colon, unless the host is an IPv6
-        -- address, which holds colons of its own and is written [::1]:22
+        -- address, which holds colons of its own and is written [::1]:22,
+        -- or bare, `::1`, with two colons or more and no port (the code
+        -- review's ST22)
         portAt =
             if String.startsWith "[" rest then
                 String.lastIndexOf "]:" rest |> Maybe.map (\i -> i + 1)
+
+            else if Array.length (String.split ":" rest) >= 3 then
+                Nothing
 
             else
                 String.lastIndexOf ":" rest
@@ -84,6 +89,11 @@ quick given =
             Config.host trimmed bare
     in
     if bare == "" || user == Just "" || (portAt /= Nothing && port == Nothing) then
+        Nothing
+
+    else if String.startsWith "-" bare || Maybe.map (String.startsWith "-") user == Just True then
+        -- a host or a user `ssh` would read as an option, `-oProxyCommand=`
+        -- (the code review's ST23)
         Nothing
 
     else
@@ -121,7 +131,9 @@ sshCommand config h =
             else
                 []
            )
-        ++ [ h.host ]
+        -- the options end here, so that no host is read as one, whatever
+        -- it is named (the code review's ST23)
+        ++ [ "--", h.host ]
         ++ (when h.command is
                 Just c ->
                     [ c ]

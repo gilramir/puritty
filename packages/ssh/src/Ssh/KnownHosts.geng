@@ -13,6 +13,7 @@ module Ssh.KnownHosts exposing
     , orderHostKeys
     , parse
     , replaced
+    , withoutLines
     )
 
 {-| OpenSSH's `known_hosts` (sshd(8), "SSH_KNOWN_HOSTS FILE FORMAT";
@@ -35,6 +36,7 @@ import Ssh.Glob as Glob
 import Ssh.Reason as Reason
 import Ssh.Wire as Wire
 import SshCrypto
+import UInt8
 
 
 type Marker
@@ -338,3 +340,41 @@ replaced name key text =
     , removed = removed
     , kept = stale |> Array.keepIf (\e -> not (onlyThis e)) |> Array.map .lineNumber
     }
+
+
+{-| The bytes of a file with lines `numbers` (from 1, by LF as
+[`parse`](#parse) numbers them) taken out, every other byte as it was: a
+comment in EUC-KR is not made U+FFFD by a round trip through a `String`
+(the code review's ST25). -}
+withoutLines : Array Int -> Bytes -> Bytes
+withoutLines numbers file =
+    linesFrom numbers file 0 0 1 []
+
+
+linesFrom : Array Int -> Bytes -> Int -> Int -> Int -> Array Bytes -> Bytes
+linesFrom numbers file start at number kept =
+    if at >= Bytes.length file then
+        -- the last line, with no LF after it
+        Bytes.flatten
+            (if Array.member number numbers || start >= Bytes.length file then
+                kept
+
+             else
+                Array.pushLast (Bytes.slice start at file) kept
+            )
+
+    else if Bytes.get at file == Just (UInt8.fromInt 10) then
+        linesFrom numbers
+            file
+            (at + 1)
+            (at + 1)
+            (number + 1)
+            (if Array.member number numbers then
+                kept
+
+             else
+                Array.pushLast (Bytes.slice start (at + 1) file) kept
+            )
+
+    else
+        linesFrom numbers file start (at + 1) number kept

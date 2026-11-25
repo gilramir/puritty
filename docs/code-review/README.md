@@ -425,11 +425,11 @@ covered" sections. The larger gaps:
 | [ST19](05-ssh-session-transfer.md) | inaccuracy | confirmed | Every refusal of the SFTP channel is taken as "SFTP is turned off", and with the setting on it switches to shell commands |
 | [ST20](05-ssh-session-transfer.md) | speed | confirmed | An upload opens, seeks and closes the local file for every 32 KiB, and reads 64 KiB to use 32 |
 | [ST21](05-ssh-session-transfer.md) | bug | plausible | A batch that has shown no progress cannot be cancelled, and nothing times it out |
-| [ST22](05-ssh-session-transfer.md) | bug | confirmed | Options from `~/.ssh/config`: `SetEnv` with `=` in the value is dropped, `IdentitiesOnly true` is not yes, a bare IPv6 jump or quick-connect host is cut at its last colon |
-| [ST23](05-ssh-session-transfer.md) | security | confirmed | `ssh` is run with the host's name as a bare argument: a name starting with `-` is read as an option |
+| [ST22](05-ssh-session-transfer.md) | bug | confirmed | **fixed** Options from `~/.ssh/config`: `SetEnv` with `=` in the value is dropped, `IdentitiesOnly true` is not yes, a bare IPv6 jump or quick-connect host is cut at its last colon |
+| [ST23](05-ssh-session-transfer.md) | security | confirmed | **fixed** `ssh` is run with the host's name as a bare argument: a name starting with `-` is read as an option |
 | [ST24](05-ssh-session-transfer.md) | bug | confirmed | After the picker's SFTP stream breaks, later requests wait for ever; and a listing cannot be abandoned |
-| [ST25](05-ssh-session-transfer.md) | bug | confirmed | A changed key's rewrite of `known_hosts` goes through lossy UTF-8 and a new file |
-| [ST26](05-ssh-session-transfer.md) | design | confirmed | An unreadable folder inside a drop is made on the host empty, with nothing said |
+| [ST25](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A changed key's rewrite of `known_hosts` goes through lossy UTF-8 and a new file |
+| [ST26](05-ssh-session-transfer.md) | design | confirmed | **fixed** An unreadable folder inside a drop is made on the host empty, with nothing said |
 | [ST27](05-ssh-session-transfer.md) | test-gap | confirmed | No test drives `Sending`, and the shell fallback's quoting is tested under one login shell |
 | [TP6](06-tmux-package.md) | bug | confirmed | `Bindings.bindingOf` rebuilds a binding's command from space-split words, so runs of spaces inside its quoted arguments collapse |
 | [TP7](06-tmux-package.md) | bug | plausible | `Command.pasteBytes` on tmux 2.x loses a `;` that ends a piece |

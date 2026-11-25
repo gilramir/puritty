@@ -1280,7 +1280,7 @@ replaceKey name key st =
                                     Path.fromString file
                             in
                             File.readFile s.permissions.fs path
-                                |> Task.map (\b -> Just (Bytes.toStringLossy b))
+                                |> Task.map Just
                                 |> Task.onError (\_ -> Task.succeed Nothing)
                                 |> Task.andThen
                                     (\read ->
@@ -1291,10 +1291,12 @@ replaceKey name key st =
                                                 -- to take out
                                                 meant Reason.FromOutside (Task.succeed s)
 
-                                            Just text ->
+                                            Just bytes ->
                                                 let
+                                                    -- the lines found in the text, taken out
+                                                    -- of the bytes (the code review's ST25)
                                                     r =
-                                                        KnownHosts.replaced name key text
+                                                        KnownHosts.replaced name key (Bytes.toStringLossy bytes)
 
                                                     next =
                                                         Path.fromString (file ++ ".puritty-new")
@@ -1310,7 +1312,10 @@ replaceKey name key st =
                                                     Task.succeed s
 
                                                  else
-                                                    File.writeFile s.permissions.fs (Bytes.fromString r.text) next
+                                                    -- the new file a copy of the old first, so
+                                                    -- that it has its mode (ST25)
+                                                    File.copy s.permissions.fs { from = path, to = next }
+                                                        |> Task.andThen (\_ -> File.writeFile s.permissions.fs (KnownHosts.withoutLines r.removed bytes) next)
                                                         |> Task.andThen (\_ -> File.move s.permissions.fs { from = next, to = path })
                                                         |> Task.andThen (\_ -> tell (Status (file ++ ": the old key taken out (line " ++ String.join ", " (Array.map String.fromInt r.removed) ++ ")")) s)
                                                         |> Task.onError (\e -> tell (Status (file ++ ": the old key could not be taken out: " ++ Os.Error.toString e)) s)
@@ -1740,6 +1745,11 @@ jumpSpecs value =
 
                                     Nothing ->
                                         meant Reason.FromOutside { host = rest, port = Nothing }
+
+                            else if Array.length (String.split ":" rest) >= 3 then
+                                -- a bare IPv6 address, which has no port
+                                -- (the code review's ST22)
+                                { host = rest, port = Nothing }
 
                             else
                                 when String.lastIndexOf ":" rest is

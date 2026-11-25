@@ -225,6 +225,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - Confidence: confirmed
 - What: (1) `String.split "=" pair` must give exactly two parts, so `SetEnv OPTS=a=b` (or a base64 value ending `=`) sends nothing, silently. (2) `identitiesOnly = String.toLower (one "identitiesonly" "no") == "yes"`: OpenSSH also takes `true`, which `strict` just above does handle. (3) `jumpSpecs` and `Hosts.quick` split host from port at the last `:` unless the text starts with `[`, so `ProxyJump fe80::1` or quick connect `::1` becomes host `fe80:`/`:` port 1 and fails as a name not found.
 - Fix: split `SetEnv` at the first `=`; one boolean reader for yes/true/no/false; treat text with two or more colons and no brackets as an address with no port.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC42. A bare IPv6 address (two or more colons, no brackets) has no port, in quick connect and `jumpSpecs`; `SetEnv` and `IdentitiesOnly` were already fixed (SC39); app tests.
 
 ### ST23 · `ssh` is run with the host's name as a bare argument: a name starting with `-` is read as an option
 - Where: app/src/Hosts.geng:114-131 (`sshCommand`), 18-22 (`named`), 29-90 (`quick`)
@@ -234,6 +235,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: the command is `ssh <options> [-t] <h.host> [command]` with no `--` and no check on `h.host`. `Hosts.quick "-oProxyCommand=… x"` gives `ssh -t -oProxyCommand=… x`, which runs the command on this computer.
 - Scenario: harmless while only the user writes host names; it becomes the classic `ssh://-oProxyCommand` hole the day a name comes from a link, a file someone else wrote, or an imported session list.
 - Fix: refuse a host (and a user) that starts with `-` in `quick`/`named`, and put `--` before the host in `sshCommand`.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC42. `--` before the host in `sshCommand` and `ssh -G`; quick connect refuses a host or user starting with `-`; app tests.
 
 ### ST24 · After the picker's SFTP stream breaks, later requests wait for ever; and a listing cannot be abandoned
 - Where: app/src/PickerSftp.geng:221-223, 117-132, 398-436
@@ -250,6 +252,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - Confidence: confirmed (the mode change plausible: depends on `File.writeFile`'s default mode)
 - What: the file is read with `Bytes.toStringLossy`, changed, and written whole to `known_hosts.puritty-new`, then moved over the old one. Any byte that is not UTF-8 (a comment in EUC-KR, which this project's users have) becomes U+FFFD in every line, not only the removed one; and the new file has the default mode and the writer's ownership, not the old file's (a `known_hosts` kept 0600 becomes 0644).
 - Fix: work on bytes (split at `\n`, drop the lines by number, join) and copy the old file's mode to the new one before the move.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC42. Lines taken out of the file's bytes (`KnownHosts.withoutLines`), the new file a copy of the old first, keeping its mode; sshd changed-key cases.
 
 ### ST26 · An unreadable folder inside a drop is made on the host empty, with nothing said
 - Where: app/src/Sending.geng:109-111
@@ -258,6 +261,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - Confidence: confirmed
 - What: `Directory.list … |> Task.onError (\_ -> Task.succeed [])` turns a folder that cannot be listed into one with no entries; the `MakeDir` job is still made and the summary says "sent N items" with no failure. A file that cannot be stat'ed, three lines on, is put in `refused` with its reason.
 - Fix: put the folder in `refused` with the system's words, as the file case does.
+- Fixed: 2026-11-25, `docs/sftp.md` FT41. A folder that can't be listed is refused with why; native app test.
 
 ### ST27 · No test drives `Sending`, and the shell fallback's quoting is tested under one login shell
 - Where: app/src/Sending.geng (no reference in `app/tests` or `harness/`); packages/ssh/tests/shell-transfer.py (zsh only, docs/sftp.md:1210); packages/ssh/tests/src/Main.geng:576-592 (malformed SFTP: three cases)

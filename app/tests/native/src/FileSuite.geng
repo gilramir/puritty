@@ -89,6 +89,39 @@ settingsFile =
                             }
                         )
                 )
+            , U.test "a dropped folder that can't be read is refused with why, not made empty on the host (review ST26)"
+                (\_ ->
+                    if Platform.pathSeparator == "\\" then
+                        Task.succeed Expect.pass
+
+                    else
+                        Task.map3 (\fs proc pid -> { fs = fs, proc = proc, pid = pid }) File.initialize Process.initialize Process.currentId
+                            |> Task.andThen
+                                (\go ->
+                                    let
+                                        dir =
+                                            "st26-" ++ String.fromInt go.pid
+
+                                        sh script =
+                                            Process.run go.proc "sh" [ "-c", script ] Process.defaultRunOptions
+                                                |> Task.map (\_ -> {})
+                                                |> Task.onError (\_ -> Task.succeed {})
+                                    in
+                                    sh ("mkdir -p " ++ dir ++ "/shut && chmod 0 " ++ dir ++ "/shut")
+                                        |> Task.andThen (\_ -> Sending.jobsFor go.fs { folder = Bytes.fromString "/r", paths = [ Bytes.fromString (dir ++ "/shut") ], name = Ok })
+                                        |> Task.andThen
+                                            (\got ->
+                                                sh ("chmod 700 " ++ dir ++ "/shut")
+                                                    |> Task.andThen (\_ -> Directory.removeAll go.fs (Path.fromString dir) |> Task.onError (\_ -> Task.succeed {}))
+                                                    |> Task.map (\_ -> got)
+                                            )
+                                        |> Task.map
+                                            (\got ->
+                                                Expect.equal { jobs = 0, refused = [ True ] }
+                                                    { jobs = Array.length got.jobs, refused = Array.map (String.contains "a folder that can't be read here") got.refused }
+                                            )
+                                )
+                )
             , U.test "a setting written to config.toml of mode 600: the mode kept, no temporary left (review PS12)"
                 (\_ ->
                     if Platform.pathSeparator == "\\" then

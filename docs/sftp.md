@@ -2431,3 +2431,12 @@ not, so a broken stream's `Finished` was a file short of the jobs, and
 broken stream removes a download's part (the host's cannot be, the
 channel going). `ssh-tests connection` breaks a one-file upload once its
 part is opened: the old code finished it 0 failed, it is 1 now.
+
+## FT41 · A dropped folder that cannot be read is refused (2026-11-25)
+
+The code review's ST26. A file in a drop that cannot be stat'ed is put
+in `refused` with why, but a folder that cannot be listed was taken as
+empty: made on the host, and the summary said everything was sent.
+`Sending.jobsFor` now refuses it too, "a folder that can't be read here",
+with the system's words. The native app suite drops a folder of mode 0
+(Linux): the old code made one folder job and refused nothing (617).

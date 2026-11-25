@@ -120,14 +120,22 @@ jobsVia link fs toHost dir path acc =
                                             joined dir name
                                     in
                                     Directory.list fs path
-                                        |> Task.map (\entries -> Array.sortBy (\e -> Path.toString e.path) entries)
-                                        |> Task.onError (\_ -> Task.succeed [])
+                                        |> Task.map (\entries -> Ok (Array.sortBy (\e -> Path.toString e.path) entries))
+                                        |> Task.onError (\e -> Task.succeed (Err e))
                                         |> Task.andThen
-                                            (\entries ->
-                                                Array.foldl
-                                                    (\e inner -> inner |> Task.andThen (\soFar -> jobsVia (e.kind == File.Link) fs toHost there e.path soFar))
-                                                    (Task.succeed { acc | jobs = Array.pushLast (MakeDir { path = there }) acc.jobs })
-                                                    entries
+                                            (\listed ->
+                                                when listed is
+                                                    Ok entries ->
+                                                        Array.foldl
+                                                            (\e inner -> inner |> Task.andThen (\soFar -> jobsVia (e.kind == File.Link) fs toHost there e.path soFar))
+                                                            (Task.succeed { acc | jobs = Array.pushLast (MakeDir { path = there }) acc.jobs })
+                                                            entries
+
+                                                    Err e ->
+                                                        -- refused with the system's words, as a file
+                                                        -- that can't be read is, not made empty on the
+                                                        -- host (the code review's ST26)
+                                                        meant Reason.Refused (Task.succeed { acc | refused = Array.pushLast (shown ++ ": a folder that can't be read here (" ++ e.detail ++ ")") acc.refused })
                                             )
 
                                 else

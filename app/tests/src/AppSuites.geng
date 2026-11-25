@@ -1908,7 +1908,7 @@ hosts =
     in
     run "Hosts"
         [ { name = "a host's command is OpenSSH's, with its port, user, key, jump and command"
-          , test = \_ -> Expect.equal [ "ssh", "-p", "2222", "-l", "gilbert", "-i", "~/.ssh/id_ed25519", "-J", "bastion.example.com", "-t", "build.example.com", "tmux new -A -s main" ] (Hosts.sshCommand config box)
+          , test = \_ -> Expect.equal [ "ssh", "-p", "2222", "-l", "gilbert", "-i", "~/.ssh/id_ed25519", "-J", "bastion.example.com", "-t", "--", "build.example.com", "tmux new -A -s main" ] (Hosts.sshCommand config box)
           }
         , { name = "a jump that names another host is that host's user@host:port"
           , test =
@@ -1917,17 +1917,20 @@ hosts =
                         c =
                             decoded "[hosts.bastion]\nhost = \"b.example.com\"\nuser = \"me\"\nport = 2200\n\n[hosts.inner]\nhost = \"10.0.0.5\"\njump = \"bastion\"\n"
                     in
-                    Expect.equal [ "ssh", "-J", "me@b.example.com:2200", "10.0.0.5" ] (Hosts.sshCommand c (Hosts.named "inner" c))
+                    Expect.equal [ "ssh", "-J", "me@b.example.com:2200", "--", "10.0.0.5" ] (Hosts.sshCommand c (Hosts.named "inner" c))
           }
         , { name = "a name the settings do not have is ssh's to resolve, as an alias"
-          , test = \_ -> Expect.equal [ "ssh", "work" ] (Hosts.sshCommand config (Hosts.named "work" config))
+          , test = \_ -> Expect.equal [ "ssh", "--", "work" ] (Hosts.sshCommand config (Hosts.named "work" config))
           }
         , { name = "quick connect reads user@host:port, each part left out as one likes"
           , test =
                 \_ ->
                     Expect.equal
-                        [ Just [ "ssh", "-p", "22", "-l", "me", "h.example.com" ], Just [ "ssh", "h" ], Just [ "ssh", "-l", "me", "h" ], Just [ "ssh", "-p", "2222", "::1" ], Nothing, Nothing ]
-                        (Array.map (\t -> Hosts.quick t |> Maybe.map (Hosts.sshCommand config)) [ "me@h.example.com:22", "h", "me@h", "[::1]:2222", "me@", "h:port" ])
+                        [ Just [ "ssh", "-p", "22", "-l", "me", "--", "h.example.com" ], Just [ "ssh", "--", "h" ], Just [ "ssh", "-l", "me", "--", "h" ], Just [ "ssh", "-p", "2222", "--", "::1" ], Nothing, Nothing, Just [ "ssh", "--", "::1" ], Just [ "ssh", "-l", "me", "--", "fe80::1" ], Nothing, Nothing ]
+                        -- a bare IPv6 address has no port (review ST22); a
+                        -- host or user that reads as an option is refused, and
+                        -- `--` ends the options before any host (review ST23)
+                        (Array.map (\t -> Hosts.quick t |> Maybe.map (Hosts.sshCommand config)) [ "me@h.example.com:22", "h", "me@h", "[::1]:2222", "me@", "h:port", "::1", "me@fe80::1", "-oProxyCommand=touch /tmp/x", "-oProxyCommand=x@h" ])
           }
         , { name = "a session takes the host's look, charset and title, and its name when it gives no title"
           , test =
