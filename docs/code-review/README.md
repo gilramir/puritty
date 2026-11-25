@@ -271,7 +271,7 @@ covered" sections. The larger gaps:
 | [VI6](03-vt-images.md) | bug | confirmed | **fixed** An image refused for memory is answered even when the program gave no id |
 | [VI7](03-vt-images.md) | speed | confirmed | **fixed** Eviction sorts every image once per victim, with a scan of all placements inside the comparison |
 | [VI8](03-vt-images.md) | efficiency | confirmed | **fixed** Placements whose rows have left the scrollback are never removed |
-| [VI9](03-vt-images.md) | speed | confirmed | `imageByKey` is linear, builds a string per image, and re-masks the pixels on every call; View calls it per sent image per frame |
+| [VI9](03-vt-images.md) | speed | confirmed | **fixed** `imageByKey` is linear, builds a string per image, and re-masks the pixels on every call; View calls it per sent image per frame |
 | [VI10](03-vt-images.md) | speed | confirmed | **fixed** Sixel painting allocates about eight arrays per data byte, and a repeat is an unbudgeted fill |
 | [VI11](03-vt-images.md) | security | plausible | **fixed** With `read_files` on under Windows, a remote program can make puritty open a UNC path |
 | [VI20](03-vt-images.md) | test-gap | confirmed | **fixed** No malformed-input tests for the JPEG, GIF, TIFF and Sixel decoders |

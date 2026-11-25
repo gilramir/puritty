@@ -207,6 +207,7 @@ Facts the findings lean on, all read from the tree:
   erasures) and uses `Dict.get`, and the masked pixels only where they are sent
   (View.geng:797); cache the masked bytes on the image per `erasures`.
 - Fixed: In part, 2026-11-22. `View.imageRecords` asks `Kitty.hasKey`, which finds the image without masking its pixels, where it built the masked copy of every image held to compare it with `Nothing`. Natively, 100 frames of a 200 by 50 window with a 1000 by 900 Sixel image partly written over: 59 ms before, 22 ms after. The lookup is still linear with a key built per image, and the masked bytes are not cached; with a few images held that is small.
+- Fixed: The rest, 2026-11-25, `docs/images.md` IM41. `shownByKey` takes the image by the id its key carries: 1,000 frames with 300 images 3.35 s to 0.35 s, the display lists the same. The masked bytes are not cached.
 
 ### VI10 · Sixel painting allocates about eight arrays per data byte, and a repeat is an unbudgeted fill
 - Where: vt/src/Vt/Sixel.geng:390-420 (`paint`), 143-241 (`run`)

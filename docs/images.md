@@ -1495,3 +1495,23 @@ table is written out: made at the top level by 256 calls, it was more
 than the refinement checker's memory ("JS heap out of memory"). A
 2000-by-2000 PNG of noise (6.0 MB) through iTerm2: 0.47 to 0.48 s
 before, 0.45 s after, the same pixels.
+
+## IM41 · A shown image found by the id its key carries (2026-11-25)
+
+The rest of the code review's VI9 (2026-11-22 took the masking out of
+`hasKey`). `imageByKey` and `hasKey` found the image a placement's key
+names by building every shown image's key and comparing, and the view
+asks for every placement in view and every image it has sent, each
+frame: with N images, N × N keys a frame. Now `shownByKey` reads the id
+from the key (`0:ID:GENERATION[.ERASURES]`), takes that one image from
+the store's `Dict`, and holds its key to the one wanted; an id that does
+not read back as an `Int` (past 2^31 - 1) is found by every image's key
+as before. The masked pixels are still made where an image is sent, and
+not cached.
+
+Measured with `harness/dump/core-dump` built to draw N frames of 100 by
+40 after 300 Kitty images of 2 by 2 were placed (`a=T`): 1,000 frames
+3.33 to 3.38 s before, 0.34 to 0.35 s after. The display lists are the
+same, by a checksum of their bytes over three frames, for those 300 and
+for five with ids 7, 2^31 - 1, 2^31, 4,000,000,000 and 2^32 - 1, one
+of them written over so that its pixels are masked.

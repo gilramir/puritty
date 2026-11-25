@@ -2178,9 +2178,8 @@ keyOf origin image =
 imageByKey : String -> Term -> Maybe Image
 imageByKey wanted t =
     if String.startsWith "0:" wanted then
-        Dict.values t.images.shown.images
-            |> Array.findFirst (\im -> keyOf 0 im == wanted)
-            |> Maybe.map (\found -> masked (geoOf t) t.images.shown found.value)
+        shownByKey wanted t
+            |> Maybe.map (\found -> masked (geoOf t) t.images.shown found)
 
     else
         t.images.composed |> Array.findFirst (\c -> c.key == wanted) |> Maybe.map (\c -> c.value.image)
@@ -2193,10 +2192,32 @@ be compared with nothing (the code review's VI9). -}
 hasKey : String -> Term -> Bool
 hasKey wanted t =
     if String.startsWith "0:" wanted then
-        Dict.values t.images.shown.images |> Array.any (\im -> keyOf 0 im == wanted)
+        Maybe.isJust (shownByKey wanted t)
 
     else
         t.images.composed |> Array.any (\c -> c.key == wanted)
+
+
+{-| The shown screen's image a key of origin 0 names: found by the id the
+key carries, its key then held to the one wanted, where every image's key
+was built to find it (the code review's VI9); by every image's key for an
+id that does not read back as an `Int` (past 2^31 - 1). -}
+shownByKey : String -> Term -> Maybe Image
+shownByKey wanted t =
+    let
+        named im =
+            keyOf 0 im == wanted
+    in
+    when String.split ":" wanted |> Array.get 1 |> Maybe.andThen String.toInt is
+        Just id ->
+            Dict.get id t.images.shown.images |> Maybe.keepIf named
+
+        Nothing ->
+            meant Reason.OutOfRange
+                (Dict.values t.images.shown.images
+                    |> Array.findFirst named
+                    |> Maybe.map .value
+                )
 
 
 {-| The shown screen's image `id`. -}
