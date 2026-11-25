@@ -12,6 +12,7 @@ module Ssh.Session exposing
     , pacing
     , resized
     , run
+    , statusText
     , withAgent
     )
 
@@ -35,6 +36,7 @@ that channel, so the jump hosts see only encrypted bytes. Once its channel
 is open a hop runs in a process of its own, carrying bytes both ways.
 -}
 
+import Bitwise
 import Bytes exposing (Bytes)
 import Dict
 import Int64
@@ -704,6 +706,25 @@ agentReadFrom readMore pieces have =
         Nothing ->
             -- not four bytes yet
             meant Reason.NotYet more
+
+
+{-| An exit status as said to the user: its number, or for one of 32 bits
+past 2^31 - 1, which arrives below 0, its hex, as Windows writes its
+NTSTATUS codes, `0xC000013A` (the code review's SC15). -}
+statusText : Int -> String
+statusText status =
+    if status >= 0 then
+        String.fromInt status
+
+    else
+        "0x" ++ String.toUpper (hex8 status)
+
+
+hex8 : Int -> String
+hex8 n =
+    Array.range 0 7
+        |> Array.map (\k -> String.slice (Bitwise.and 15 (Bitwise.shiftRightZfBy (4 * (7 - k)) n)) (Bitwise.and 15 (Bitwise.shiftRightZfBy (4 * (7 - k)) n) + 1) "0123456789abcdef")
+        |> String.join ""
 
 
 -- THE LOOP

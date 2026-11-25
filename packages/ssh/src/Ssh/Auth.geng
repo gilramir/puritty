@@ -266,10 +266,34 @@ received payload (Auth st) =
 {-| A FAILURE: what was being tried is given up, and the next tried. -}
 failed : { allowed : Array String, partial : Bool } -> State -> State
 failed failure st =
+    when st.attempt is
+        AwaitingService ->
+            -- nothing of ours outstanding: a failure no request asked for
+            -- moves nothing (the code review's SC18)
+            st
+
+        AwaitingPassword ->
+            st
+
+        AwaitingResponses ->
+            st
+
+        Done ->
+            st
+
+        _ ->
+            failedAsked failure st
+
+
+failedAsked : { allowed : Array String, partial : Bool } -> State -> State
+failedAsked failure st =
     let
         method =
             when st.attempt is
                 Querying _ ->
+                    "publickey"
+
+                Signing _ ->
                     "publickey"
 
                 SentSignature _ ->
@@ -298,6 +322,11 @@ failed failure st =
             when st.attempt is
                 Querying identity ->
                     { told | triedKeys = Array.pushLast identity.id told.triedKeys }
+
+                Signing s ->
+                    -- refused while it was being signed: tried, so that it
+                    -- is not queried again and signed again (SC18)
+                    { told | triedKeys = Array.pushLast s.identity.id told.triedKeys }
 
                 SentSignature identity ->
                     { told | triedKeys = Array.pushLast identity.id told.triedKeys }

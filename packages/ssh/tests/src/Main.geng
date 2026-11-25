@@ -50,6 +50,7 @@ import ShellDrive
 import Source exposing (Source)
 import Ssh.Agent as Agent
 import Ssh.Auth as Auth
+import Ssh.Base64 as Base64
 import Ssh.Config as Config
 import Ssh.Connection as Connection
 import Ssh.KnownHosts as KnownHosts
@@ -379,6 +380,148 @@ connectionSuite =
 
                             got ->
                                 Just (String.join " / " got)
+                    )
+               , caseTest "keepalives unanswered are counted with the one just sent: 1, 2, 3 (review SC17)"
+                    (\_ ->
+                        let
+                            counts step =
+                                Array.mapAndKeepJust
+                                    (\e ->
+                                        when e is
+                                            Connection.KeepaliveUnanswered n ->
+                                                Just n
+
+                                            _ ->
+                                                Nothing
+                                    )
+                                    step.events
+
+                            one =
+                                Connection.keepalive opened.connection
+
+                            two =
+                                Connection.keepalive one.connection
+
+                            three =
+                                Connection.keepalive two.connection
+                        in
+                        when counts one ++ counts two ++ counts three is
+                            [ 1, 2, 3 ] ->
+                                Nothing
+
+                            got ->
+                                Just (String.join "," (Array.map String.fromInt got))
+                    )
+               , caseTest "a FAILURE while a key is signed marks it tried: one signature asked for, not one a round (review SC18)"
+                    (\_ ->
+                        let
+                            config =
+                                { user = "me", identities = [ { id = 1, publicKey = Bytes.fromString "key", keyType = "ssh-ed25519" } ], methods = [ "publickey" ], serverSigAlgs = [], passwordTries = 3 }
+
+                            failure =
+                                Bytes.flatten [ Wire.writeByte 51, Wire.writeText "publickey", Wire.writeByte 0 ]
+
+                            pkOk =
+                                Bytes.flatten [ Wire.writeByte 60, Wire.writeText "ssh-ed25519", Wire.writeString (Bytes.fromString "key") ]
+
+                            accepted =
+                                Auth.received (Bytes.flatten [ Wire.writeByte 6, Wire.writeText "ssh-userauth" ]) (Auth.begin config Bytes.empty).auth
+
+                            -- none refused, then PK_OK and FAILURE three times
+                            rounds =
+                                Array.foldl
+                                    (\payload acc ->
+                                        let
+                                            st =
+                                                Auth.received payload acc.auth
+                                        in
+                                        { auth = st.auth, asked = acc.asked + Array.length st.requests }
+                                    )
+                                    { auth = accepted.auth, asked = 0 }
+                                    [ failure, pkOk, failure, pkOk, failure, pkOk, failure ]
+                        in
+                        if rounds.asked == 1 then
+                            Nothing
+
+                        else
+                            Just ("a signature asked for " ++ String.fromInt rounds.asked ++ " times")
+                    )
+               , caseTest "a changed key's line is the one taken out, a stray CR above it notwithstanding (review SC19)"
+                    (\_ ->
+                        let
+                            blob c =
+                                Bytes.flatten [ Wire.writeText "ssh-ed25519", Wire.writeString (Bytes.fromString (String.repeat 32 c)) ]
+
+                            line host c =
+                                host ++ " ssh-ed25519 " ++ Base64.encode (blob c)
+
+                            text =
+                                String.join "\n" [ line "a.example" "a", "\rx", line "b.example" "o", line "c.example" "c", "" ]
+
+                            r =
+                                KnownHosts.replaced "b.example" (blob "n") text
+                        in
+                        if not (String.contains (line "b.example" "o") r.text) && String.contains (line "c.example" "c") r.text && String.contains (line "a.example" "a") r.text then
+                            Nothing
+
+                        else
+                            Just ("removed lines " ++ String.join "," (Array.map String.fromInt r.removed))
+                    )
+               , caseTest "a server channel number and an exit status past 2^31 are read; the status said in hex (review SC15)"
+                    (\_ ->
+                        let
+                            -- 0x80000001 and 0xC000013A as the 32 bits of an Int
+                            high =
+                                Connection.openDirect { host = "h", port = 22 }
+                                    |> .connection
+                                    |> Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 0, Wire.writeUint32 -2147483647, Wire.writeUint32 1048576, Wire.writeUint32 32768 ])
+
+                            status =
+                                Connection.received (Bytes.flatten [ Wire.writeByte 98, Wire.writeUint32 0, Wire.writeText "exit-status", Wire.writeBool False, Wire.writeUint32 -1073741510 ]) high.connection
+
+                            exited =
+                                Array.mapAndKeepJust
+                                    (\e ->
+                                        when e is
+                                            Connection.Exited code ->
+                                                Just (Session.statusText code)
+
+                                            _ ->
+                                                Nothing
+                                    )
+                                    status.events
+                        in
+                        if Array.member Connection.Started high.events && exited == [ "0xC000013A" ] then
+                            Nothing
+
+                        else
+                            Just
+                                ("started "
+                                    ++ (if Array.member Connection.Started high.events then
+                                            "yes"
+
+                                        else
+                                            "no"
+                                       )
+                                    ++ ", exited "
+                                    ++ String.join "," exited
+                                )
+                    )
+               , caseTest "a channel the server opens is refused, the sender's number answered (review SC16)"
+                    (\_ ->
+                        let
+                            step =
+                                after (Bytes.flatten [ Wire.writeByte 90, Wire.writeText "x11", Wire.writeUint32 42, Wire.writeUint32 65536, Wire.writeUint32 32768, Wire.writeText "127.0.0.1", Wire.writeUint32 6010 ])
+
+                            answers =
+                                Array.keepIf (\p -> Bytes.get 0 p |> Maybe.map UInt8.toInt |> (==) (Just 92)) step.send
+                                    |> Array.map (\p -> Wire.reader p |> Wire.take 1 |> Result.andThen (\r -> Wire.uint32 r.next) |> Result.map .value |> Result.withDefault -1)
+                        in
+                        if answers == [ 42 ] && not (refused step.events) then
+                            Nothing
+
+                        else
+                            Just ("answered " ++ String.join "," (Array.map String.fromInt answers))
                     )
                , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
                     (\_ ->
@@ -2518,7 +2661,7 @@ onConnectionEvent event session =
             say ("killed by " ++ signal.signal) |> Task.map (\_ -> session)
 
         Connection.KeepaliveUnanswered n ->
-            say ("keepalive sent; " ++ String.fromInt n ++ " unanswered before it") |> Task.map (\_ -> session)
+            say ("keepalive sent; " ++ String.fromInt n ++ " unanswered, this one among them") |> Task.map (\_ -> session)
 
         Connection.Sent _ ->
             Task.succeed session

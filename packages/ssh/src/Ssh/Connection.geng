@@ -77,8 +77,8 @@ type alias Session =
     character set.
   - `Exited`: its exit status; `Killed`: the signal that ended it.
   - `Ended`: the channel is closed; nothing more comes.
-  - `KeepaliveUnanswered`: keepalives the server has not answered, counted
-    (the session's only).
+  - `KeepaliveUnanswered`: keepalives the server has not answered, the one
+    just sent among them (the session's only).
   - `Sent`: a side channel's data went, and this much of it still waits
     for room (FT17).
 
@@ -513,6 +513,19 @@ received payload (Connection st) =
         -- a keepalive answered
         finish { st | keepalives = max 0 (st.keepalives - 1) }
 
+    else if n == msgOpen then
+        -- a channel the server opens (an agent's, X11's, a forwarded
+        -- port's), which this client opens none of: refused, as RFC 4254
+        -- §5.1 wants it answered, 1 "administratively prohibited"; its
+        -- first field is the type's name, not a channel of ours (the code
+        -- review's SC16)
+        when body |> Result.andThen Wire.string |> Result.andThen (\kind -> Wire.uint32Bits kind.next) is
+            Ok sender ->
+                finish (queue (Bytes.flatten [ Wire.writeByte msgOpenFailure, Wire.writeUint32 sender.value, Wire.writeUint32 1, Wire.writeText "not opened by this client", Wire.writeText "" ]) st)
+
+            Err _ ->
+                meant Reason.FromOutside finish st
+
     else
         let
             afterChannel =
@@ -551,7 +564,8 @@ onChannel n afterChannel id ch st =
     if n == msgOpenConfirmation then
         when
             afterChannel
-                |> Result.andThen (\ours -> Wire.uint32 ours.next)
+                -- the server's channel number: any 32 bits (SC15)
+                |> Result.andThen (\ours -> Wire.uint32Bits ours.next)
                 |> Result.andThen
                     (\theirs ->
                         Wire.uint32Clamped theirs.next
@@ -594,7 +608,7 @@ onChannel n afterChannel id ch st =
             -- empty (RFC 4254 §5.1)
             failure =
                 afterChannel
-                    |> Result.andThen (\c -> Wire.uint32 c.next)
+                    |> Result.andThen (\c -> Wire.uint32Bits c.next)
                     |> Result.andThen (\code -> Wire.name code.next |> Result.map (\text -> { code = code.value, text = String.trim text.value }))
                     |> Result.withDefault (meant Reason.FromOutside { code = 0, text = "" })
 
@@ -668,7 +682,7 @@ onChannel n afterChannel id ch st =
                 meant Reason.FromOutside fails "channel data that does not read"
 
     else if n == msgExtendedData then
-        when afterChannel |> Result.andThen (\c -> Wire.uint32 c.next) |> Result.andThen (\code -> Wire.string code.next) is
+        when afterChannel |> Result.andThen (\c -> Wire.uint32Bits c.next) |> Result.andThen (\code -> Wire.string code.next) is
             Ok data ->
                 within id (Bytes.length data.value) ch (ErrorOutput data.value) st
 
@@ -819,7 +833,10 @@ channelRequestFromServer afterChannel id ch st =
     when afterChannel |> Result.andThen (\c -> Wire.name c.next) |> Result.andThen (\name -> Wire.boolean name.next |> Result.map (\want -> { name = name.value, want = want.value, rest = want.next })) is
         Ok request ->
             if request.name == "exit-status" then
-                when Wire.uint32 request.rest is
+                -- a status is any 32 bits: Windows' sshd sends NTSTATUS
+                -- codes, 0xC000013A, which arrive below 0 (the code
+                -- review's SC15)
+                when Wire.uint32Bits request.rest is
                     Ok status ->
                         emitOn id (Exited status.value) st
 
@@ -1097,7 +1114,10 @@ keepalive (Connection st) =
     in
     finish
         (emitOn mainChannel
-            (KeepaliveUnanswered st.keepalives)
+            -- the one just sent counted: a silent server is given up at the
+            -- tick after the most, as OpenSSH gives it up (the code
+            -- review's SC17)
+            (KeepaliveUnanswered waiting)
             (queue (Bytes.flatten [ Wire.writeByte msgGlobalRequest, Wire.writeText "keepalive@openssh.com", Wire.writeBool True ]) { st | keepalives = waiting })
         )
 

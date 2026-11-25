@@ -159,6 +159,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `Wire.uint32` is for lengths and refuses values with the top bit set. It is used for the exit status, for the server's own channel number in `OPEN_CONFIRMATION`, and for the extended data type. These are numbers, not lengths; `Wire.uint32Bits` exists for them.
 - Scenario: Windows' sshd reports NTSTATUS exit codes such as 0xC000013A (ended by Ctrl-C) or 0xC0000005: no `Exited` is emitted and the session ends with no status. A server that numbers its channels from the top (legal) gets "a channel confirmation that does not read".
 - Fix: `uint32Bits` for all three; decide what `Exited` shows for a negative `Int` (print it unsigned).
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC38. `uint32Bits` for the four numbers; `Session.statusText` says a status past 2^31 in hex; test.
 
 ### SC16 · A channel the server opens is never answered
 - Where: packages/ssh/src/Ssh/Connection.geng:508-534, 663-664
@@ -168,6 +169,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `CHANNEL_OPEN` (90) from the server falls into the per-channel path, where its first field, the length of the channel type's name, is read as a channel number (`"x11"` is 3, `"session"` 7, `"forwarded-tcpip"` 15). If that happens to be a live side channel's number, `onChannel` ignores it; otherwise it is "a channel that is not ours". Either way no `CHANNEL_OPEN_FAILURE` is sent, which RFC 4254 §5.1 requires. Likewise `Session.onEvent` (872-889) answers nothing to a message number it does not know, where RFC 4253 §11.4 requires `UNIMPLEMENTED`.
 - Scenario: a server that opens `auth-agent@openssh.com` or `x11` unasked waits for ever on that channel; a server probing with an extension message gets silence. No harm to the client, but both are protocol errors a strict peer may disconnect on.
 - Fix: handle 90 before the channel lookup: read the type and the sender's channel and answer `OPEN_FAILURE` (1, administratively prohibited). Have the session send `UNIMPLEMENTED` with the packet's sequence number, which means `Received` must carry it.
+- Fixed: In part, 2026-11-25, `docs/ssh-client.md` SC38: a channel the server opens is refused with `OPEN_FAILURE` 1; test. `UNIMPLEMENTED` for an unknown message is left (it needs the sequence number carried up).
 
 ### SC17 · The keepalive count reported is one behind, so a dead server is noticed one interval late
 - Where: packages/ssh/src/Ssh/Connection.geng:990-1000; packages/ssh/src/Ssh/Session.geng:669-675
@@ -177,6 +179,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `keepalive` emits `KeepaliveUnanswered st.keepalives`, the count before the one it has just sent, and the session ends the connection when that number reaches `keepaliveCountMax` at the next tick. With a silent server and the default 3: ticks 1 to 4 report 0, 1, 2, 3 and the session ends on tick 5. OpenSSH ends on tick 4 (`++keep_alive_timeouts > ServerAliveCountMax`).
 - Scenario: `ServerAliveInterval 15`: a dead link is declared after 75 s, not 60.
 - Fix: emit the count including the one just sent only if it was already unanswered at this tick, i.e. compare `st.keepalives >= max` in `keepalive` itself, or have the session test `>` against the fresh count. Add the dead-server timing to `scripted.py`.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC38. The count includes the keepalive just sent, as OpenSSH's; test.
 
 ### SC18 · A `FAILURE` while a signature is being made offers the same key again, as often as the server likes
 - Where: packages/ssh/src/Ssh/Auth.geng:264-308 (`failed`), 319-320 (`untriedKey`), 402-409
@@ -186,6 +189,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `failed` marks a key as tried only in `Querying` and `SentSignature`. In `Signing` (after `PK_OK`, while the caller loads the key or asks for its passphrase) a `FAILURE` goes to `next`, which finds the same identity untried and queries it again; the next `PK_OK` asks for a signature again. The caller's first request is still outstanding, and its answer is then ignored or applied to the second round.
 - Scenario: a hostile or broken server alternates `PK_OK` and `FAILURE`: the user gets passphrase question after passphrase question for the same key, with no end. More generally any unsolicited `FAILURE` advances the state machine (`AwaitingPassword` asks for the password again).
 - Fix: in `failed`, treat `Signing s` as the key refused (add `s.identity.id` to `triedKeys`), and ignore a `FAILURE` in states where no request of ours is outstanding (`AwaitingService`, `AwaitingPassword`, `AwaitingResponses`).
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC38. A key refused while signed is tried; a FAILURE with nothing outstanding moves nothing; test.
 
 ### SC19 · `KnownHosts.replaced` numbers lines differently from `parse`, so it can take out the wrong line
 - Where: packages/ssh/src/Ssh/KnownHosts.geng:59 (`String.lines`), 342-349 (`String.split "\n"`)
@@ -195,6 +199,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `parse` numbers lines with `String.lines`, which breaks at `\r\n`, at `\n` and at a lone `\r` (core `String.geng`:446-451). `replaced` takes the stale entries' numbers from `parse` and removes them from `String.split "\n" text`, which does not break at a lone `\r`.
 - Scenario: a `known_hosts` with one stray carriage return above the host's line (a file edited on an old Mac, or a pasted line). Accepting a changed key removes the line one above the stale one, another host's key, and leaves the stale key in place.
 - Fix: one splitter for both: split on `\n` only in `parse` too (trim takes the `\r` off), or have `parse` carry each entry's byte range and cut by range.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC38. `parse` splits on LF as OpenSSH reads the file; test.
 
 ### SC20 · A relative `Include` in the system's file is read from the user's `~/.ssh`
 - Where: packages/ssh/src/Ssh/Config.geng:430-439 (`includePath`); packages/ssh/src/Ssh/Session.geng:1601-1608

@@ -1929,3 +1929,46 @@ one. OpenSSH's client has no time limit by default (`RekeyLimit` is
 "default none"), and the ciphers taken are AEAD, so the hour is struck
 from SC2 and SC8 rather than built. `Session.keysAt`, the time a key was
 last typed, is `typedAt`.
+
+## SC38 · Numbers of 32 bits, a channel the server opens, keepalives, a key refused while signed, and known_hosts' lines (2026-11-25)
+
+The code review's SC15 to SC19.
+
+**SC15.** `Wire.uint32`, which is for lengths and refuses a value with its
+top bit set, read the server's channel number in `OPEN_CONFIRMATION`, an
+open failure's reason, the extended data's type and `exit-status`. Each is
+a number of 32 bits and is now read by `uint32Bits`. Windows' sshd sends
+NTSTATUS codes as exit statuses (0xC000013A, ended by Ctrl+C): the session
+ended with none; it now has it, below 0 as an `Int`, and `Session.
+statusText` says it in hex where the window and the log say a status.
+
+**SC16, in part.** `CHANNEL_OPEN` from the server went down the path of a
+message about one of ours, its type's name's length read as a channel
+number, and nothing was answered. It is now refused, `OPEN_FAILURE` 1
+("administratively prohibited") to the sender's channel, before any
+channel is looked up. An unknown message number is still not answered
+`UNIMPLEMENTED`, which needs the transport's sequence number carried
+with each packet to the session; that is left.
+
+**SC17.** A keepalive said the count of those unanswered before the one it
+had just sent, so with a silent server and `ServerAliveCountMax` 3 the
+session gave up at the fifth tick; OpenSSH gives up at the fourth. The
+count now includes the one sent.
+
+**SC18.** A `FAILURE` while a key was being signed (after `PK_OK`, the
+passphrase perhaps being asked) sent authentication to the next try,
+which found the same key untried and queried it again; a server
+alternating `PK_OK` and `FAILURE` asked for its passphrase without end.
+A key refused while signed is now tried, and a `FAILURE` when nothing of
+ours is outstanding (before the service is accepted, while a password or
+responses are asked of the user, after the end) moves nothing.
+
+**SC19.** `KnownHosts.parse` numbered lines with `String.lines`, which
+also breaks at a lone CR, and `replaced` removed the lines it named from
+`String.split "\n"`: below a stray CR the two counted apart, and
+accepting a changed key took out the line after the stale one, another
+host's. `parse` now splits on LF as OpenSSH reads the file, the CR left
+to the trim.
+
+`ssh-tests connection` gains a test of each (23), and each fails on the
+code before.

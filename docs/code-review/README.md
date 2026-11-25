@@ -398,11 +398,11 @@ covered" sections. The larger gaps:
 | [SC12](04-ssh-core.md) | security | confirmed | **fixed** `Agent.unframe` cannot tell "not all here yet" from "will never be valid", and the reader has no size limit |
 | [SC13](04-ssh-core.md) | security | confirmed | **fixed** The transport hands packets to the layers above before any keys exist when the server is not strict |
 | [SC14](04-ssh-core.md) | bug | confirmed | **fixed** `server-sig-algs` is thrown away when it arrives before the host key question is answered |
-| [SC15](04-ssh-core.md) | bug | confirmed | `exit-status` of 2^31 or more is dropped, and a server's channel number of 2^31 or more ends the channel |
-| [SC16](04-ssh-core.md) | inaccuracy | confirmed | A channel the server opens is never answered |
-| [SC17](04-ssh-core.md) | bug | confirmed | The keepalive count reported is one behind, so a dead server is noticed one interval late |
-| [SC18](04-ssh-core.md) | bug | confirmed | A `FAILURE` while a signature is being made offers the same key again, as often as the server likes |
-| [SC19](04-ssh-core.md) | bug | confirmed | `KnownHosts.replaced` numbers lines differently from `parse`, so it can take out the wrong line |
+| [SC15](04-ssh-core.md) | bug | confirmed | **fixed** `exit-status` of 2^31 or more is dropped, and a server's channel number of 2^31 or more ends the channel |
+| [SC16](04-ssh-core.md) | inaccuracy | confirmed | **in part** A channel the server opens is never answered |
+| [SC17](04-ssh-core.md) | bug | confirmed | **fixed** The keepalive count reported is one behind, so a dead server is noticed one interval late |
+| [SC18](04-ssh-core.md) | bug | confirmed | **fixed** A `FAILURE` while a signature is being made offers the same key again, as often as the server likes |
+| [SC19](04-ssh-core.md) | bug | confirmed | **fixed** `KnownHosts.replaced` numbers lines differently from `parse`, so it can take out the wrong line |
 | [SC20](04-ssh-core.md) | inaccuracy | confirmed | A relative `Include` in the system's file is read from the user's `~/.ssh` |
 | [SC21](04-ssh-core.md) | bug | confirmed | `HostName %%h` expands to the host; `%%` is replaced before `%h` |
 | [SC22](04-ssh-core.md) | bug | plausible | RSA certificates and other key types an agent holds are offered under a name the server cannot take |
