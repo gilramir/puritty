@@ -384,7 +384,8 @@ saveMode p t =
 
 
 {-| XTRESTORE: a private mode set as XTSAVE kept it, or to its state in a
-new terminal if it was never kept, as Ghostty restores it. -}
+new terminal if it was never kept, as Ghostty restores it: `defaultPrivate`,
+not a new terminal made to read it (§VC74). -}
 restoreMode : Int -> (taken t : Term) -> Term
 restoreMode p t =
     when Dict.get p t.savedModes is
@@ -395,7 +396,7 @@ restoreMode p t =
             meant Reason.NotSet
                 let
                     state =
-                        privateState p (fresh t.config)
+                        defaultPrivate p
                 in
                 if state == 1 || state == 2 then
                     setPrivate p (state == 1) t
@@ -436,13 +437,33 @@ privateState p t =
                 of on
 
             Nothing ->
-                meant Reason.NotSet
-                    if Array.member p [ 1007, 1035, 1036 ] then
-                        -- set until changed, as Ghostty's defaults
-                        1
+                meant Reason.NotSet (defaultPrivate p)
 
-                    else
-                        2
+
+{-| DECRQM's state of private mode `p` in a new terminal, whatever its
+configuration: DECOM reset, DECAWM and DECTCEM set, DECECM permanently
+reset, 1007, 1035 and 1036 set as Ghostty's defaults, the other modes
+Ghostty knows reset, the rest not recognized. -}
+defaultPrivate : Int -> Int
+defaultPrivate p =
+    if p == 6 then
+        2
+
+    else if p == 7 || p == 25 then
+        1
+
+    else if p == 117 then
+        4
+
+    else if not (Array.member p knownPrivate) then
+        0
+
+    else if Array.member p [ 1007, 1035, 1036 ] then
+        -- set until changed, as Ghostty's defaults
+        1
+
+    else
+        2
 
 
 {-| The private modes DECRQM answers for although the core only records

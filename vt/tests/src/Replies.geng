@@ -11,10 +11,44 @@ import Test.Runner.UnitNode as U
 import Vt
 
 
+{-| Each private mode's DECRQM answer after it is set, or reset, then
+restored by XTRESTORE with nothing saved; and a new terminal's answer. -}
+restoredUnsaved : { set : Array String, reset : Array String, fresh : Array String }
+restoredUnsaved =
+    let
+        modes =
+            [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 25, 40, 45, 47, 66, 67, 69, 117, 1000, 1002, 1003, 1004, 1005, 1006, 1007, 1015, 1016, 1035, 1036, 1039, 1045, 1047, 1048, 1049, 2004, 2026, 2027, 2031, 2033, 2048, 9999 ]
+
+        query m =
+            "\u{001B}[?" ++ String.fromInt m ++ "$p"
+
+        after hl m =
+            "\u{001B}[?" ++ String.fromInt m ++ hl ++ "\u{001B}[?" ++ String.fromInt m ++ "r" ++ query m
+
+        -- DECRQM's answers only: setting 2031 itself reports the colour
+        -- scheme
+        answers t =
+            Array.keepIf (String.endsWith "$y") (replies t)
+    in
+    { set = Array.flatten (Array.map (\m -> answers (feed (after "h" m) (term 10 5))) modes)
+    , reset = Array.flatten (Array.map (\m -> answers (feed (after "l" m) (term 10 5))) modes)
+    , fresh = Array.flatten (Array.map (\m -> replies (feed (query m) (term 10 5))) modes)
+    }
+
+
 suite : U.Suite
 suite =
     Support.run "Replies"
-        [ { name = "DSR 6 reports the cursor, one-based"
+        [ { name = "XTRESTORE with nothing saved gives each private mode a new terminal's state, set or reset before (review VP10)"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            restoredUnsaved
+                    in
+                    Expect.equal { set = r.fresh, reset = r.fresh } { set = r.set, reset = r.reset }
+          }
+        , { name = "DSR 6 reports the cursor, one-based"
           , test =
                 \_ ->
                     Expect.equal [ "\u{001B}[2;3R" ]

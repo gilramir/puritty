@@ -5026,3 +5026,26 @@ the next ESC. 358 of 358 pass on the core's side, whole and a byte a read.
 (nene): `./harness/replay.py -f apc-utf8-text --update --side ghostty`.
 The fuzzer (`vt-fuzz`, the core alone) ran 736,528 inputs in 5 minutes
 with none found; `vt-diff`, against Ghostty, needs the oracle.
+
+## VC74 · XTRESTORE of a mode never saved reads a table, not a new terminal (2026-11-25)
+
+The code review's VP10. XTRESTORE of a private mode XTSAVE never kept
+sets it to its state in a new terminal, as Ghostty does, and that state
+was read by making one: `privateState p (fresh t.config)`, a screen of
+its rows and two pages, a style cache and tab stops, for each mode in
+the sequence. Now `defaultPrivate p` answers it, the table
+`privateState` already had for a mode not yet set (1007, 1035 and 1036
+set, the other known modes reset) with DECOM (6) reset, DECAWM (7) and
+DECTCEM (25) set, DECECM (117) permanently reset and an unknown mode not
+recognized; `privateState` uses it for its unset modes too. None of it
+depends on the configuration.
+
+Measured with `harness/dump/core-dump` at 200 by 50: 20,000 of
+`CSI ? 1 ; 2 ; … ; 24 r` (1.3 MB, 480,000 restores) took 16.2 s before
+and 0.03 s after, the screen dumped the same.
+
+Tested: vt's Replies suite, "XTRESTORE with nothing saved gives each
+private mode a new terminal's state": 41 modes (Ghostty's known ones, 2,
+6, 7, 25, 117 and 9999), each set and then restored, and reset and then
+restored, answer DECRQM as a new terminal does. The replay case `xtsave`
+restores 6 unsaved as before.

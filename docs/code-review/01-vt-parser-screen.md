@@ -101,6 +101,7 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - What: `privateState p (fresh t.config)`: `fresh` allocates a screen of `rows + 2 * pageRows + 1` rows (`newScreen`, about 2,100 rows by `cols + 1` Int64s with the default 1,024-row pages: 3.4 MB at 200 columns), a 1,024-slot style cache and the tab stops, to answer what is always 2 except for modes 1007, 1035, 1036 (1), 7 and 25 (1) and 6 (2).
 - Scenario: `ESC [ ? 1 ; 2 ; ... ; 24 r` allocates and frees 24 such terminals per sequence; a stream of them is an allocation storm a remote program controls.
 - Fix: a small function `defaultPrivate : Int -> Int` (the table `privateState` already encodes in its `Nothing` branch plus 6, 7 and 25), used by both.
+- Fixed: 2026-11-25, `docs/vt-core.md` VC74. `defaultPrivate` answers a never-saved mode's state; 20,000 restores of 24 modes took 16.2 s, now 0.03 s.
 
 ### VP11 · `feedImaged` decides "in place" with `t.bottom == 0` where SU uses `t.bottom == t.rows - 1`
 - Where: `vt/src/Vt/Scroll.geng:182`; the same expression at `vt/src/Vt/Dispatch.geng:511`
