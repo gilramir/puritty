@@ -69,6 +69,7 @@ and its callers.
 - What: the module's comment says "Nothing a program shows is written ... a DCS's body [is] given by [its] size". For a body that starts `$q`, `dcsText` writes `String.dropFirst 2 text` whole, and for `+q` each `;` piece through `unhex`, which answers the piece itself when it is not hex. `dcsClean` keeps every byte after the final byte, C0 controls and newlines among them, and a DECRQSS longer than four characters is still logged ("not answered") at Dcs.geng:134. Up to 4,096 bytes.
 - Scenario: with `[debug] log` on, a program sends `DCS $ q` followed by a newline and text shaped like another log line (or terminal escapes, for whoever `cat`s the log). The log shows a line the terminal never wrote.
 - Fix: write the setting only when it is short and printable (as `Probe.written` does for answers, naming control bytes), else its size; the same for a `+q` piece that is not hex.
+- Fixed: 2026-11-25, `docs/diagnostics.md` DG9. A DECRQSS setting is logged only when at most eight printable characters, an XTGETTCAP name only as printable or hex; else by size; vt Heard test.
 
 ### VS7 · `Base64.decode` is documented as strict but takes non-canonical final characters
 - Where: vt/src/Vt/Base64.geng:7-11 (comment), :116-129
@@ -78,6 +79,7 @@ and its callers.
 - What: for a final group of two characters only `(a << 2) | (c >> 4)` is written and `c`'s low four bits are never tested; for three, `d`'s low two bits. So `QR==` decodes as `QQ==` does. The comment says the decoder is "strict as Ghostty's `decodeStrict(.optional)` is meant to be".
 - Scenario: OSC 52 or OSC 7501 (`Status.decoded`, which drops a report whose `msg` "is not base64") accepts text a strict decoder refuses. No harm found; the comment and any gate that holds it to Ghostty disagree with the code.
 - Fix: refuse a final group whose unused bits are not zero, or say in the comment that they are ignored.
+- Fixed: 2026-11-25, `docs/phase3-select.md` §29: the comment corrected, as Ghostty's decoder (simdutf loose) also takes non-zero unused bits; a vt test pins `QR==` as `A`.
 
 ### VS8 · Every frame copies the `drawnIn` stamps and allocates a `worded` array, with no image and no ink on the screen
 - Where: vt/src/Vt/View.geng:690-691 (`imagesDrawn`: `stamps = Builder.slice 0 (rows * cols) done.shadow.drawnIn`), :1259 (`spread`: `worded = Builder.fromArray (Array.repeat (cols * rows) False)`)

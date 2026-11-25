@@ -1286,3 +1286,17 @@ CR and its LF. With `pastedCr` left out (each piece afresh) it received
 2,000,002 bytes for 2,000,001, the one CR LF a piece boundary split made
 two CRs; the large case passed so, as no boundary fell inside a CR LF.
 The tab paste gate (§25) passes 2 of 2.
+
+## 29. Base64's unused bits, as Ghostty takes them (2026-11-25)
+
+The code review's VS7. `Vt.Base64.decode` said it was strict as Ghostty's
+`decodeStrict(.optional)`, but a last group of two or three characters
+leaves four or two bits unused and it never looked at them: `QR==` is
+`QQ==`, `A`. Ghostty's `decodeStrict` checks the alphabet, the padding and
+the decoded length, and leaves the bits to simdutf's `base64_to_binary`,
+called with its default `last_chunk_handling_options::loose`; simdutf
+refuses "non-zero bit padding" only under `strict` (simdutf 7.3.3's
+`simdutf.h`, read in node's sources, as Ghostty's own build is not on
+gmktec7). So the core takes them as Ghostty does, which RFC 4648 §3.5
+allows a decoder to do, and the comment now says so; vt's Encoders suite
+holds `QQ==` and `QR==` to `A`, `QUE=` and `QUF=` to `AA` (241).

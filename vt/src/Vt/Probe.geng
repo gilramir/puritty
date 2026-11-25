@@ -171,11 +171,13 @@ oscText number rest =
 
 {-| A DCS as the log writes it: DECRQSS with the setting asked for, XTGETTCAP
 with the capabilities' names read from their hex, any other by its
-introducer and its size. -}
+introducer and its size. A setting that is not a few printable characters,
+and a name that is not hex, are given by their size too, since the program
+wrote them (the code review's VS6). -}
 dcsText : String -> String
 dcsText text =
     if String.startsWith "$q" text then
-        "DCS $ q " ++ String.dropFirst 2 text ++ " (setting, DECRQSS)"
+        "DCS $ q " ++ plain 8 (String.dropFirst 2 text) ++ " (setting, DECRQSS)"
 
     else if String.startsWith "+q" text then
         "DCS + q " ++ String.join " ; " (Array.map unhex (String.split ";" (String.dropFirst 2 text))) ++ " (capabilities, XTGETTCAP)"
@@ -184,8 +186,19 @@ dcsText text =
         "DCS " ++ String.takeFirst 2 text ++ " <" ++ String.fromInt (String.count text) ++ " characters>"
 
 
+{-| Text a program wrote, as it is when it is at most `most` printable ASCII
+characters, else its size, `<5 characters>`. -}
+plain : Int -> String -> String
+plain most text =
+    if String.count text <= most && String.all (\c -> c >= ' ' && c <= '~') text then
+        text
+
+    else
+        "<" ++ String.fromInt (String.count text) ++ " characters>"
+
+
 {-| A capability's name from its hex, `544E` as `TN`; the hex itself when it
-is not printable ASCII. -}
+is hex but not printable ASCII; its size when it is not hex. -}
 unhex : String -> String
 unhex h =
     let
@@ -221,8 +234,11 @@ unhex h =
     if modBy 2 (Array.length pairs) == 0 && Array.all (\c -> c >= 0x20 && c < 0x7F) codes && Array.all (\c -> digit c >= 0) pairs then
         String.fromArray (Array.mapAndKeepJust Char.fromCode codes)
 
+    else if Array.all (\c -> digit c >= 0) pairs then
+        plain 64 h
+
     else
-        h
+        plain 0 h
 
 
 {-| The answers as written, `ESC[?62;22c`, each control byte named, `\x07`;

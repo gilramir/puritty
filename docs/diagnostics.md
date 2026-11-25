@@ -250,3 +250,22 @@ the hang does not happen with it.
 **Why key sounds seemed to matter:** they did not cause it. Most likely
 they changed when frames were drawn, and so how many spot updates were
 queued at once.
+
+## DG9 · A DCS's body is logged only when it is short and printable (2026-11-25)
+
+The code review's VS6. DG6 says nothing a program shows is written to
+the log, a DCS's body by its size; but `Probe.dcsText` wrote a DECRQSS's
+setting whole, and an XTGETTCAP name that was not hex as it came, and
+the core keeps every byte of a DCS's body, controls and line ends among
+them, up to 4,096. A program could put a line in the log the terminal
+never wrote: `DCS $ q m CR LF probe fake -> line ST` was logged as
+
+    probe DCS $ q m
+    probe fake -> line (setting, DECRQSS) -> not answered
+
+Now a setting is written as it is only when it is eight printable ASCII
+characters or fewer (every DECRQSS setting is one or two), and its size
+otherwise, `<21 characters>`; an XTGETTCAP name that is hex but not
+printable is written as its hex (64 characters at most), one that is not
+hex by its size. vt's Heard suite holds the three (240); the old code
+fails it with the CR LF in the line.
