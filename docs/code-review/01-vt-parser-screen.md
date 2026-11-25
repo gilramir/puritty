@@ -141,6 +141,7 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - What: `rgbAt` does `from = Array.dropFirst at params` and then reads `from[0..2]`, a new array per color, on the SGR path that `dispatch` keeps inline for speed. `38;2;r;g;b;48;2;r;g;b` allocates twice.
 - Scenario: truecolor output (one SGR a cell for image viewers and gradient prompts) pays two array allocations per SGR that the packing in `extendedColor` was written to avoid.
 - Fix: read `at`, `at + 1`, `at + 2` directly; `extendedColor` already proved `len >= 5` (or the colon run's length), which is the refinement the reads need.
+- Fixed: Checked, left, 2026-11-25, `docs/vt-core.md` VC77: reading in place measured no faster (a million truecolor SGRs, 0.37-0.38 s either way), and the checker refutes `at + 1` without the drop.
 
 ### VP15 · Unknown private modes are stored for a DECRQM that never reads them
 - Where: `vt/src/Vt/Modes.geng:255-258` (`setPrivate`), `:426-428` (`privateState`); `docs/vt-core.md:488-489`
@@ -150,6 +151,7 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - What: the last branch of `setPrivate` records any mode number ("recorded, so DECRQM answers what was set"), but `privateState` returns 0 for every mode not in `knownPrivate` before it looks in `modes`. The stored entry is dead, and `t.modes` can hold one entry for each of 65,536 numbers a program sends. `docs/vt-core.md:488` ("every private mode is recorded and answered by DECRQM") is stale in the same way.
 - Scenario: `ESC [ ? 12345 h` then `ESC [ ? 12345 $ p` answers `0`, not `1`; a program that sets every number grows the dict to 65,536 entries for nothing.
 - Fix: do not store modes outside `knownPrivate`, and correct the comment and the document.
+- Fixed: 2026-11-25, `docs/vt-core.md` VC77. A mode outside Ghostty's table is not kept, except 80 and 8452 which Sixel reads (`keptPrivate`); those are no longer logged as ignored; vt Heard test.
 
 ### VP16 · Copying a long selection concatenates a string per cell and per row
 - Where: `vt/src/Vt.geng:833-874` (`textOfRows`: `acc ++ text`), `:877-906` (`cellsText`: `acc ++ text` per cell)

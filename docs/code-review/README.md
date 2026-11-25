@@ -373,8 +373,8 @@ covered" sections. The larger gaps:
 | [VP11](01-vt-parser-screen.md) | bug | plausible | **fixed** `feedImaged` decides "in place" with `t.bottom == 0` where SU uses `t.bottom == t.rows - 1` |
 | [VP12](01-vt-parser-screen.md) | bug | plausible | **checked, as Ghostty** BS at the left margin above the scroll region, with reverse wraparound, moves the cursor down to the region's top |
 | [VP13](01-vt-parser-screen.md) | inaccuracy | confirmed | **fixed** DECRQSS's SGR report leaves out the underline color |
-| [VP14](01-vt-parser-screen.md) | efficiency | confirmed | A truecolor SGR copies the parameter array for each color, against the comment beside it |
-| [VP15](01-vt-parser-screen.md) | inaccuracy | confirmed | Unknown private modes are stored for a DECRQM that never reads them |
+| [VP14](01-vt-parser-screen.md) | efficiency | confirmed | **checked, left** A truecolor SGR copies the parameter array for each color, against the comment beside it |
+| [VP15](01-vt-parser-screen.md) | inaccuracy | confirmed | **fixed** Unknown private modes are stored for a DECRQM that never reads them |
 | [VP16](01-vt-parser-screen.md) | speed | plausible | Copying a long selection concatenates a string per cell and per row |
 | [VP17](01-vt-parser-screen.md) | speed | confirmed | Jump-to-prompt with no prompt in the scrollback walks every row, and each row walks the pages from the oldest |
 | [VS4](02-vt-scrollback-view-input.md) | bug | confirmed | **fixed** The frame's diff trusts style and cluster ids across RIS, which hands the same ids out again |

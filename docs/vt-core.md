@@ -485,8 +485,9 @@ the budget. What is below is what is left beside them.
   so esctest's ten tests of them still fail.
 - **OSC 7, 8, 52, 133, 9 and 777, DCS for tmux and XTGETTCAP, mode 2026's
   synchronized output, the title stack, the kitty keyboard stack, the mouse
-  modes' state, hyperlinks**: not started; every private mode is recorded
-  and answered by DECRQM, which is all most of them need in the core.
+  modes' state, hyperlinks**: not started; every private mode Ghostty
+  knows is recorded and answered by DECRQM, which is all most of them need
+  in the core (a mode it does not know is not kept, VC77).
 - **The style and cluster tables never shrink.** A style id is handed out
   for each new SGR combination and kept; at 32,768 a new style is the
   default (`styleMax`), which bounds memory but draws wrong. Ghostty counts
@@ -5096,3 +5097,30 @@ Tested: vt's Replies suite, "DECRQSS's SGR reports the underline's
 colour": `4:3;58:2::255:0:0` answers `0;4:3;58:2::255:0:0`, `0;4;58;5;3`
 `0;4;58:5:3`, then `58:5:200` `0;4;58:5:200`, then SGR 59 `0;4`. It
 fails on the old answer.
+
+## VC77 · A private mode Ghostty does not know is not kept; a truecolor SGR's copy measured (2026-11-25)
+
+The code review's VP15 and VP14.
+
+**VP15.** `setPrivate` kept every private mode a program set, "so DECRQM
+answers what was set", but DECRQM answers any mode not in Ghostty's
+table (`knownPrivate`) as not recognized before it looks, so the entry
+was never read, and a program setting every number from 1 to 65,535 grew
+the modes to 65,535 entries. Now a mode outside the table is not kept;
+it is still said to the diagnostic log as ignored (DG6). Two the core
+acts on are kept although Ghostty does not know them, `keptPrivate`:
+Sixel's DECSDM (80) and 8452, which placing a Sixel image reads
+(`images-sixel.md` SX2). Before, setting either was also said to the log
+as "ignored", which it was not; vt's Heard suite now holds that `?80h`,
+`?8452h` and `?80l` are not said and `?7727h` is (238), and the old code
+fails it. Sixel's DECSDM test holds that 80 is still kept.
+
+**VP14.** The review read `rgbAt`'s `Array.dropFirst at params` as a
+copy of the parameters for each colour, against the comment that a
+colour allocates nothing. Reading the three at `at`, `at + 1` and
+`at + 2` instead was measured with `harness/dump/core-dump` at 80 by 24
+on a million `CSI 38;2;r;g;b;48;2;r;g;b m` and a character (34 MB):
+0.37 to 0.38 s before and 0.38 to 0.40 s after, the screen the same. And
+the refinement checker refutes `at + 1` and `at + 2` staying inside
+`Int`, which is why the function drops first and reads from 0 ("read
+without adding to it"). So it is left as it is.

@@ -252,13 +252,14 @@ setPrivate p on t =
                     4
         }
 
-    else if Array.member p knownPrivate then
+    else if Array.member p knownPrivate || Array.member p keptPrivate then
         { t | modes = Dict.set p on t.modes }
 
     else
-        -- recorded, so DECRQM answers what was set, but nothing done: said
-        -- to the diagnostic log when it listens for it (DG6)
-        modeIgnored ("DEC mode " ++ String.fromInt p) on { t | modes = Dict.set p on t.modes }
+        -- nothing done, and not kept, since DECRQM answers it as not
+        -- recognized: said to the diagnostic log when it listens for it
+        -- (DG6; review VP15, §VC77)
+        modeIgnored ("DEC mode " ++ String.fromInt p) on t
 
 
 {-| A mode the terminal does nothing with, set or reset, said to the
@@ -464,6 +465,15 @@ defaultPrivate p =
 
     else
         2
+
+
+{-| The private modes Ghostty does not know that the core keeps anyway,
+since it acts on them: Sixel's DECSDM (80) and its cursor right of the
+image (8452), which `Kitty` reads (`images-sixel.md` SX2). DECRQM still
+answers them as not recognized, as Ghostty does. -}
+keptPrivate : Array Int
+keptPrivate =
+    [ 80, 8452 ]
 
 
 {-| The private modes DECRQM answers for although the core only records

@@ -107,8 +107,9 @@ SUITES = [
     # VI4's decoders in bytes: a GIF's indices a byte each; 235 since SX4:
     # a Sixel band's top where the band before ended; 236 since VP10:
     # XTRESTORE with nothing saved, every private mode; 237 since VP13:
-    # DECRQSS's SGR with the underline's colour
-    Suite("vt", 237, runs_of("vt/tests")),
+    # DECRQSS's SGR with the underline's colour; 238 since VP15: modes 80
+    # and 8452 kept and not said to be ignored
+    Suite("vt", 238, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
