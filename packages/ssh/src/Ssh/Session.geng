@@ -539,14 +539,26 @@ session permissions options role label link notices =
 
 
 {-| Every `known_hosts` file's entries, a missing file none. -}
-readKnownHosts : Permissions -> Options -> Task x (Array KnownHosts.Entry)
+readKnownHosts : Permissions -> Options -> Task Os.Error.Error (Array KnownHosts.Entry)
 readKnownHosts permissions options =
     options.knownHostsFiles
         |> Array.map
             (\f ->
                 File.readFile permissions.fs (Path.fromString f)
                     |> Task.map (\text -> (KnownHosts.parse (Bytes.toStringLossy text)).entries)
-                    |> Task.onError (\_ -> Task.succeed [])
+                    |> Task.onError
+                        (\e ->
+                            -- a file not there knows no host, as OpenSSH
+                            -- takes it; one there that cannot be read is not
+                            -- taken as empty, which would ask about every
+                            -- host and lose its @revoked lines (the code
+                            -- review's SC26)
+                            if e.kind == Os.Error.NotFound then
+                                Task.succeed []
+
+                            else
+                                Task.fail e
+                        )
             )
         |> Task.sequence
         |> Task.map Array.flatten
@@ -1803,7 +1815,7 @@ resolveOne permissions given =
                                 , port = Dict.get "port" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 22)
                                 , user = one "user" given.localUser
                                 , identityFiles = Array.map expand (all "identityfile")
-                                , identitiesOnly = String.toLower (one "identitiesonly" "no") == "yes"
+                                , identitiesOnly = Config.isYes (one "identitiesonly" "no")
                                 , agents = agentPaths
                                 , knownHostsFiles = all "userknownhostsfile"
                                 , strictHostKeyChecking = strict

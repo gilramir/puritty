@@ -53,6 +53,7 @@ import Ssh.Auth as Auth
 import Ssh.Base64 as Base64
 import Ssh.Config as Config
 import Ssh.Connection as Connection
+import Ssh.Glob as Glob
 import Ssh.KnownHosts as KnownHosts
 import Ssh.Session as Session
 import Ssh.Sftp as Sftp
@@ -522,6 +523,53 @@ connectionSuite =
 
                         else
                             Just ("answered " ++ String.join "," (Array.map String.fromInt answers))
+                    )
+               , caseTest "a transport given a seed of fewer than 32 bytes fails at once (review SC25)"
+                    (\_ ->
+                        let
+                            seeded =
+                                Transport.start Transport.defaultConfig (Bytes.fromString "too short")
+
+                            failed =
+                                Array.any
+                                    (\e ->
+                                        when e is
+                                            Transport.Failed _ ->
+                                                True
+
+                                            _ ->
+                                                False
+                                    )
+                                    seeded.events
+                        in
+                        if failed && Bytes.isEmpty seeded.out then
+                            Nothing
+
+                        else
+                            Just "the short seed was taken"
+                    )
+               , caseTest "one glob for Host and known_hosts patterns: stars, ?, and many stars at once (review SC27)"
+                    (\_ ->
+                        let
+                            a30 =
+                                String.repeat 30 "a"
+
+                            got =
+                                [ Glob.matches "*" ""
+                                , Glob.matches "web?" "web7"
+                                , Glob.matches "web?" "web77"
+                                , Glob.matches "*.example.com" "a.example.com"
+                                , Glob.matches "a*b*c" "axxbyyc"
+                                , Glob.matches "a*b*c" "axxbyy"
+                                , Glob.matches "*a*a*a*a*a*a*a*a*a*b" a30
+                                , Glob.matches "*a*a*a*a*a*a*a*a*a*a" a30
+                                ]
+                        in
+                        if got == [ True, True, False, True, True, False, False, True ] then
+                            Nothing
+
+                        else
+                            Just "a pattern matched wrongly"
                     )
                , caseTest "a side channel closed while it opens is closed when confirmed: no request, nothing queued (review SC1)"
                     (\_ ->

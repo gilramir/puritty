@@ -265,7 +265,14 @@ start config seed =
             , events = []
             }
     in
-    finish st
+    if Bytes.length seed < 32 then
+        -- a short seed would make every exchange's secret the same: refused,
+        -- not taken (the code review's SC25)
+        -- nothing sent, not even the version line
+        finish (emit (Failed ("a seed of " ++ String.fromInt (Bytes.length seed) ++ " bytes; 32 or more are needed")) { st | out = [], phase = Dead })
+
+    else
+        finish st
 
 
 {-| Whether the first exchange waits on the server's KEXINIT, ours unsent:

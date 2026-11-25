@@ -1,0 +1,60 @@
+module Ssh.Glob exposing (matches)
+
+{-| The patterns of ssh_config's `Host` and of known_hosts' names
+(ssh_config(5), PATTERNS): `*` any run of characters, `?` one, the rest
+as they are. One matcher for both, which two copies had been, walking the
+pattern and the name by index and going back only to the last `*` seen,
+so that it is linear in their lengths' product at worst, where trying both
+ways at every `*` was exponential in the number of stars (the code
+review's SC27).
+-}
+
+
+{-| Whether `name` is one that `pattern` matches, case and all. -}
+matches : String -> String -> Bool
+matches pattern name =
+    let
+        p =
+            String.toArray pattern
+
+        n =
+            String.toArray name
+    in
+    walk p n 0 0 -1 0
+
+
+{-| At pattern index `i` and name index `j`; `star` is where the last `*`
+was (-1 for none) and `mark` the name's index it was tried from. -}
+walk : Array Char -> Array Char -> Int -> Int -> Int -> Int -> Bool
+walk p n i j star mark =
+    let
+        at k a =
+            Array.get k a
+    in
+    if j < Array.length n then
+        when { pc = at i p, nc = at j n } is
+            { pc = Just '*' } ->
+                -- a star: first take it as nothing
+                walk p n (i + 1) j i j
+
+            { pc = Just c, nc = Just d } ->
+                if c == '?' || c == d then
+                    walk p n (i + 1) (j + 1) star mark
+
+                else if star >= 0 then
+                    -- the last star takes one more character
+                    walk p n (star + 1) (mark + 1) star (mark + 1)
+
+                else
+                    False
+
+            _ ->
+                if star >= 0 then
+                    walk p n (star + 1) (mark + 1) star (mark + 1)
+
+                else
+                    False
+
+    else
+        -- the name is all taken: what is left of the pattern must be stars
+        Array.all (\c -> c == '*') (Array.dropFirst i p)

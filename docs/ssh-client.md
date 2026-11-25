@@ -1972,3 +1972,40 @@ to the trim.
 
 `ssh-tests connection` gains a test of each (23), and each fails on the
 code before.
+
+## SC39 · One glob, one token expander, one yes, a seed held, and known_hosts unreadable (2026-11-25)
+
+The code review's SC20, SC21, SC25, SC26 and SC27.
+
+**SC27.** `KnownHosts` and `Config` each had a `glob`, the same, trying
+both ways at every `*` with no memo, exponential in the stars. Both now
+use `Ssh.Glob.matches`, which walks the pattern and the name by index and
+goes back only to the last `*` seen. `ssh-tests connection` holds eight
+patterns, two of them ten stars against thirty `a`s, and the config cases
+gain the latter as `ssh -G` resolves it (`pattern-many-stars`).
+
+**SC21.** `HostName`'s `%h` and `%%` were expanded by two `String.replace`,
+`%%` first, so `%%h` came out as the host. `expandHost` now uses
+`tokensIn`, the one-pass expander `expandTokens` uses. The config case
+`hostname-percent` (`HostName a%%h` for `box`, OpenSSH's `ssh -G` says
+`hostname a%h`) failed with `abox` before.
+
+**SC20.** A relative `Include` went under `~/.ssh` whatever file it was
+in; in a file under `/etc/ssh/` it now goes under `/etc/ssh`, as
+ssh_config(5) has it. The system's file is not read yet, so no case
+reaches it.
+
+**SC26.** `IdentitiesOnly` was taken only as `yes`; OpenSSH also takes
+`true`. `Config.isYes` reads it, and the config cases gain
+`identitiesonly-true`. A `known_hosts` that could not be read was taken as
+empty: every host unknown, its `@revoked` lines lost, and under
+`accept-new` a key appended to it. One not there still knows no host, as
+OpenSSH takes it; one there that cannot be read now ends the session with
+the error. `sshd.py`'s `driver-unreadable-known-hosts` (the host's key in
+the file, the file's mode 0): the old code asked to trust the host's key;
+now "failed: readFile KNOWN_HOSTS: Permission denied".
+
+**SC25.** `Transport.start` took a seed of any length, an empty one
+included, though the same seed makes the same key exchange secret. A seed
+under 32 bytes now fails the transport at once, nothing sent, not even the
+version line; `ssh-tests connection` holds it (25).

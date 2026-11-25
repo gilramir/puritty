@@ -209,6 +209,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `includePath` puts every relative path under `context.home ++ "/.ssh/"`, without looking at `d.file`. ssh_config(5): relative to `~/.ssh` in a user file, to `/etc/ssh` in the system file. `~user/` is not expanded either. Latent today since the system file is not read at all (finding above), and SC15 says no case tests relative includes.
 - Scenario: once the system file is passed to `resolve`, `Include ssh_config.d/*.conf` in `/etc/ssh/ssh_config` reads `~/.ssh/ssh_config.d/`.
 - Fix: carry the including file's directory (or a `system : Bool`) to `includePath`.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC39. A relative `Include` in a file under `/etc/ssh/` goes under `/etc/ssh`; latent, the system file not read yet.
 
 ### SC21 · `HostName %%h` expands to the host; `%%` is replaced before `%h`
 - Where: packages/ssh/src/Ssh/Config.geng:545-547 (`expandHost`)
@@ -218,6 +219,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `String.replace "%h" host (String.replace "%%" "%" value)`: the inner replace turns `%%h` into `%h`, which the outer one then expands. `tokensIn` (646-662) does it properly in one pass and is not used here.
 - Scenario: `HostName a%%h` gives `a` followed by the host, not the literal `a%h`. Rare, but it is a second token expander that has already drifted from the first.
 - Fix: call `tokensIn` with a table of `h` and `%`.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC39. `expandHost` uses `tokensIn`; config case `hostname-percent` from `ssh -G`.
 
 ### SC22 · RSA certificates and other key types an agent holds are offered under a name the server cannot take
 - Where: packages/ssh/src/Ssh/Auth.geng:363-373 (`algorithmFor`); packages/ssh/src/Ssh/Agent.geng:80-94 (`signRequest` flags); packages/ssh/src/Ssh/Session.geng:560
@@ -254,6 +256,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: "a seed of 32 or more bytes" is a comment. `Random.seeded Bytes.empty` works and gives the same X25519 private value on every connection. Today's only caller passes `Os.Random.bytes 32`, whose failure fails the task.
 - Scenario: a caller, a test helper promoted to production, or a short read from a future `Os.Random` hands in fewer bytes: every session's key exchange secret is predictable, and nothing fails.
 - Fix: a refinement on the argument (`Bytes.length seed >= 32`), or `start` answers a dead transport with `Failed` for a short seed.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC39. A seed under 32 bytes fails the transport, nothing sent; test.
 
 ### SC26 · `IdentitiesOnly true` is read as `no`, and a `known_hosts` that cannot be read is read as empty
 - Where: packages/ssh/src/Ssh/Session.geng:1552, 493-495 (outside the slice; noted because they decide what `Auth` offers and what `KnownHosts.check` sees)
@@ -263,6 +266,7 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - What: `identitiesOnly = String.toLower (one "identitiesonly" "no") == "yes"`; OpenSSH takes `true` as well (as `Config.toLines`' `yesNo` knows). `readKnownHosts` turns any read error into `[]`.
 - Scenario: `IdentitiesOnly true`: every agent key is offered to the server. A `known_hosts` that exists but cannot be read (permissions, a transient error on a network home): every host is "unknown", `@revoked` lines are lost, and under `accept-new` keys are accepted and appended.
 - Fix: one yes/no reader in `Config` used by both; tell a missing file from an unreadable one and refuse to connect, or at least say so, for the latter.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC39. `Config.isYes` for `IdentitiesOnly`; an unreadable `known_hosts` ends the session; sshd case `driver-unreadable-known-hosts`.
 
 ### SC27 · The glob matcher is written twice and backtracks exponentially
 - Where: packages/ssh/src/Ssh/KnownHosts.geng:182-210; packages/ssh/src/Ssh/Config.geng:550-578
@@ -303,3 +307,4 @@ Geng's `Int` is 32 bits and wraps (`geng-lang/docs/user/refinements.md` line 38)
 - The test programs under `packages/ssh/tests` and `packages/ssh-crypto/tests` were listed, not read; test-gap claims above are limited to what SC14 to SC17 say is covered.
 - Windows-specific agent paths (Pageant, the named pipe) and `docs/saved-secrets.md`'s Credential Manager code.
 - Thread safety of PuTTY's run-time CPU feature selection (`*-select.c`) when a pure extern on the program thread and a signing thread first use a hash at the same moment.
+- Fixed: 2026-11-25, `docs/ssh-client.md` SC39. One linear `Ssh.Glob.matches` for both; tests and config case `pattern-many-stars`.

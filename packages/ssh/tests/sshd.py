@@ -148,6 +148,9 @@ SESSION_DRIVER_CASES = [
     # alone: its server-sig-algs comes while the host key is asked about,
     # and is kept for the login (the code review's SC14)
     ("driver-trust-rsa-sha256-only", "empty-rsa256", ["--identity", "{rsa}", "--trust-once"]),
+    # a known_hosts there but unreadable: the session ends, not every host
+    # asked about as unknown (the code review's SC26)
+    ("driver-unreadable-known-hosts", "unreadable", ["--identity", "{ed}", "--trust-once"]),
 ]
 
 
@@ -363,9 +366,14 @@ def main():
             kh.write_text(f"box {' '.join(server_pub)}\n")
         else:
             kh.write_text("" if start in ("empty", "empty-rsa256") else f"{names} {' '.join(server_pub) if start == 'known' else other_pub}\n")
+        if start == "unreadable":
+            kh.write_text(f"{names} {' '.join(server_pub)}\n")
+            os.chmod(kh, 0)
         try:
             got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
                               "--exec", "echo hi; exit 4", *(o.format(**keys) for o in options)])
+            if start == "unreadable":
+                os.chmod(kh, 0o600)
             got += "known_hosts holds the key: " + ("yes" if " ".join(server_pub) in kh.read_text() else "no") + "\n"
             if start in ("other", "shared"):
                 got += "known_hosts holds the old key: " + ("yes" if other_pub in kh.read_text() else "no") + "\n"

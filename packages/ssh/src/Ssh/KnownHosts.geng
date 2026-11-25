@@ -31,6 +31,7 @@ every answer.
 
 import Bytes exposing (Bytes)
 import Ssh.Base64 as Base64
+import Ssh.Glob as Glob
 import Ssh.Reason as Reason
 import Ssh.Wire as Wire
 import SshCrypto
@@ -172,8 +173,8 @@ matches name entry =
                 positive =
                     Array.keepIf (\p -> not (String.startsWith "!" p)) patterns
             in
-            Array.any (\p -> glob (String.toLower p) name) positive
-                && not (Array.any (\p -> glob (String.toLower (String.dropFirst 1 p)) name) negated)
+            Array.any (\p -> Glob.matches (String.toLower p) name) positive
+                && not (Array.any (\p -> Glob.matches (String.toLower (String.dropFirst 1 p)) name) negated)
 
 
 {-| The lines that name the host, `@cert-authority` ones left out, in the
@@ -181,38 +182,6 @@ file's order. -}
 matching : String -> Array Entry -> Array Entry
 matching name entries =
     Array.keepIf (\e -> e.marker /= CertAuthority && matches name e) entries
-
-
-{-| `*` for any run of characters, `?` for one, and the rest as they are. -}
-glob : String -> String -> Bool
-glob pattern name =
-    globFrom (String.toArray pattern) (String.toArray name)
-
-
-globFrom : Array Char -> Array Char -> Bool
-globFrom pattern name =
-    when Array.popFirst pattern is
-        Nothing ->
-            meant Reason.NoMore Array.isEmpty name
-
-        Just p ->
-            if p.first == '*' then
-                globFrom p.rest name
-                    || (when Array.popFirst name is
-                            Just n ->
-                                globFrom pattern n.rest
-
-                            Nothing ->
-                                meant Reason.NoMore False
-                       )
-
-            else
-                when Array.popFirst name is
-                    Just n ->
-                        (p.first == '?' || p.first == n.first) && globFrom p.rest n.rest
-
-                    Nothing ->
-                        meant Reason.NoMore False
 
 
 {-| What the file says of the key a server showed:

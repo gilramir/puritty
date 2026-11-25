@@ -49,6 +49,12 @@ CASES = [
     ("patterns", "web7", [("config", "Host db* web?\n  User w\nHost web??\n  User z\n")]),
     ("pattern-list-comma", "beta", [("config", "Host alpha,beta\n  Port 3000\n")]),
     ("host-case", "BUILD", [("config", "Host build\n  User lower\n")]),
+    # %% is a percent, not the start of %h (the code review's SC21)
+    ("hostname-percent", "box", [("config", "Host box\n  HostName a%%h\n")]),
+    ("identitiesonly-true", "h", [("config", "Host h\n  IdentitiesOnly true\n")]),
+    # ten stars against thirty a's: one pass, not a backtrack at each star
+    # (SC27)
+    ("pattern-many-stars", "a" * 30, [("config", "Host *a*a*a*a*a*a*a*a*a*b\n  User no\nHost *a*a*a*a*a*a*a*a*a*a\n  User yes\n")]),
     ("match-host-after-hostname", "build", [("config", "Host build\n  HostName build.example.com\nMatch host build.example.com user gilbert\n  ForwardAgent yes\nHost build\n  User gilbert\n")]),
     ("match-host-user-set", "build", [("config", "Host build\n  HostName build.example.com\n  User gilbert\nMatch host build.example.com user gilbert\n  ForwardAgent yes\n")]),
     ("match-originalhost", "build", [("config", "Host build\n  HostName b.example.com\nMatch originalhost build\n  Port 2201\n")]),

@@ -6,6 +6,7 @@ module Ssh.Config exposing
     , Source
     , actedOn
     , client
+    , isYes
     , parse
     , resolve
     , toLines
@@ -30,6 +31,7 @@ names, through [`Source`](#Source).
 -}
 
 import Dict exposing (Dict)
+import Ssh.Glob as Glob
 import Ssh.Reason as Reason
 
 
@@ -388,7 +390,7 @@ apply context source d r =
             else
                 let
                     files =
-                        Array.mapAndFlatten (\a -> source (includePath context a)) d.args
+                        Array.mapAndFlatten (\a -> source (includePath context d.file a)) d.args
 
                     inner =
                         Array.foldl
@@ -429,25 +431,41 @@ where_ d =
 
 
 {-| An `Include`'s path: `~` is the home, and a relative one is under
-`~/.ssh`. -}
-includePath : Context -> String -> String
-includePath context path =
+`~/.ssh` in a user's file and under `/etc/ssh` in the system's, as
+ssh_config(5) has it, `file` being the including file (the code review's
+SC20). -}
+includePath : Context -> String -> String -> String
+includePath context file path =
     if String.startsWith "~/" path then
         context.home ++ String.dropFirst 1 path
 
     else if String.startsWith "/" path then
         path
 
+    else if String.startsWith "/etc/ssh/" file then
+        "/etc/ssh/" ++ path
+
     else
         context.home ++ "/.ssh/" ++ path
+
+
+{-| A yes-or-no value as OpenSSH reads one: `yes` or `true` (the code
+review's SC26). -}
+isYes : String -> Bool
+isYes value =
+    let
+        v =
+            String.toLower value
+    in
+    v == "yes" || v == "true"
 
 
 {-| Patterns against a name, case and all: one that matches, and no `!` one
 that does. -}
 hostMatches : String -> Array String -> Bool
 hostMatches host patterns =
-    Array.any (\p -> not (String.startsWith "!" p) && glob p host) patterns
-        && not (Array.any (\p -> String.startsWith "!" p && glob (String.dropFirst 1 p) host) patterns)
+    Array.any (\p -> not (String.startsWith "!" p) && Glob.matches p host) patterns
+        && not (Array.any (\p -> String.startsWith "!" p && Glob.matches (String.dropFirst 1 p) host) patterns)
 
 
 {-| A `Match` line, its criteria all to hold: `all`, `canonical` and
@@ -547,38 +565,9 @@ matchLine context r d =
 {-| `HostName`'s `%h` (the host as typed, in lower case) and `%%`. -}
 expandHost : Context -> String -> String
 expandHost context value =
-    String.toLower (String.replace "%h" (String.toLower context.host) (String.replace "%%" "%" value))
-
-
-glob : String -> String -> Bool
-glob pattern name =
-    globFrom (String.toArray pattern) (String.toArray name)
-
-
-globFrom : Array Char -> Array Char -> Bool
-globFrom pattern name =
-    when Array.popFirst pattern is
-        Nothing ->
-            meant Reason.NoMore Array.isEmpty name
-
-        Just p ->
-            if p.first == '*' then
-                globFrom p.rest name
-                    || (when Array.popFirst name is
-                            Just n ->
-                                globFrom pattern n.rest
-
-                            Nothing ->
-                                meant Reason.NoMore False
-                       )
-
-            else
-                when Array.popFirst name is
-                    Just n ->
-                        (p.first == '?' || p.first == n.first) && globFrom p.rest n.rest
-
-                    Nothing ->
-                        meant Reason.NoMore False
+    -- in one pass, so that `%%h` is `%h`, not the host (the code review's
+    -- SC21)
+    String.toLower (tokensIn (Dict.empty |> Dict.set 'h' (String.toLower context.host) |> Dict.set '%' "%") (String.toArray value) "")
 
 
 {-| What OpenSSH fills in for what no line set. -}
@@ -833,7 +822,7 @@ client has environment settings =
                 |> Array.foldl
                     (\p acc ->
                         if String.startsWith "-" p then
-                            Array.keepIf (\kept -> not (glob (String.dropFirst 1 p) kept)) acc
+                            Array.keepIf (\kept -> not (Glob.matches (String.dropFirst 1 p) kept)) acc
 
                         else
                             Array.pushLast p acc
@@ -843,7 +832,7 @@ client has environment settings =
         sent =
             Dict.foldl
                 (\name text acc ->
-                    if Array.any (\p -> glob p name) sendPatterns && not (Array.any (\v -> v.name == name) setEnv) then
+                    if Array.any (\p -> Glob.matches p name) sendPatterns && not (Array.any (\v -> v.name == name) setEnv) then
                         Array.pushLast { name = name, value = text } acc
 
                     else
@@ -930,7 +919,7 @@ algorithms ours spec =
             String.split "," text |> Array.map String.trim |> Array.keepIf (\n -> n /= "")
 
         matching patterns =
-            Array.keepIf (\a -> Array.any (\p -> glob p a) patterns) ours
+            Array.keepIf (\a -> Array.any (\p -> Glob.matches p a) patterns) ours
     in
     if String.startsWith "+" spec then
         ours
@@ -940,7 +929,7 @@ algorithms ours spec =
             gone =
                 named (String.dropFirst 1 spec)
         in
-        Array.keepIf (\a -> not (Array.any (\p -> glob p a) gone)) ours
+        Array.keepIf (\a -> not (Array.any (\p -> Glob.matches p a) gone)) ours
 
     else if String.startsWith "^" spec then
         let
@@ -951,6 +940,6 @@ algorithms ours spec =
 
     else
         Array.foldl
-            (\p acc -> acc ++ Array.keepIf (\a -> glob p a && not (Array.member a acc)) ours)
+            (\p acc -> acc ++ Array.keepIf (\a -> Glob.matches p a && not (Array.member a acc)) ours)
             []
             (named spec)
