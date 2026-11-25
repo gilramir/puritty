@@ -7,11 +7,17 @@ where no buffer can be overrun. After zlib's own reference decoder,
 `puff.c`: each Huffman code decoded a bit at a time from its lengths'
 counts, a table no larger than the alphabet. The output is held to `most`
 bytes, so that a few compressed bytes cannot ask for gigabytes.
+
+The output is written once, into a `Bytes.Builder` given room for the
+size the caller expects, and a distance is copied from a window of the
+last 32 KiB beside it, so that the bytes are not held twice nor copied at
+the end (`docs/images.md` IM39).
 -}
 
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
+import Bytes.Builder
 import UInt8
 import Vt.Cell exposing (byteAt)
 import Vt.Reason as Reason
@@ -19,9 +25,11 @@ import Vt.Reason as Reason
 
 {-| A zlib stream inflated: its two header bytes checked (deflate, a
 window of at most 32 KiB, no preset dictionary, the check bits), the
-deflate data inflated, and its Adler-32 held to the data's. -}
-zlib : Int -> Bytes -> Result String Bytes
-zlib most data =
+deflate data inflated, and its Adler-32 held to the data's. `expect` is
+the size the caller expects, the builder's room: the output past it is
+still taken, to `most`, by growing. -}
+zlib : Int -> Int -> Bytes -> Result String Bytes
+zlib expect most data =
     let
         n =
             Bytes.length data
@@ -45,11 +53,11 @@ zlib most data =
         Err "preset dictionary"
 
     else
-        when blocks most data { pos = 16, out = Builder.empty 4096, end = n * 8 } is
+        when blocks most data (begin 16 expect most (n * 8)) is
             Ok done ->
                 let
                     out =
-                        Bytes.fromUInt8s (Builder.toArray done.out)
+                        Bytes.Builder.toBytes done.out
 
                     -- the checksum after the deflate data, on a byte
                     at =
@@ -71,14 +79,33 @@ zlib most data =
                 meant Reason.FromOutside Err why
 
 
-{-| Raw deflate data inflated. -}
-inflate : Int -> Bytes -> Result String Bytes
-inflate most data =
-    Result.map (\done -> Bytes.fromUInt8s (Builder.toArray done.out)) (blocks most data { pos = 0, out = Builder.empty 4096, end = Bytes.length data * 8 })
+{-| Raw deflate data inflated, with room for `expect` bytes. -}
+inflate : Int -> Int -> Bytes -> Result String Bytes
+inflate expect most data =
+    Result.map (\done -> Bytes.Builder.toBytes done.out) (blocks most data (begin 0 expect most (Bytes.length data * 8)))
 
 
+{-| Where the reading is, in bits, and where it ends; the output, and the
+window of its last 32 KiB, byte `i` of the output at `i` modulo 32,768. -}
 type alias State =
-    { pos : Int, out : Builder UInt8, end : Int }
+    { pos : Int, out : Bytes.Builder.Builder, window : Window, end : Int }
+
+
+type alias Window =
+    (w : Builder UInt8 where Builder.length w == 32768)
+
+
+{-| The state before the first block: room for `expect` bytes, held to
+`most` and to 4 KiB at least. -}
+begin : Int -> Int -> Int -> Int -> State
+begin pos expect most end =
+    { pos = pos, out = Bytes.Builder.empty (clamp 4096 (max 4096 most) expect), window = Builder.repeat 32768 (UInt8.fromInt 0), end = end }
+
+
+{-| Where byte `i` of the output is in the window. -}
+slot : Int -> (r : Int where 0 <= r && r < 32768)
+slot i =
+    clamp 0 32767 (Bitwise.and i 32767)
 
 
 {-| `n` bits from `pos`, the first the lowest, or none past the end. -}
@@ -173,22 +200,33 @@ stored most data st =
     else if Bitwise.xor len 0xFFFF /= nlen then
         Err "stored length"
 
-    else if Builder.length st.out + len > most then
+    else if Bytes.Builder.length st.out + len > most then
         Err "too large"
 
     else
-        Ok { st | pos = (from + len) * 8, out = pushBytes data from (from + len) st.out }
+        let
+            written =
+                pushBytes data from (from + len) st.out st.window
+        in
+        Ok { pos = (from + len) * 8, out = written.out, window = written.window, end = st.end }
 
 
-{-| Bytes `from` to `to` of `data` pushed onto `out`, one at a time (`Bytes`
-has no array of its bytes to append). -}
-pushBytes : Bytes -> Int -> Int -> (taken out : Builder UInt8) -> Builder UInt8
-pushBytes data from to out =
+{-| Bytes `from` to `to` of `data` written, one at a time, as each goes
+into the window too. -}
+pushBytes : Bytes -> Int -> Int -> (taken out : Bytes.Builder.Builder) -> (taken window : Window) -> { out : Bytes.Builder.Builder, window : Window }
+pushBytes data from to out window =
     if from >= to then
-        out
+        { out = out, window = window }
 
     else
-        pushBytes data (from + 1) to (Builder.pushLast (UInt8.fromInt (byteAt data from)) out)
+        let
+            at =
+                clamp 0 2147483647 (Bytes.Builder.length out)
+
+            b =
+                byteAt data from
+        in
+        pushBytes data (from + 1) to (Bytes.Builder.pushLast b out) (Builder.set (slot at) (UInt8.fromInt b) window)
 
 
 {-| A Huffman code, as `puff.c` keeps one: how many codes there are of each
@@ -333,11 +371,15 @@ codes most data h st =
     when decode data st.end h.lit st.pos is
         Just s ->
             if s.sym < 256 then
-                if Builder.length st.out >= most then
+                if Bytes.Builder.length st.out >= most then
                     Err "too large"
 
                 else
-                    codes most data h { st | pos = s.pos, out = Builder.pushLast (UInt8.fromInt s.sym) st.out }
+                    let
+                        at =
+                            clamp 0 2147483647 (Bytes.Builder.length st.out)
+                    in
+                    codes most data h { pos = s.pos, out = Bytes.Builder.pushLast s.sym st.out, window = Builder.set (slot at) (UInt8.fromInt s.sym) st.window, end = st.end }
 
             else if s.sym == 256 then
                 Ok { st | pos = s.pos }
@@ -386,7 +428,7 @@ codes most data h st =
                                                     clamp 0 24577 db + clamp 0 8191 de
 
                                                 have =
-                                                    Builder.length st.out
+                                                    Bytes.Builder.length st.out
                                             in
                                             if dist < 1 || dist > have then
                                                 Err "distance too far"
@@ -395,7 +437,11 @@ codes most data h st =
                                                 Err "too large"
 
                                             else
-                                                codes most data h { st | pos = d.pos + dExtra, out = copyBack dist len st.out }
+                                                let
+                                                    w =
+                                                        copyBack dist len st.out st.window
+                                                in
+                                                codes most data h { pos = d.pos + dExtra, out = w.out, window = w.window, end = st.end }
 
                                         Nothing ->
                                             -- the stream ended in the distance's extra bits
@@ -413,18 +459,24 @@ codes most data h st =
 
 
 {-| `len` bytes copied from `dist` back, one at a time, as they may
-overlap what is being written. -}
-copyBack : (dist : Int where 1 <= dist && dist <= 32768) -> Int -> (taken out : Builder UInt8 where dist <= Builder.length out) -> Builder UInt8
-copyBack dist len out =
+overlap what is being written. The distance is at most 32,768 and at most
+what is out, so its byte is still in the window. -}
+copyBack : Int -> Int -> (taken out : Bytes.Builder.Builder) -> (taken window : Window) -> { out : Bytes.Builder.Builder, window : Window }
+copyBack dist len out window =
     if len <= 0 then
-        out
+        { out = out, window = window }
 
     else
         let
+            at =
+                clamp 0 2147483647 (Bytes.Builder.length out)
+
             b =
-                Builder.getProven (Builder.length out - dist) out
+                Builder.getProven (slot (at - clamp 0 32768 dist)) window
         in
-        copyBack dist (len - 1) (Builder.pushLast b out)
+        -- the output and the window carried as two arguments, so that a
+        -- byte copied makes no record
+        copyBack dist (len - 1) (Bytes.Builder.pushLast (UInt8.toInt b) out) (Builder.set (slot at) b window)
 
 
 {-| A dynamic block's codes, read from its header, then its symbols. -}

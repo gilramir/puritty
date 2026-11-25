@@ -5,11 +5,10 @@ arguments and base64 made into the image to show, its size and how it is
 placed. Pure: the caller keeps and places it (`Vt.Kitty.itermDispatch`).
 -}
 
-import Array.Builder as Builder exposing (Builder)
 import Bytes exposing (Bytes)
+import Bytes.Builder
 import Dict exposing (Dict)
 import Math
-import UInt8
 import Vt.Base64 as Base64
 import Vt.Cell exposing (byteAt)
 import Vt.Gif as Gif
@@ -286,15 +285,13 @@ resample w h src tw th =
                         bottom =
                             at x0 (y0 + 1) c * (1 - ax) + at (x0 + 1) (y0 + 1) c * ax
                     in
-                    Builder.pushLast (UInt8.fromInt (clamp 0 255 (Math.round (top * (1 - ay) + bottom * ay)))) o
+                    Bytes.Builder.pushLast (clamp 0 255 (Math.round (top * (1 - ay) + bottom * ay))) o
             in
             channel 3 (channel 2 (channel 1 (channel 0 out)))
     in
-    Bytes.fromUInt8s
-        (Builder.toArray
-            (Array.foldl
-                (\y out -> Array.foldl (\x o -> pixel x y o) out (Array.range 0 (tw - 1)))
-                (Builder.empty (tw * th * 4))
-                (Array.range 0 (th - 1))
-            )
+    Bytes.Builder.toBytes
+        (Array.foldl
+            (\y out -> Array.foldl (\x o -> pixel x y o) out (Array.range 0 (tw - 1)))
+            (Bytes.Builder.empty (tw * th * 4))
+            (Array.range 0 (th - 1))
         )

@@ -5,6 +5,7 @@ module Gif exposing (suite)
 exactly: a colour table's lookup leaves nothing to round.
 -}
 
+import Bitwise
 import Bytes exposing (Bytes)
 import Expect
 import GifCases
@@ -40,6 +41,42 @@ differing c =
             -1
 
 
+{-| A GIF of two pixels by one, a 256-colour table of greys (index `i` is
+`i, i, i`), 8-bit codes, and LZW data `codes` of nine bits each. -}
+twoPixels : Array Int -> Bytes
+twoPixels codes =
+    let
+        -- each code's nine bits, the lowest first, then eight to a byte
+        bits =
+            Array.flatten (Array.map (\c -> Array.initialize 9 0 (\k -> Bitwise.and 1 (Bitwise.shiftRightBy k c))) codes)
+
+        data =
+            Array.initialize ((Array.length bits + 7) // 8)
+                0
+                (\i -> Array.foldl (\k acc -> Bitwise.or acc (Bitwise.shiftLeftBy k (Maybe.withDefault 0 (Array.get (8 * i + k) bits)))) 0 (Array.range 0 7))
+    in
+    Array.flatten
+        [ [ 0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 2, 0, 1, 0, 0xF7, 0, 0 ]
+        , Array.flatten (Array.initialize 256 0 (\i -> [ i, i, i ]))
+        , [ 0x2C, 0, 0, 0, 0, 2, 0, 1, 0, 0, 8, Array.length data ]
+        , data
+        , [ 0, 0x3B ]
+        ]
+        |> Array.map UInt8.fromInt
+        |> Bytes.fromUInt8s
+
+
+{-| The pixels' RGBA, or nothing for a GIF not decoded. -}
+rgba : Bytes -> Maybe (Array Int)
+rgba gif =
+    when Gif.decode 100000000 gif is
+        Ok img ->
+            Just (Array.initialize (Bytes.length img.pixels) 0 (\i -> Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get i img.pixels))))
+
+        Err _ ->
+            Nothing
+
+
 suite : U.Suite
 suite =
     Support.run "Gif"
@@ -50,4 +87,11 @@ suite =
                 }
             )
             GifCases.cases
+            ++ [ { name = "indices 7 and 200 by 8-bit codes, a byte each (docs/images.md IM39)"
+                 , test = \_ -> Expect.equal (Just [ 7, 7, 7, 255, 200, 200, 200, 255 ]) (rgba (twoPixels [ 256, 7, 200, 257 ]))
+                 }
+               , { name = "a first code past 255 ends the data, not wrapped to an index (IM39)"
+                 , test = \_ -> Expect.equal (Just [ 0, 0, 0, 255, 0, 0, 0, 255 ]) (rgba (twoPixels [ 256, 300, 200, 257 ]))
+                 }
+               ]
         )

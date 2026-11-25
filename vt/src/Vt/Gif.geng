@@ -5,12 +5,15 @@ IT4), in Geng: the first frame only, as a still picture, placed on the
 logical screen, which is clear elsewhere. The global or the frame's own
 colour table, the transparent index of the frame's graphic control
 extension, LZW of up to 12 bits a code, and interlaced rows. Held to
-`most` bytes of pixels.
+`most` bytes of pixels. The colour indices are a byte each, read in place
+for an interlaced frame's rows, and the pixels are written once into
+`Bytes` (`docs/images.md` IM39).
 -}
 
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
+import Bytes.Builder
 import UInt8
 import Vt.Cell exposing (byteAt)
 import Vt.Reason as Reason
@@ -178,10 +181,12 @@ image most data at screen =
             interlaced =
                 Bitwise.and 0x40 packed /= 0
 
-            -- the frame's row of decoded row `r`
-            rowOf r =
+            -- the decoded row of the frame's row `y`: an interlaced frame's
+            -- four passes take every eighth row from 0, every eighth from
+            -- 4, every fourth from 2 and every second from 1
+            decodedRow y =
                 if not interlaced then
-                    r
+                    y
 
                 else
                     let
@@ -194,25 +199,17 @@ image most data at screen =
                         p3 =
                             (h + 1) // 4
                     in
-                    if r < p1 then
-                        r * 8
+                    if modBy 8 y == 0 then
+                        y // 8
 
-                    else if r < p1 + p2 then
-                        (r - p1) * 8 + 4
+                    else if modBy 8 y == 4 then
+                        p1 + y // 8
 
-                    else if r < p1 + p2 + p3 then
-                        (r - p1 - p2) * 4 + 2
+                    else if modBy 4 y == 2 then
+                        p1 + p2 + y // 4
 
                     else
-                        (r - p1 - p2 - p3) * 2 + 1
-
-            -- the frame's pixels by their row, from the decoded order
-            byRow =
-                Array.foldl
-                    (\r acc -> Builder.setMany (rowOf r * w) (Array.slice (r * w) (r * w + w) indices) acc)
-                    (Builder.repeat (w * h) 0)
-                    (Array.range 0 (h - 1))
-                    |> Builder.toArray
+                        p1 + p2 + p3 + y // 2
 
             pixel x y out =
                 let
@@ -228,27 +225,27 @@ image most data at screen =
                 else
                     let
                         index =
-                            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 100000000 (clamp 0 10000 fy * clamp 0 10000 w) + fx) byRow)
+                            UInt8.toInt (Maybe.withDefault (meant Reason.OutOfRange (UInt8.fromInt 0)) (Array.get (clamp 0 100000000 (clamp 0 10000 (decodedRow fy) * clamp 0 10000 w) + fx) indices))
                     in
                     if index == screen.transparent || 3 * index + 2 >= Bytes.length local then
                         clear out
 
                     else
                         out
-                            |> Builder.pushLast (UInt8.fromInt (byteAt local (3 * index)))
-                            |> Builder.pushLast (UInt8.fromInt (byteAt local (3 * index + 1)))
-                            |> Builder.pushLast (UInt8.fromInt (byteAt local (3 * index + 2)))
-                            |> Builder.pushLast (UInt8.fromInt 255)
+                            |> Bytes.Builder.pushLast (byteAt local (3 * index))
+                            |> Bytes.Builder.pushLast (byteAt local (3 * index + 1))
+                            |> Bytes.Builder.pushLast (byteAt local (3 * index + 2))
+                            |> Bytes.Builder.pushLast 255
         in
-        Ok { width = cw, height = ch, pixels = Bytes.fromUInt8s (Builder.toArray (pixels cw ch pixel 0 0 (Builder.empty (cw * ch * 4)))) }
+        Ok { width = cw, height = ch, pixels = Bytes.Builder.toBytes (pixels cw ch pixel 0 0 (Bytes.Builder.empty (cw * ch * 4))) }
 
 
-clear : (taken out : Builder UInt8) -> Builder UInt8
+clear : (taken out : Bytes.Builder.Builder) -> Bytes.Builder.Builder
 clear out =
-    out |> Builder.pushLast (UInt8.fromInt 0) |> Builder.pushLast (UInt8.fromInt 0) |> Builder.pushLast (UInt8.fromInt 0) |> Builder.pushLast (UInt8.fromInt 0)
+    out |> Bytes.Builder.pushLast 0 |> Bytes.Builder.pushLast 0 |> Bytes.Builder.pushLast 0 |> Bytes.Builder.pushLast 0
 
 
-pixels : Int -> Int -> (Int -> Int -> Builder UInt8 -> Builder UInt8) -> Int -> Int -> (taken out : Builder UInt8) -> Builder UInt8
+pixels : Int -> Int -> (Int -> Int -> Bytes.Builder.Builder -> Bytes.Builder.Builder) -> Int -> Int -> (taken out : Bytes.Builder.Builder) -> Bytes.Builder.Builder
 pixels w h pixel x y out =
     if y >= h then
         out
@@ -264,19 +261,19 @@ pixels w h pixel x y out =
 
 
 {-| The table of codes: each code's prefix code, its last index, its first
-index and its length. -}
+index and its length; and the indices out, a byte each. -}
 type alias Lzw =
     { prefix : Builder Int
     , suffix : Builder Int
     , first : Builder Int
     , length : Builder Int
-    , out : Builder Int
+    , out : Builder UInt8
     }
 
 
 {-| `count` colour indices from the LZW data, codes of `minSize + 1` bits
 to 12, least significant bit first. -}
-lzw : Bytes -> (minSize : Int where 2 <= minSize && minSize <= 8) -> Int -> Array Int
+lzw : Bytes -> (minSize : Int where 2 <= minSize && minSize <= 8) -> Int -> Array UInt8
 lzw data minSize count =
     let
         clearCode =
@@ -321,7 +318,7 @@ lzw data minSize count =
                                 0
                         )
                     )
-            , out = Builder.repeat count 0
+            , out = Builder.repeat count (UInt8.fromInt 0)
             }
     in
     codes data clearCode 0 (minSize + 1) (clearCode + 2) -1 0 count seed
@@ -346,8 +343,13 @@ codes data clearCode pos width next prev at count t =
             -- the end of the data
             t
 
+        else if prev < 0 && code > 255 then
+            -- a first code past any index, which only an 8-bit code size
+            -- can send: the data ends, as an index is a byte
+            t
+
         else if prev < 0 then
-            codes data clearCode (pos + width) width next code (at + 1) count { t | out = Builder.set at code t.out }
+            codes data clearCode (pos + width) width next code (at + 1) count { t | out = Builder.set at (UInt8.fromInt code) t.out }
 
         else
             let
@@ -384,7 +386,7 @@ codes data clearCode pos width next prev at count t =
                         written
 
                     else
-                        Builder.set (at + baseLength) firstOfCode written
+                        Builder.set (at + baseLength) (UInt8.fromInt firstOfCode) written
 
                 -- the table grows by the previous string and this one's first
                 grown =
@@ -440,13 +442,13 @@ getOr i b =
 
 {-| A code's indices written backwards from `at`, its last first, along its
 prefixes. -}
-spell : Int -> Int -> Builder Int -> Builder Int -> (taken out : Builder Int) -> Builder Int
+spell : Int -> Int -> Builder Int -> Builder Int -> (taken out : Builder UInt8) -> Builder UInt8
 spell code at prefix suffix out =
     if code < 0 || at < 0 then
         out
 
     else
-        spell (getOr code prefix) (at - 1) prefix suffix (Builder.set at (getOr code suffix) out)
+        spell (getOr code prefix) (at - 1) prefix suffix (Builder.set at (UInt8.fromInt (getOr code suffix)) out)
 
 
 {-| `count` bits at bit `pos`, the least significant first. -}

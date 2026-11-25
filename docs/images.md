@@ -1332,7 +1332,7 @@ With these, the 10000-by-10000 load peaks at 11 MB and the 100-by-100
 bomb at 12 MB, both answered at once. The 5000-by-5000 load is
 unchanged (263 to 272 MB over runs).
 
-**Left, for Gilbert:** an image inside the limit still costs up to five
+**Left, for Gilbert** (he chose the rewrite, IM39): an image inside the limit still costs up to five
 times its pixels while it is decoded. A JPEG or GIF of 320 MB of pixels,
 from a file of 59 KB to 1.25 MB, peaks at 1.4 to 1.6 GB. There are two
 ways:
@@ -1381,3 +1381,75 @@ on Windows (beelink1). On Windows: `C:\Windows\win.ini` and
 `c:/Windows/win.ini` are local; `\Windows\win.ini` and `Windows\win.ini`
 are not. On Linux: `/etc/hostname` and `/tmp/x.png` are local. A mapped
 network drive was not made on beelink1 to try.
+
+## IM39 · The decoders write bytes, and each image once (2026-11-25)
+
+The rest of the code review's VI4, which IM37 left: an image inside the
+limit still cost up to five times its pixels while it was decoded.
+Gilbert chose the rewrite, which refuses nothing, over a working budget.
+
+Natively an `Int` in an array is four bytes, an `Int16` two and a
+`UInt8` one, and `Builder.toArray` freezes a builder in place, but
+`Bytes.fromUInt8s` copies. The old decoders kept samples and indices as
+`Int`s and built each image as a `Builder UInt8` copied into `Bytes` at
+the end. Now:
+
+- **Inflate** writes its output once, into a `Bytes.Builder` given the
+  size the caller expects (PNG's rows, Kitty's declared size, four times
+  the input for a compressed `f=100`), so it does not double as it grows
+  and is not copied at the end. A distance is copied from a window of the
+  last 32 KiB, a `Builder UInt8` beside it.
+- **PNG** unfilters a row against the row above alone. Without
+  interlacing each row is made RGBA as it is unfiltered and none is kept;
+  with Adam7 each pass's rows are kept, a byte each, and the pixels are
+  taken from them row by row.
+- **JPEG** keeps its planes a byte a sample, and a progressive file's
+  coefficients two bytes each, as libjpeg's and stb_image's `short`. Only
+  a damaged file reaches past 16 bits, where they wrap as theirs do.
+  The colours, and Exif's turn of them, are written into `Bytes` once.
+- **GIF** keeps its colour indices a byte each and reads an interlaced
+  frame's rows where they were decoded, rather than copying them into
+  order. A first code past 255, which only 8-bit codes can send and no
+  index is, now ends the data; before, it drew one clear pixel and went
+  on.
+- **iTerm2's** resampling writes `Bytes` too.
+
+Measured as IM37 measured, `harness/dump/core-dump` built with the app's
+limits (320 MB, Sixel and iTerm2 on), peak RSS by `/usr/bin/time`:
+
+| input | its bytes | pixels | before | after |
+|---|---|---|---|---|
+| iTerm2 JPEG, 4000 by 3000 | 189 KB | 48 MB | 203 MB | 76 MB |
+| iTerm2 JPEG, 10000 by 8000 | 1.25 MB | 320 MB | 1.36 GB | 448 MB |
+| iTerm2 JPEG progressive, 10000 by 8000 | 9.2 MB | 320 MB | 1.88 GB | 751 MB |
+| iTerm2 JPEG turned by Exif, 4000 by 3000 | 1.7 MB | 48 MB | 321 MB | 132 MB |
+| iTerm2 GIF, 4000 by 3000 | 9.7 KB | 48 MB | 233 MB | 69 MB |
+| iTerm2 GIF, 10000 by 8000 | 59 KB | 320 MB | 1.61 GB | 402 MB |
+| iTerm2 PNG, 4000 by 3000 | 55 KB | 48 MB | 399 MB | 104 MB |
+| iTerm2 PNG, 8900 by 8900 | 332 KB | 317 MB | 2.61 GB | 799 MB |
+| Kitty `f=32,o=z`, 5000 by 5000 | 130 KB | 100 MB | 263 MB | 108 MB |
+
+The largest is now 2.5 times its pixels, a progressive JPEG's: its
+coefficients (1.5 a pixel at 4:2:0, two bytes each), its planes and the
+pixels. A PNG keeps its inflated rows and its pixels, so about twice.
+
+Time is the same or less for each, except the Kitty load: 1.02 s before,
+1.12 s after (three runs each), since every byte inflated is also written
+into the window. A first form made a record for each byte written and
+took 1.35 s; the loops now carry the output and the window as two
+arguments. The 8900-by-8900 PNG went from 7.84 s to 6.16 s.
+
+Tested: 288 images, every one decoded to the same pixels before and
+after (the dump's hash of them): JPEG baseline and progressive at
+4:4:4, 4:2:2 and 4:2:0, grey, and each Exif orientation; PNG of every
+colour type, 1-bit to 16-bit, a palette with tRNS, Adam7 of six kinds,
+each also as a Kitty `f=100` load at one size; GIF plain and interlaced
+with a transparent index; Kitty `f=32` and `f=24` with `o=z` at three
+compression levels; at seven sizes from 1 by 1 to 101 by 67. vt's Gif
+suite gains two: indices 7 and 200 by 8-bit codes, and the first code
+past 255, which the old decoder fails. The vt suites pass 234 of 234 on
+node, Linux and Windows; the replay gate's core side 358 of 358.
+
+Sixel's painting (`Vt.Sixel`) still builds a `Builder UInt8` and copies
+it into `Bytes`, twice its pixels at the end; the review did not name it
+and it is left.
