@@ -89,6 +89,7 @@ and its callers.
 - What: `imagesDrawn` slices `rows * cols` ints out of `drawnIn` before it looks at `desired`; with no placement in view (`touched` is then empty) the copy is unused. `spread` builds a `rows * cols` array of `False` each frame even when `collect` queues no cell. Both are per frame, the first up to three times a frame through the recursion.
 - Scenario: a 300 by 100 window: 240 KB copied and 30,000 elements allocated for every frame, a cursor blink included, on top of the three passes over the cells the diff needs (`hashRows`, `collect`, `diffRows`).
 - Fix: return early from `imagesDrawn` when `desired` is empty, before the slice; make `worded` only when `collect` returns a non-empty queue (or keep it in the shadow and clear what was set).
+- Fixed: 2026-11-25, `docs/renderer.md` R24. `imagesDrawn` answers at once with no placement; `spread` makes `worded` only when a cell is queued: 3,000 idle frames of 300 by 100, 0.53 s to 0.46 s.
 
 ### VS9 · `Recut.gather` decodes a row that is not single-column twice
 - Where: vt/src/Vt/Recut.geng:246-258 (`gather`), :427-432 (`lastSource`), :981-1009 (`rowAt`)

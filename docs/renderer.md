@@ -1093,3 +1093,19 @@ by 298 and lived; 11 and 20 opened at 662 by 10 and died at the resize
 
 **Gates**: the pixel gate 55 of 55 on Linux; on beelink1 39 of 55, the
 16 older failures of R22.
+
+## R24. A frame with nothing to spread or place makes no per-cell arrays (2026-11-25, the code review's VS8)
+
+The code review's VS8. Every frame `imagesDrawn` sliced the `drawnIn`
+stamps, `rows × cols` of them, before it looked at the placements, and
+`spread` made a `rows × cols` array of `False` for the words it walks,
+before `collect` had queued any cell; most frames, a cursor's blink, a
+line of output, have no placement in view and queue nothing. Now
+`imagesDrawn` answers at once with no placement, and `spread` makes the
+array only when `collect` queued a cell; `spreadWork` with an empty queue
+gave back the cells as they were, so the frame is the same.
+
+Measured with `harness/dump/core-dump` built to draw N frames of a 300
+by 100 screen of text after feeding it (`View.frame`, the default look),
+3,000 frames, three runs each: 0.53 to 0.54 s before, 0.46 s after, about
+175 µs a frame then 153; the display lists the same 176,566 bytes in all.

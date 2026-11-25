@@ -706,6 +706,17 @@ cells left as they were would take it twice). One drawn in full may make
 another's cells drawn: up to `passes` times. -}
 imagesDrawn : Array Kitty.Shown -> Int -> (s : Screen) -> Clusters -> Cursor -> (rows : Int where rows <= s.rows) -> (cols : Int where cols <= 1000) -> (taken done : { shadow : Shadow, list : Builder UInt8 }) -> { shadow : Shadow, list : Builder UInt8, drawn : Array Kitty.Shown }
 imagesDrawn desired passes s clusters cursor rows cols done =
+    if Array.isEmpty desired then
+        -- no placement in view: nothing to read of the stamps (the code
+        -- review's VS8)
+        { shadow = done.shadow, list = done.list, drawn = [] }
+
+    else
+        imagesDrawnOf desired passes s clusters cursor rows cols done
+
+
+imagesDrawnOf : Array Kitty.Shown -> Int -> (s : Screen) -> Clusters -> Cursor -> (rows : Int where rows <= s.rows) -> (cols : Int where cols <= 1000) -> (taken done : { shadow : Shadow, list : Builder UInt8 }) -> { shadow : Shadow, list : Builder UInt8, drawn : Array Kitty.Shown }
+imagesDrawnOf desired passes s clusters cursor rows cols done =
     let
         stamp =
             done.shadow.frames
@@ -1281,7 +1292,17 @@ the old ink of a cell drawn reached, which still shows it; and so on, the
 cells forgotten in the shadow so that the diff draws them. -}
 spread : (s : Screen) -> Cursor -> (rows : Int where rows <= s.rows) -> (cols : Int where 1 <= cols && cols <= 1000) -> (taken sh : Shadow) -> Shadow
 spread s cursor rows cols sh =
-    { sh | cells = spreadWork s rows cols sh.inked sh.ink (collect s cursor 0 rows cols { cells = sh.cells, work = [], worded = Builder.fromArray (Array.repeat (cols * rows) False) }) }
+    let
+        -- the cells whose word is forgotten, made only when a cell is
+        -- queued, since most frames queue none (the code review's VS8)
+        queued =
+            collect s cursor 0 rows cols { cells = sh.cells, work = [], worded = Builder.empty 0 }
+    in
+    if Array.isEmpty queued.work then
+        { sh | cells = queued.cells }
+
+    else
+        { sh | cells = spreadWork s rows cols sh.inked sh.ink { cells = queued.cells, work = queued.work, worded = Builder.fromArray (Array.repeat (cols * rows) False) } }
 
 
 {-| The cells forgotten, the queue of those whose word and ink are still to

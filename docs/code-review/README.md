@@ -381,7 +381,7 @@ covered" sections. The larger gaps:
 | [VS5](02-vt-scrollback-view-input.md) | bug | confirmed | **fixed** An unbracketed paste of CRLF text sends CR CR, and a CRLF split across two pieces does too |
 | [VS6](02-vt-scrollback-view-input.md) | security | plausible | **fixed** The diagnostic log gets a DECRQSS or XTGETTCAP body as the program wrote it, control bytes included |
 | [VS7](02-vt-scrollback-view-input.md) | inaccuracy | confirmed | **fixed** `Base64.decode` is documented as strict but takes non-canonical final characters |
-| [VS8](02-vt-scrollback-view-input.md) | efficiency | confirmed | Every frame copies the `drawnIn` stamps and allocates a `worded` array, with no image and no ink on the screen |
+| [VS8](02-vt-scrollback-view-input.md) | efficiency | confirmed | **fixed** Every frame copies the `drawnIn` stamps and allocates a `worded` array, with no image and no ink on the screen |
 | [VS9](02-vt-scrollback-view-input.md) | efficiency | confirmed | `Recut.gather` decodes a row that is not single-column twice |
 | [VS10](02-vt-scrollback-view-input.md) | dead-code | confirmed | `Prompt.geng`, `Pages.geng`, `Resize.geng` and `Dump.geng` import what they do not use, some of it twice |
 | [VI12](03-vt-images.md) | bug | confirmed | JPEG: green is one too high on every YCbCr pixel |
