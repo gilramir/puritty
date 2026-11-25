@@ -44,6 +44,7 @@ import Array.Builder as Builder exposing (Builder)
 import Backend exposing (Backend, Incoming(..))
 import Bitwise
 import Bytes exposing (Bytes)
+import Bytes.Builder
 import Chord
 import ClipQueue
 import Clock
@@ -7642,7 +7643,9 @@ when the piece before it ended in CR, so that a CR LF split between two
 pieces is one CR (the code review's VS5; harness/crlfpaste.py). -}
 lineEnds : Bool -> Bytes -> Bytes
 lineEnds crBefore bytes =
-    Bytes.fromUInt8s
+    -- into bytes as they are made, not an array of them copied after (the
+    -- code review's MB9)
+    Bytes.Builder.toBytes
         (lineEndsFrom bytes
             0
             (Bytes.length bytes)
@@ -7652,7 +7655,7 @@ lineEnds crBefore bytes =
              else
                 -1
             )
-            []
+            (Bytes.Builder.empty (Bytes.length bytes))
         )
 
 
@@ -7668,28 +7671,25 @@ endsInCr crBefore bytes =
             meant Reason.NotSet crBefore
 
 
-lineEndsFrom : Bytes -> Int -> Int -> Int -> Array UInt8 -> Array UInt8
+lineEndsFrom : Bytes -> Int -> Int -> Int -> (taken out : Bytes.Builder.Builder) -> Bytes.Builder.Builder
 lineEndsFrom bytes i n last out =
     if i >= n then
         out
 
     else
         let
-            u =
-                Bytes.getProven i bytes
-
             b =
-                UInt8.toInt u
+                UInt8.toInt (Bytes.getProven i bytes)
         in
         if b == 0x0A then
             if last == 0x0D then
                 lineEndsFrom bytes (i + 1) n b out
 
             else
-                lineEndsFrom bytes (i + 1) n b (Array.pushLast (UInt8.fromInt 0x0D) out)
+                lineEndsFrom bytes (i + 1) n b (Bytes.Builder.pushLast 0x0D out)
 
         else
-            lineEndsFrom bytes (i + 1) n b (Array.pushLast u out)
+            lineEndsFrom bytes (i + 1) n b (Bytes.Builder.pushLast b out)
 
 
 pasteInto : Bool -> Bytes -> (taken m : Model) -> Model
@@ -7731,7 +7731,8 @@ pasteInto more text m =
         -- bracket it, as tmux knows the pane's modes and puritty may not
         -- (3.6, measured)
         tmuxBytes =
-            if empty then
+            if empty || not (TmuxMode.isOn m.tmux) then
+                -- made only for tmux (MB9)
                 Bytes.empty
 
             else
@@ -7740,41 +7741,47 @@ pasteInto more text m =
         updated =
             { m
                 | diag =
-                    Diag.add m.turnMs
-                        "paste"
-                        (String.fromInt (Bytes.length text)
-                            ++ " bytes, "
-                            ++ String.fromInt (Diag.lines text)
-                            ++ " lines, "
-                            ++ (if bracketed then
-                                    "bracketed"
+                    -- the line made only when the log is on: counting a
+                    -- piece's lines decodes it (the code review's MB10)
+                    if Diag.isOn m.diag then
+                        Diag.add m.turnMs
+                            "paste"
+                            (String.fromInt (Bytes.length text)
+                                ++ " bytes, "
+                                ++ String.fromInt (Diag.lines text)
+                                ++ " lines, "
+                                ++ (if bracketed then
+                                        "bracketed"
 
-                                else
-                                    "plain"
-                               )
-                            ++ (when { first = first, more = more } is
-                                    { first = True, more = False } ->
-                                        ", in one piece"
+                                    else
+                                        "plain"
+                                   )
+                                ++ (when { first = first, more = more } is
+                                        { first = True, more = False } ->
+                                            ", in one piece"
 
-                                    { first = True, more = True } ->
-                                        ", the first piece"
+                                        { first = True, more = True } ->
+                                            ", the first piece"
 
-                                    { first = False, more = True } ->
-                                        ", a later piece"
+                                        { first = False, more = True } ->
+                                            ", a later piece"
 
-                                    { first = False, more = False } ->
-                                        ", the last piece"
-                               )
-                            ++ ", sent "
-                            ++ String.fromInt (Bytes.length bytes)
-                            ++ " bytes to "
-                            ++ (if TmuxMode.isOn m.tmux then
-                                    "tmux's active pane"
+                                        { first = False, more = False } ->
+                                            ", the last piece"
+                                   )
+                                ++ ", sent "
+                                ++ String.fromInt (Bytes.length bytes)
+                                ++ " bytes to "
+                                ++ (if TmuxMode.isOn m.tmux then
+                                        "tmux's active pane"
 
-                                else
-                                    "the program"
-                               )
-                        )
+                                    else
+                                        "the program"
+                                   )
+                            )
+                            m.diag
+
+                    else
                         m.diag
                 , pasting =
                     if more then

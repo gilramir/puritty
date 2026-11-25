@@ -71,6 +71,7 @@ finding is from reading the code and its callers.
 - What: `lineEnds` is documented "CRLF one CR" (`docs/tmux.md` TM95) and drops an LF that follows a CR. But it runs after `Paste.piece bracketed`, and with `bracketed = False` `byteOut` has already made each LF a CR, so `\r\n` reaches `lineEnds` as `\r\r` and passes unchanged. `lineEndsFrom` also starts each piece with `last = -1`, so a `\r` ending one piece and the `\n` starting the next give two CRs, bracketed or not.
 - Scenario: on X11, text with CRLF ends (copied from a browser's textarea, a Wine or remote-desktop program, a DOS file in an editor) pasted into a program that has not asked for bracketed paste (an older shell, `cat > file`, a Python REPL before 3.13): every line is followed by an empty one, which in a REPL ends an indented block early. Windows is spared by `read_clipboard` making CRLF LF first.
 - Fix: do the line-end rule on the pasted text before `Paste.piece` (or always call `Paste.piece True` for the body, since `lineEnds` makes every LF a CR anyway), and carry "the last byte was CR" across pieces beside `pasting`.
+- Fixed: 2026-11-25, as the code review's VS5: `docs/phase3-select.md` §28 (3252823), `harness/crlfpaste.py`.
 
 ### MB8 · Tabs past the window's right edge cannot be seen or clicked
 - Where: app/src/Main.geng:9816-9828 (`barTabs`), 9837-10027 (`tabBar`), 10045 (`barPress`)
@@ -89,6 +90,7 @@ finding is from reading the code and its callers.
 - What: `lineEndsFrom` pushes every byte of the piece onto an `Array UInt8` and then `Bytes.fromUInt8s` copies it: a boxed-array element per byte, on top of `Paste.piece`'s `Bytes.Builder` pass, and `tmuxBytes` is computed too (a second `Paste.piece` and `lineEnds`) for a tab not under tmux.
 - Scenario: a 50 MB paste: 50 M array pushes and at least four full copies of each piece; if `pushLast` copies, quadratic per piece.
 - Fix: use `Bytes.Builder` as `Vt.Paste.pieceFrom` does, sized by the piece's length, or fold the rule into `Paste`'s pass; compute `tmuxBytes` only under tmux.
+- Fixed: 2026-11-25, `docs/phase3-select.md` §30. `lineEnds` into a `Bytes.Builder`, `tmuxBytes` only under tmux: a 40 MB paste arrives in 0.50 s, was 1.55 s.
 
 ### MB10 · `Diag.lines` decodes and rewrites each pasted piece although the log is off
 - Where: app/src/Main.geng:7440-7476; app/src/Diag.geng:531-547
@@ -98,6 +100,7 @@ finding is from reading the code and its callers.
 - What: `pasteInto` builds the log line's text, `Diag.lines text` in it, as an argument of `Diag.add`, which returns the log unchanged when it is off. `Diag.lines` does `Bytes.toStringLossy` of the whole piece, `String.replace "\n" ""` over it and two `String.count`s.
 - Scenario: every paste piece is decoded to a string and copied again to count its lines, for a line that is thrown away in the usual case (`[debug] log` off).
 - Fix: guard with `Diag.isOn m.diag` (or give `Diag.add` a thunk), and count `0x0A` bytes in the `Bytes` directly.
+- Fixed: 2026-11-25, `docs/phase3-select.md` §30. The paste's log line built only when the log is on.
 
 ### MB11 · `Restore.fresh` ignores whether its lock was taken, and another window's `others` can remove a new window's lock file under it
 - Where: app/src/Restore.geng:151-163 (`fresh`), 193-240 (`others`, `anyRunning`), 68-84 (`take`)

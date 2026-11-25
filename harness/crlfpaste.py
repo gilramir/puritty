@@ -69,9 +69,11 @@ def run_case(env0, xdo, name, text):
         time.sleep(0.5)
         subprocess.run([xdo, "key", "ctrl+shift+v"], env=env, check=True)
         want = wanted(text)
-        deadline = time.time() + 20
+        asked = time.time()
+        deadline = asked + 20
         while time.time() < deadline and (not got.exists() or got.stat().st_size < len(want)):
-            time.sleep(0.25)
+            time.sleep(0.05)
+        took = time.time() - asked
         time.sleep(1.0)
     finally:
         if owner is not None:
@@ -84,6 +86,7 @@ def run_case(env0, xdo, name, text):
             p.kill()
             p.wait()
     data = got.read_bytes() if got.exists() else b""
+    print(f"     {name}: {len(text)} bytes pasted, all received {took:.2f} s after Ctrl+Shift+V")
     if data == want:
         return None
     first = next((i for i in range(min(len(data), len(want))) if data[i] != want[i]), min(len(data), len(want)))

@@ -1300,3 +1300,29 @@ refuses "non-zero bit padding" only under `strict` (simdutf 7.3.3's
 gmktec7). So the core takes them as Ghostty does, which RFC 4648 §3.5
 allows a decoder to do, and the comment now says so; vt's Encoders suite
 holds `QQ==` and `QR==` to `A`, `QUE=` and `QUF=` to `AA` (241).
+
+## 30. A paste's piece made once into bytes, its log line only for the log (2026-11-25)
+
+The code review's MB9 and MB10 (and MB7, which is VS5, §28). `lineEnds`
+pushed every byte of a piece onto an `Array UInt8` and copied it into
+`Bytes` at the end; it now writes into a `Bytes.Builder` sized to the
+piece. The bytes tmux would be given (`tmuxBytes`, a second
+`Vt.Paste.piece`) were made for every paste; they are made only when
+the tab is under `tmux -CC`. And the log line was built for every piece,
+`Diag.lines` decoding the piece to a string to count its lines, though
+with `[debug] log` off it is thrown away; it is built only when the log
+is on.
+
+`harness/crlfpaste.py` now says how long each paste took to arrive
+(the time from Ctrl+Shift+V until the recording program had every
+byte). Two runs each, before and after:
+
+| paste | before | after |
+|---|---|---|
+| 4 MB of CR LF lines | 0.15 s | 0.05 s |
+| 4 MB, a CR LF across every even offset | 0.10 s | 0.05 s |
+| 40 MB of CR LF lines | 1.55 s | 0.50 s |
+
+Both grow with the size alone: the array was pushed in place, so it
+was not the square the review feared, but its copies were two thirds
+of the time.

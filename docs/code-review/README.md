@@ -490,10 +490,10 @@ covered" sections. The larger gaps:
 | [MA23](09-app-main-a.md) | bug | plausible | A program that closes its terminal but keeps running freezes the window |
 | [MA24](09-app-main-a.md) | bug | plausible | A binding that names a shifted character or a non-Latin layout's letter never matches |
 | [MA25](09-app-main-a.md) | security | confirmed | What a host's paste command prints is kept without bound |
-| [MB7](10-app-main-b.md) | bug | confirmed | An unbracketed paste of CRLF text sends two CRs a line, and a CRLF cut between two pieces does too |
+| [MB7](10-app-main-b.md) | bug | confirmed | **fixed** An unbracketed paste of CRLF text sends two CRs a line, and a CRLF cut between two pieces does too |
 | [MB8](10-app-main-b.md) | bug | confirmed | Tabs past the window's right edge cannot be seen or clicked |
-| [MB9](10-app-main-b.md) | efficiency | plausible | `lineEnds` builds each pasted piece as an `Array UInt8`, a `pushLast` a byte |
-| [MB10](10-app-main-b.md) | efficiency | confirmed | `Diag.lines` decodes and rewrites each pasted piece although the log is off |
+| [MB9](10-app-main-b.md) | efficiency | plausible | **fixed** `lineEnds` builds each pasted piece as an `Array UInt8`, a `pushLast` a byte |
+| [MB10](10-app-main-b.md) | efficiency | confirmed | **fixed** `Diag.lines` decodes and rewrites each pasted piece although the log is off |
 | [MB11](10-app-main-b.md) | bug | plausible | `Restore.fresh` ignores whether its lock was taken, and another window's `others` can remove a new window's lock file under it |
 | [MB12](10-app-main-b.md) | bug | confirmed | The recent and folder files are read, changed and written with no lock, through one shared `.new` name |
 | [MB13](10-app-main-b.md) | inaccuracy | confirmed | The log writes tab titles and a program's name, which the log's contract says are never written; `Diag.command` shows some typed words |
