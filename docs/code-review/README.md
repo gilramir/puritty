@@ -375,8 +375,8 @@ covered" sections. The larger gaps:
 | [VP13](01-vt-parser-screen.md) | inaccuracy | confirmed | **fixed** DECRQSS's SGR report leaves out the underline color |
 | [VP14](01-vt-parser-screen.md) | efficiency | confirmed | **checked, left** A truecolor SGR copies the parameter array for each color, against the comment beside it |
 | [VP15](01-vt-parser-screen.md) | inaccuracy | confirmed | **fixed** Unknown private modes are stored for a DECRQM that never reads them |
-| [VP16](01-vt-parser-screen.md) | speed | plausible | Copying a long selection concatenates a string per cell and per row |
-| [VP17](01-vt-parser-screen.md) | speed | confirmed | Jump-to-prompt with no prompt in the scrollback walks every row, and each row walks the pages from the oldest |
+| [VP16](01-vt-parser-screen.md) | speed | plausible | **checked, left** Copying a long selection concatenates a string per cell and per row |
+| [VP17](01-vt-parser-screen.md) | speed | confirmed | **fixed** Jump-to-prompt with no prompt in the scrollback walks every row, and each row walks the pages from the oldest |
 | [VS4](02-vt-scrollback-view-input.md) | bug | confirmed | **fixed** The frame's diff trusts style and cluster ids across RIS, which hands the same ids out again |
 | [VS5](02-vt-scrollback-view-input.md) | bug | confirmed | An unbracketed paste of CRLF text sends CR CR, and a CRLF split across two pieces does too |
 | [VS6](02-vt-scrollback-view-input.md) | security | plausible | The diagnostic log gets a DECRQSS or XTGETTCAP body as the program wrote it, control bytes included |

@@ -5124,3 +5124,37 @@ on a million `CSI 38;2;r;g;b;48;2;r;g;b m` and a character (34 MB):
 the refinement checker refutes `at + 1` and `at + 2` staying inside
 `Int`, which is why the function drops first and reads from 0 ("read
 without adding to it"). So it is left as it is.
+
+## VC78 · A prompt jump walks the scrollback's pages once; a long selection's text measured (2026-11-25)
+
+The code review's VP17 and VP16.
+
+**VP17.** `promptJump` looks for a prompt's start (OSC 133 `A`) a row at
+a time, and for a row in the scrollback's pages `promptMark` found its
+page by stepping from the oldest page, so a search through rows × pages
+headers: with no prompt there it went through all of it. Measured with
+`harness/dump/core-dump` built to print `promptJump -1 0` (80 by 24,
+pages of 256 rows, 2,000,000 rows of output and no prompt): 7.45 to 7.88
+s, where feeding them is 0.19 s. Now `promptUp` and `promptDown` find
+the row's page once (`pageOf`) and walk its rows' headers, then the page
+before (`pagedUp`) or after (`pagedDown`), and the ring as before: 0.20
+s, the feeding and the jump.
+
+Tested: the same dump built to print every view a chain of jumps gives,
+up from the bottom and down from where that stops, for the old code and
+the new, on seven inputs (300 to 2,000,000 rows; prompts one in 50,000
+to one in five; continuations, `A;k=s`; a prompt at the first row and at
+the last), each with the scrollback kept whole and with it held to
+100,000 and 1,000,000 bytes, so pages had been dropped from its oldest
+end: the same views in all seventeen, 7,841 in the largest. vt's
+Select suite gains a test of 200 rows in pages of 16 with prompts on
+rows 5, 40 and 90 and a continuation on 41: up 109, 159, 194; down from
+194, 159 and 109 (239).
+
+**VP16.** The review asked whether copying a long selection costs the
+square of its length, as `textOfRows` and `cellsText` grow their text
+with `++`, if each `++` copies. Measured with the dump built to print the
+length of `selectionText` from the first row to the last: 25,000 rows of
+200 columns, 5,050,000 characters, 0.66 s, where feeding them alone is
+0.65 s; 20,000 rows of 80, 1,640,000 characters, 0.20 s. Natively a
+string held once is appended in place, so it is left as it is.

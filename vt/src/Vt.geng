@@ -1396,6 +1396,16 @@ promptUp y stop t =
     if y < stop then
         Nothing
 
+    else if y < 0 - t.screen.hist then
+        -- in the pages: walked a page at a time, its page found once, not
+        -- each row's from the oldest (review VP17, §VC78)
+        let
+            base =
+                t.back.rows + t.screen.hist
+        in
+        pagedUp t.back (y + base) (stop + base) (pageOf t.back t.back.head 0 (y + base))
+            |> Maybe.map (\r -> r - base)
+
     else if promptMark y t == 1 then
         Just y
 
@@ -1410,11 +1420,115 @@ promptDown y stop t =
     if y > stop then
         Nothing
 
+    else if y < 0 - t.screen.hist then
+        -- in the pages, as `promptUp`; past them, on in the ring
+        let
+            base =
+                t.back.rows + t.screen.hist
+        in
+        when pagedDown t.back (y + base) (min (stop + base) (t.back.rows - 1)) (pageOf t.back t.back.head 0 (y + base)) is
+            Just r ->
+                Just (r - base)
+
+            Nothing ->
+                -- none in the pages: on in the ring
+                meant Reason.NoMore (promptDown (max y (0 - t.screen.hist)) stop t)
+
     else if promptMark y t == 1 then
         Just y
 
     else
         promptDown (y + 1) stop t
+
+
+{-| The slot of the page paged row `r` lies in and the paged row it begins
+at, stepping from slot `i`, which begins at `start`; the last page when
+`r` is past them. -}
+pageOf : Back -> Int -> Int -> Int -> { slot : Int, start : Int }
+pageOf b i start r =
+    when Builder.get i b.pages is
+        Nothing ->
+            meant Reason.NoMore { slot = i - 1, start = start }
+
+        Just page ->
+            let
+                count =
+                    rowsIn page
+
+                from =
+                    clamp 0 536870912 start
+            in
+            if r < from + count || i + 1 >= Builder.length b.pages then
+                { slot = i, start = from }
+
+            else
+                pageOf b (i + 1) (from + count) r
+
+
+{-| A page's rows: at most `pageRows`, 4,096. -}
+rowsIn : Page -> (r : Int where 0 <= r && r <= 4096)
+rowsIn page =
+    clamp 0 4096 (pageRowCount page)
+
+
+{-| The first paged row from `r` down to `stop` marked as a prompt's start,
+in the page `at` names and the ones before it. -}
+pagedUp : Back -> Int -> Int -> { slot : Int, start : Int } -> Maybe Int
+pagedUp b r stop at =
+    if r < stop || r < 0 || at.slot < b.head then
+        Nothing
+
+    else if r < at.start then
+        -- on to the page before, which ends where this one begins
+        when Builder.get (at.slot - 1) b.pages is
+            Just page ->
+                pagedUp b r stop { slot = at.slot - 1, start = clamp 0 536870912 at.start - rowsIn page }
+
+            Nothing ->
+                meant Reason.NoMore Nothing
+
+    else
+        when Builder.get at.slot b.pages is
+            Just page ->
+                if pagePromptAt page (r - at.start) == 1 then
+                    Just r
+
+                else
+                    pagedUp b (r - 1) stop at
+
+            Nothing ->
+                meant Reason.OutOfRange Nothing
+
+
+{-| The first paged row from `r` up to `stop` marked as a prompt's start,
+in the page `at` names and the ones after it. -}
+pagedDown : Back -> Int -> Int -> { slot : Int, start : Int } -> Maybe Int
+pagedDown b r stop at =
+    if r > stop then
+        Nothing
+
+    else
+        when Builder.get at.slot b.pages is
+            Just page ->
+                let
+                    count =
+                        rowsIn page
+
+                    from =
+                        clamp 0 536870912 at.start
+                in
+                if r >= from + count then
+                    -- on to the page after, which begins where this one ends
+                    pagedDown b r stop { slot = at.slot + 1, start = from + count }
+
+                else if pagePromptAt page (r - at.start) == 1 then
+                    Just r
+
+                else
+                    pagedDown b (r + 1) stop at
+
+            Nothing ->
+                meant Reason.NoMore Nothing
 
 
 -- 536,880,105 is 2^29 + 9,193: the most rows the pages count (`Back`,

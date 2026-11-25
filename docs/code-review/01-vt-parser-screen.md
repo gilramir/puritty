@@ -161,6 +161,7 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - What: both loops grow an accumulator with `++`. If each `++` copies, a selection of N rows costs about N^2 x (row length) / 2 bytes of copying.
 - Scenario: a selection dragged over 50,000 rows of scrollback (about 4 MB of text) would copy on the order of 100 GB; 10,000 rows about 4 GB.
 - Fix: collect the rows' pieces in an array and `String.join` once (and per row, build from an array of code points).
+- Fixed: Checked, left, 2026-11-25, `docs/vt-core.md` VC78: a 5,050,000-character selection takes 0.01 s beyond feeding it; natively the `++` appends in place.
 
 ### VP17 · Jump-to-prompt with no prompt in the scrollback walks every row, and each row walks the pages from the oldest
 - Where: `vt/src/Vt.geng:1252-1261` (`promptUp`), `:1293-1319` (`promptMark`, `pagedPrompt`)
@@ -192,3 +193,4 @@ Read-only review: nothing was built or run, so every cost figure below is an est
 - Modules these files call but that are outside the slice were read only where a finding needed them: `Vt.Kitty`, `Vt.Placed`, `Vt.Pages`, `Vt.Resize`, `Vt.Prompt`, `Vt.Notice`, `Vt.Status`, `Vt.Width`, `Vt.Probe`.
 - `docs/ghostty.md` and `docs/phase1-core.md` were not read through; `docs/vt-core.md` and `docs/claude-code.md` were searched for the decisions each finding touches, not read whole.
 - Whether `Array.pushLast`/`++` on uniquely held values update in place in compiled Geng was not established; findings that depend on it are marked plausible.
+- Fixed: 2026-11-25, `docs/vt-core.md` VC78. The row's page found once and the pages walked from it; 2,000,000 rows with no prompt: 7.5 s, now 0.20 s with the feeding; jump chains the same as before on seven inputs, three scrollback limits; vt Select test.

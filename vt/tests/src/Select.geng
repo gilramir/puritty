@@ -8,6 +8,7 @@ A point's row counts from the first row the main screen ever had, so on a
 terminal that has not scrolled it is the screen's row.
 -}
 
+import Bytes
 import Expect
 import Support exposing (feed, term)
 import Test.Runner.UnitNode as U
@@ -116,6 +117,39 @@ suite =
                         , down = Vt.promptJump 1 4 t
                         }
           }
+        , { name = "prompt jumps walk the scrollback's pages, up and down, past a prompt's continuation (review VP17)"
+          , test =
+                \_ ->
+                    let
+                        -- rows 0 to 199 each a line, prompts on rows 5, 40
+                        -- and 90, a continuation on 41; pages of 16 rows;
+                        -- the screen's top is row 199, so a prompt on row
+                        -- k is 199 - k rows back
+                        line k =
+                            if k == 5 || k == 40 || k == 90 then
+                                "\u{001B}]133;A\u{0007}p" ++ String.fromInt k ++ "\r\n"
+
+                            else if k == 41 then
+                                "\u{001B}]133;A;k=s\u{0007}c\r\n"
+
+                            else
+                                "o" ++ String.fromInt k ++ "\r\n"
+
+                        t =
+                            Vt.feed (Bytes.fromString (String.join "" (Array.map line (Array.range 0 199))))
+                                (Vt.new
+                                    { cols = 10
+                                    , rows = 2
+                                    , scrollbackBytes = Vt.scrollbackBytesFor { cols = 10, rows = 1000 }
+                                    , pageRows = 16
+                                    , checksums = False
+                                    , cellWidth = 0
+                                    , cellHeight = 0
+                                    }
+                                )
+                    in
+                    Expect.equal { up = [ 109, 159, 194 ], down = [ 159, 109 ] } { up = jumps -1 0 0 t [], down = jumps 1 194 0 t [] }
+          }
         , { name = "a selection from a wide character's right half copies the character (review VS3)"
           , test =
                 \_ ->
@@ -141,3 +175,18 @@ function, since a terminal is used once and each test reads its own. -}
 wrapped : {} -> Vt.Term
 wrapped _ =
     feed "abcdefg\r\nxy" (term 5 3)
+
+
+{-| Each view a prompt jump `delta` gives from `back`, one after another,
+until it stays. -}
+jumps : Int -> Int -> Int -> Vt.Term -> Array Int -> Array Int
+jumps delta back n t acc =
+    let
+        next =
+            Vt.promptJump delta back t
+    in
+    if next == back || n > 10 then
+        acc
+
+    else
+        jumps delta next (n + 1) t (Array.pushLast next acc)
