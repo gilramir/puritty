@@ -177,3 +177,38 @@ photo-like progressive JPEG through `core-bench FILE images`: 1920 by
 1080 in 231 ms, 4000 by 3000 in 988 ms (baseline: 189 and 807). The first
 version took 1,825 ms: each coefficient found its zigzag place by a
 search, now a table.
+
+## IT7 · Green as libjpeg rounds it (2026-11-25)
+
+The code review's VI12. YCbCr to RGB takes libjpeg's constants in 16.16,
+but green was `y - ((22554·cb + 46802·cr - 32768) >> 16)`, the floor of
+the negated sum negated, which is its ceiling: one more than libjpeg's
+`y + ((32768 - 22554·cb - 46802·cr) >> 16)` whenever the quotient is not
+whole, and with `cb` and `cr` at 128 (neutral) always. Every grey came
+out with green one up: black (0, 1, 0). The tests hold a colour file to
+within 3 of libjpeg (IT4), which the transforms' difference fills, so it
+was not seen. Green is now libjpeg's form.
+
+vt's Jpeg suite gains flat greys, 8 by 8 at 4:4:4, of 0, 128 and 200:
+libjpeg (Pillow) decodes them to themselves, the old decoder to (0, 1, 0),
+(128, 129, 128) and (200, 201, 200), the new to the greys (242). The
+largest differences from libjpeg over the suite's fourteen files are as
+before (2, and 3 for 4:2:0) but for the 4:2:2 file of 13 by 7, 2 now 1;
+they are the transforms', so the bound of 3 stays.
+
+## IT8 · TIFF made RGBA by a counted loop (2026-11-25)
+
+The code review's VI13. An uncompressed TIFF of three samples or grey
+was made RGBA by folding over `Array.range 0 (n - 1)`, every pixel's
+index, building a four-element array a pixel and folding over it into a
+`Builder UInt8`, then copying that into `Bytes`. It is now a counted
+loop writing each pixel's four bytes into a `Bytes.Builder` (as IM39's
+decoders write).
+
+Measured with `harness/dump/core-dump` built with the app's limits, five
+1920-by-1080 TIFFs sent as iTerm2 images, at 200 by 60 cells (2,000 by
+1,200 pixels, so not resampled), two runs each: RGB (6.2 MB a file) 0.45
+to 0.48 s and 147 MB before, 0.45 to 0.46 s and 123 MB after; grey (2.1
+MB) 0.35 to 0.36 s and 112 to 113 MB before, 0.35 s and 78 to 83 MB
+after; the same pixels. The time was not the array's, which the
+compiler's passes had made cheap; the memory was.

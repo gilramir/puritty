@@ -261,6 +261,7 @@ Facts the findings lean on, all read from the tree:
   transform's against this one's"), which hid it; part of that 2 is this.
 - Fix: `c0 + Bitwise.shiftRightBy 16 (32768 - 22554 * cb - 46802 * cr)`; then tighten the
   tolerance for the 4:4:4 case.
+- Fixed: 2026-11-25, `docs/images-iterm.md` IT7. Green is libjpeg's `y + ((32768 - 22554 cb - 46802 cr) >> 16)`; flat greys decode to themselves (were green +1); vt Jpeg test. The bound of 3 stays: the transforms' difference.
 
 ### VI13 · TIFF to RGBA allocates an array per pixel and a range of every pixel index
 - Where: vt/src/Vt/Tiff.geng:161-195 (`rgba`)
@@ -273,6 +274,7 @@ Facts the findings lean on, all read from the tree:
   1920 by 1080 frame is 2 million small arrays plus a 2-million-element range. The JPEG decoder
   had exactly this fixed (IT4: "`Array.range` in the inner loops", 2.6 times faster without).
 - Fix: a counted loop pushing the four bytes directly, as `Jpeg.pixels` does.
+- Fixed: 2026-11-25, `docs/images-iterm.md` IT8. A counted loop into a `Bytes.Builder`: five 1920 by 1080 TIFFs, the same time (0.45 s), peak 147 MB to 123 MB (RGB), 113 MB to 80 MB (grey), the same pixels.
 
 ### VI14 · iTerm2: the limit is tested against the drawn size even when no pixels of that size are made
 - Where: vt/src/Vt/Iterm.geng:234-242

@@ -384,8 +384,8 @@ covered" sections. The larger gaps:
 | [VS8](02-vt-scrollback-view-input.md) | efficiency | confirmed | **fixed** Every frame copies the `drawnIn` stamps and allocates a `worded` array, with no image and no ink on the screen |
 | [VS9](02-vt-scrollback-view-input.md) | efficiency | confirmed | **fixed** `Recut.gather` decodes a row that is not single-column twice |
 | [VS10](02-vt-scrollback-view-input.md) | dead-code | confirmed | **fixed** `Prompt.geng`, `Pages.geng`, `Resize.geng` and `Dump.geng` import what they do not use, some of it twice |
-| [VI12](03-vt-images.md) | bug | confirmed | JPEG: green is one too high on every YCbCr pixel |
-| [VI13](03-vt-images.md) | speed | confirmed | TIFF to RGBA allocates an array per pixel and a range of every pixel index |
+| [VI12](03-vt-images.md) | bug | confirmed | **fixed** JPEG: green is one too high on every YCbCr pixel |
+| [VI13](03-vt-images.md) | speed | confirmed | **fixed** TIFF to RGBA allocates an array per pixel and a range of every pixel index |
 | [VI14](03-vt-images.md) | bug | confirmed | iTerm2: the limit is tested against the drawn size even when no pixels of that size are made |
 | [VI15](03-vt-images.md) | design | confirmed | iTerm2 decode failures are dropped to `Nothing` |
 | [VI16](03-vt-images.md) | inaccuracy | confirmed | Inflate accepts incomplete code sets that puff.c and zlib refuse |

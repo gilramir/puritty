@@ -110,8 +110,8 @@ SUITES = [
     # DECRQSS's SGR with the underline's colour; 238 since VP15: modes 80
     # and 8452 kept and not said to be ignored; 239 since VP17: prompt
     # jumps across pages; 240 since VS6: a DCS body logged by its size;
-    # 241 since VS7: base64's unused bits
-    Suite("vt", 241, runs_of("vt/tests")),
+    # 241 since VS7: base64's unused bits; 242 since VI12: a flat grey JPEG
+    Suite("vt", 242, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

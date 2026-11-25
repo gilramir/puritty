@@ -10,10 +10,9 @@ and the strips are read only up to the pixels' bytes, so strips that
 overlap or name the whole file again cannot make more (review VI1).
 -}
 
-import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
-import UInt8
+import Bytes.Builder
 import Vt.Cell exposing (byteAt)
 import Vt.Reason as Reason
 
@@ -188,39 +187,38 @@ stripped data need offsets counts =
         |> Bytes.flatten
 
 
-{-| The samples of `n` pixels as RGBA. -}
+{-| The samples of `n` pixels as RGBA: a counted loop writing each pixel's
+four bytes, not an array a pixel over a range of every index (the code
+review's VI13). -}
 rgba : Int -> Int -> Int -> Bytes -> Bytes
 rgba samples photometric n raw =
     if samples == 4 then
         Bytes.slice 0 (n * 4) raw
 
     else
-        Bytes.fromUInt8s
-            (Builder.toArray
-                (Array.foldl
-                    (\i out ->
-                        let
-                            at =
-                                i * samples
+        Bytes.Builder.toBytes (rgbaFrom samples photometric n raw 0 (Bytes.Builder.empty (n * 4)))
 
-                            px =
-                                if samples == 3 then
-                                    [ byteAt raw at, byteAt raw (at + 1), byteAt raw (at + 2), 255 ]
 
-                                else
-                                    let
-                                        v =
-                                            if photometric == 0 then
-                                                255 - byteAt raw at
+rgbaFrom : Int -> Int -> Int -> Bytes -> Int -> (taken out : Bytes.Builder.Builder) -> Bytes.Builder.Builder
+rgbaFrom samples photometric n raw i out =
+    if i >= n then
+        out
 
-                                            else
-                                                byteAt raw at
-                                    in
-                                    [ v, v, v, 255 ]
-                        in
-                        Array.foldl (\v o -> Builder.pushLast (UInt8.fromInt v) o) out px
-                    )
-                    (Builder.empty (n * 4))
-                    (Array.range 0 (n - 1))
-                )
-            )
+    else
+        let
+            at =
+                i * samples
+        in
+        if samples == 3 then
+            rgbaFrom samples photometric n raw (i + 1) (out |> Bytes.Builder.pushLast (byteAt raw at) |> Bytes.Builder.pushLast (byteAt raw (at + 1)) |> Bytes.Builder.pushLast (byteAt raw (at + 2)) |> Bytes.Builder.pushLast 255)
+
+        else
+            let
+                v =
+                    if photometric == 0 then
+                        255 - byteAt raw at
+
+                    else
+                        byteAt raw at
+            in
+            rgbaFrom samples photometric n raw (i + 1) (out |> Bytes.Builder.pushLast v |> Bytes.Builder.pushLast v |> Bytes.Builder.pushLast v |> Bytes.Builder.pushLast 255)
