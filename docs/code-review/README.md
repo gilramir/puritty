@@ -386,8 +386,8 @@ covered" sections. The larger gaps:
 | [VS10](02-vt-scrollback-view-input.md) | dead-code | confirmed | **fixed** `Prompt.geng`, `Pages.geng`, `Resize.geng` and `Dump.geng` import what they do not use, some of it twice |
 | [VI12](03-vt-images.md) | bug | confirmed | **fixed** JPEG: green is one too high on every YCbCr pixel |
 | [VI13](03-vt-images.md) | speed | confirmed | **fixed** TIFF to RGBA allocates an array per pixel and a range of every pixel index |
-| [VI14](03-vt-images.md) | bug | confirmed | iTerm2: the limit is tested against the drawn size even when no pixels of that size are made |
-| [VI15](03-vt-images.md) | design | confirmed | iTerm2 decode failures are dropped to `Nothing` |
+| [VI14](03-vt-images.md) | bug | confirmed | **fixed** iTerm2: the limit is tested against the drawn size even when no pixels of that size are made |
+| [VI15](03-vt-images.md) | design | confirmed | **fixed** iTerm2 decode failures are dropped to `Nothing` |
 | [VI16](03-vt-images.md) | inaccuracy | confirmed | Inflate accepts incomplete code sets that puff.c and zlib refuse |
 | [VI17](03-vt-images.md) | inaccuracy | confirmed | PNG: a palette index past PLTE, a repeated IHDR, and PLTE/tRNS of bad length are accepted |
 | [VI18](03-vt-images.md) | speed | confirmed | PNG: CRC-32 is worked a bit at a time, for every chunk, including those whose CRC is not checked |

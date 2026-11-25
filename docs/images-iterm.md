@@ -212,3 +212,31 @@ to 0.48 s and 147 MB before, 0.45 to 0.46 s and 123 MB after; grey (2.1
 MB) 0.35 to 0.36 s and 112 to 113 MB before, 0.35 s and 78 to 83 MB
 after; the same pixels. The time was not the array's, which the
 compiler's passes had made cheap; the memory was.
+
+## IT9 · The limit on what is kept, and why an image is not shown (2026-11-25)
+
+The code review's VI14 and VI15.
+
+**VI14.** A `File` sized to whole cells is kept at its own size and drawn
+scaled by its placement (IT2), but the image limit was tested against
+the size drawn, `width × height × 4`, before that was known. In a tmux
+pane (a 10 MB limit, IM30) `imgcat --width 100% --height 100%` of a small
+picture on a pane past 1,700 by 1,500 pixels drew nothing, though what
+would be kept was a few KB. Now the limit is held to what is kept: the
+image as decoded (which its decoder held to the limit already) when it
+is drawn at its own size or over whole cells, the resampled pixels
+otherwise. vt's Iterm suite: the 2-by-2 TIFF over 10 by 5 cells of 10 by
+20 pixels (100 by 100 drawn, 40,000 bytes) under a limit of 1,000 is
+shown, scaled by its placement; at 95 by 95 pixels, resampled to 36,100
+bytes, it is not. The old code showed neither.
+
+**VI15.** Each decoder answers why it does not decode ("compressed", a
+JPEG process not decoded, "too large"), and `Iterm.file` dropped it to
+`Nothing`: an LZW TIFF or a CMYK JPEG drew nothing, and nothing said why
+(IT3's first timg run cost a session so). `Iterm.file` now answers the
+reason, with the format before it, or that the `File` is a download, or
+that its data is not base64, or that it is too large; and the core says
+it to the diagnostic log at level 2, as it says a sequence it ignores
+(DG6): `iTerm2 image not shown: JPEG: a JPEG process not decoded
+(lossless, hierarchical or arithmetic)`. vt's Heard suite holds three
+(244).

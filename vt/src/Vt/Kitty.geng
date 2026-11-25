@@ -1618,7 +1618,7 @@ itermShow args base64 t =
 
     else
         when Iterm.file { args = args, base64 = base64, cw = geo.cw, ch = geo.ch, cols = t.cols, rows = t.rows, limit = t.images.limit } is
-            Just shown ->
+            Ok shown ->
                 placeShown { width = shown.width, height = shown.height, pixels = shown.pixels, cols = shown.cols, rows = shown.rows }
                     { home = False
                     , cursor =
@@ -1630,8 +1630,16 @@ itermShow args base64 t =
                     }
                     t
 
-            Nothing ->
-                meant Reason.FromOutside t
+            Err why ->
+                -- said to the diagnostic log, so that an image not drawn is
+                -- not a mystery (the code review's VI15)
+                meant Reason.FromOutside
+                    (if heardAt 2 t then
+                        note ("iTerm2 image not shown: " ++ why) t
+
+                     else
+                        t
+                    )
 
 
 -- DELETING (KG3)

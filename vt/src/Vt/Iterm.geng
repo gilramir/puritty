@@ -40,9 +40,10 @@ type Dimension
 
 {-| The image of a `File` (its arguments, its base64), for a terminal of
 `cols` by `rows` cells of `cw` by `ch` pixels (0 unknown), holding at most
-`limit` bytes of pixels; none for a download (`inline` not set), a format
-not decoded, or an image too big. -}
-file : { args : String, base64 : Bytes, cw : Int, ch : Int, cols : Int, rows : Int, limit : Int } -> Maybe Shown
+`limit` bytes of pixels; or why not, for the diagnostic log: a download
+(`inline` not set), text that is not base64, a format not decoded and the
+decoder's reason, or an image too big (the code review's VI15). -}
+file : { args : String, base64 : Bytes, cw : Int, ch : Int, cols : Int, rows : Int, limit : Int } -> Result String Shown
 file r =
     let
         args =
@@ -58,20 +59,21 @@ file r =
     in
     if not (flag "inline" False) then
         -- a download: puritty does not save files a program sends
-        Nothing
+        Err "a download, which is not saved"
 
     else
         when Base64.decode r.base64 is
             Nothing ->
-                meant Reason.FromOutside Nothing
+                meant Reason.FromOutside (Err "its data is not base64")
 
             Just data ->
                 when decoded r.limit data is
-                    Err _ ->
-                        meant Reason.FromOutside Nothing
+                    Err why ->
+                        meant Reason.FromOutside (Err why)
 
                     Ok img ->
                         sized r args (flag "preserveAspectRatio" True) (not (flag "doNotMoveCursor" False)) img
+                            |> Result.fromMaybe "too large for the image limit, or of no size"
 
 
 {-| PNG, JPEG or GIF's first frame, or an uncompressed TIFF, by their
@@ -81,15 +83,16 @@ decoded most data =
     if byteAt data 0 == 0x89 then
         Png.decode most data
             |> Result.map (\png -> { width = png.width, height = png.height, pixels = png.pixels })
+            |> Result.mapError (\why -> "PNG: " ++ why)
 
     else if byteAt data 0 == 0xFF && byteAt data 1 == 0xD8 then
-        Jpeg.decode most data
+        Jpeg.decode most data |> Result.mapError (\why -> "JPEG: " ++ why)
 
     else if byteAt data 0 == 0x47 && byteAt data 1 == 0x49 && byteAt data 2 == 0x46 then
-        Gif.decode most data
+        Gif.decode most data |> Result.mapError (\why -> "GIF: " ++ why)
 
     else
-        Tiff.decode most data
+        Tiff.decode most data |> Result.mapError (\why -> "TIFF: " ++ why)
 
 
 {-| `key=value` separated by `;`; a piece with no `=` left out. -}
@@ -230,7 +233,9 @@ sized r args keep moves img =
         th =
             clamp 0 10000 target.h
     in
-    if tw == 0 || th == 0 || tw * th > r.limit // 4 then
+    -- each held to the limit by what it keeps: the image as decoded, or
+    -- the pixels resampled, not by the size drawn (review VI14)
+    if tw == 0 || th == 0 then
         Nothing
 
     else if tw == nw && th == nh then
@@ -239,6 +244,9 @@ sized r args keep moves img =
     else if cw > 0 && ch > 0 && modBy cw tw == 0 && modBy ch th == 0 then
         -- whole cells: the placement scales it
         Just { width = nw, height = nh, pixels = img.pixels, cols = tw // cw, rows = th // ch, moves = moves }
+
+    else if tw * th > r.limit // 4 then
+        Nothing
 
     else
         Just { width = tw, height = th, pixels = resample nw nh img.pixels tw th, cols = 0, rows = 0, moves = moves }

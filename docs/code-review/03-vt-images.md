@@ -288,6 +288,7 @@ Facts the findings lean on, all read from the tree:
   100%` of a small picture on a pane of 1700 by 1500 pixels or more shows nothing, though the
   image stored would be a few KB.
 - Fix: apply the `tw * th` test only on the `resample` branch.
+- Fixed: 2026-11-25, `docs/images-iterm.md` IT9. The limit is held to what is kept: the decoded image at its own size or over whole cells, the resampled pixels otherwise; vt Iterm test.
 
 ### VI15 · iTerm2 decode failures are dropped to `Nothing`
 - Where: vt/src/Vt/Iterm.geng:65-72; vt/src/Vt/Kitty.geng:1410-1424
@@ -303,6 +304,7 @@ Facts the findings lean on, all read from the tree:
   session ("The first run of timg drew nothing").
 - Fix: return `Result String Shown` (with "a download" as one reason) and have the caller raise
   it through the core's notice/diagnostic channel.
+- Fixed: 2026-11-25, `docs/images-iterm.md` IT9. `Iterm.file` answers why, and the core says it to the diagnostic log at level 2 (`iTerm2 image not shown: ...`); vt Heard test.
 
 ### VI16 · Inflate accepts incomplete code sets that puff.c and zlib refuse
 - Where: vt/src/Vt/Inflate.geng:202-243 (`huffman`), 464, 479-484
