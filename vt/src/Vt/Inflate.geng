@@ -281,6 +281,41 @@ huffman lengths =
         Just { counts = Array.set 0 0 counts, symbols = symbols }
 
 
+{-| A dynamic block's code, as `puff.c` and zlib take one: the code-length
+code (`whole`) only when complete, every code used; the literal/length
+and the distance codes complete too, or of one code at most, of length 1
+(puff.c's `nlen != h.count[0] + h.count[1]`). `huffman` alone refuses only
+a code over-subscribed, and the fixed block's distance code, 30 of length
+5, is incomplete (the code review's VI16). -}
+dynamicCode : Bool -> Array Int -> Maybe Huffman
+dynamicCode whole lengths =
+    let
+        counts =
+            Array.initialize 16
+                0
+                (\l ->
+                    Array.foldl
+                        (\x n ->
+                            if x == l then
+                                n + 1
+
+                            else
+                                n
+                        )
+                        0
+                        lengths
+                )
+
+        left =
+            codesLeft counts 1 1
+    in
+    if left == 0 || (not whole && Array.all (\l -> l <= 1) lengths) then
+        huffman lengths
+
+    else
+        Nothing
+
+
 {-| The codes left after those of lengths `len` to 15 are given out, from
 `acc` left before `len`; below 0 when a length asks for more than are left. -}
 codesLeft : (counts : Array Int where Array.length counts == 16) -> (len : Int where 1 <= len) -> Int -> Int
@@ -513,7 +548,7 @@ dynamic most data st =
                 Err "dynamic header"
 
             else
-                when huffman lengths is
+                when dynamicCode True lengths is
                     Just lencode ->
                         when readLengths data st.end lencode (hlit + hdist) (start + 3 * hclen) [] is
                             Ok r ->
@@ -528,7 +563,7 @@ dynamic most data st =
                                     Err "no end code"
 
                                 else
-                                    when { l = huffman lit, d = huffman dist } is
+                                    when { l = dynamicCode False lit, d = dynamicCode False dist } is
                                         { l = Just lh, d = Just dh } ->
                                             codes most data { lit = lh, dist = dh } { st | pos = r.pos }
 

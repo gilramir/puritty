@@ -157,12 +157,20 @@ markers data at p =
             if len < 2 || after > Bytes.length data then
                 Err "a segment past the end"
 
-            else if m == 0xC0 || m == 0xC1 then
-                frameOf body |> Result.andThen (\f -> markers data after { p | frame = Just f })
+            else if (m == 0xC0 || m == 0xC1 || m == 0xC2) && p.frame /= Nothing then
+                -- one frame: a second would replace the one the scans before
+                -- it were read for (the code review's VI19)
+                Err "a second frame"
 
-            else if m == 0xC2 then
-                -- progressive, Huffman coded (IT6)
-                frameOf body |> Result.andThen (\f -> markers data after { p | frame = Just f, progressive = True })
+            else if m == 0xC0 || m == 0xC1 || m == 0xC2 then
+                -- a tail call, not one from a closure, so that a file of
+                -- many segments is a loop (VI19); C2 is progressive (IT6)
+                when frameOf body is
+                    Ok f ->
+                        markers data after { p | frame = Just f, progressive = m == 0xC2 }
+
+                    Err why ->
+                        meant Reason.FromOutside (Err why)
 
             else if m == 0xC6 || m == 0xCA || m == 0xCE then
                 Err "a progressive JPEG process not decoded (differential or arithmetic)"

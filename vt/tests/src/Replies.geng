@@ -138,6 +138,62 @@ suite =
                         ]
                         (replies fed)
           }
+        , { name = "a dynamic block whose code-length code is incomplete is refused, as zlib refuses it; its complete twin is taken (review VI16)"
+          , test =
+                \_ ->
+                    let
+                        load params payload =
+                            "\u{001B}_G" ++ params ++ ";" ++ payload ++ "\u{001B}\\"
+                    in
+                    Expect.equal
+                        [ "\u{001B}_Gi=1;OK\u{001B}\\"
+                        , "\u{001B}_Gi=2;EINVAL: decompression failed\u{001B}\\"
+                        ]
+                        (replies
+                            (feed
+                                -- "AAA" in a dynamic block: the code-length
+                                -- code of 1 (length 1), 17 and 18 (length 2);
+                                -- then without 17, one length-2 code unused
+                                (load "a=T,f=24,s=1,v=1,o=z,i=1" "eAEFwCEBAAAAAJBt/p8CAQGJAMQ="
+                                    ++ load "a=T,f=24,s=1,v=1,o=z,i=2" "eAEFwAEBAAAAAJBs+pcCAQGJAMQ="
+                                )
+                                (term 10 5)
+                            )
+                        )
+          }
+        , { name = "a PNG's PLTE of a wrong length, a second IHDR and a PLTE after IDAT are refused; an index past the palette is taken (review VI17)"
+          , test =
+                \_ ->
+                    let
+                        load i payload =
+                            "\u{001B}_Ga=t,f=100,i=" ++ String.fromInt i ++ ";" ++ payload ++ "\u{001B}\\"
+                    in
+                    Expect.equal
+                        [ "\u{001B}_Gi=1;OK\u{001B}\\"
+                        , "\u{001B}_Gi=2;OK\u{001B}\\"
+                        , "\u{001B}_Gi=3;EINVAL: invalid data\u{001B}\\"
+                        , "\u{001B}_Gi=4;EINVAL: invalid data\u{001B}\\"
+                        , "\u{001B}_Gi=5;EINVAL: invalid data\u{001B}\\"
+                        ]
+                        (replies
+                            (feed
+                                (String.join ""
+                                    [ -- a palette of one entry, the pixel's index 0
+                                      load 1 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX/AAAZ4gk3AAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg=="
+                                    -- the same, its index 1, past the palette
+                                    , load 2 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX/AAAZ4gk3AAAACklEQVR4nGNgBAAAAwACS/Xd6gAAAABJRU5ErkJggg=="
+                                    -- PLTE of four bytes
+                                    , load 3 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAABFBMVEX/AAAAaqaoiwAAAApJREFUeJxjYAAAAAIAAUivpHEAAAAASUVORK5CYII="
+                                    -- a second IHDR
+                                    , load 4 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAADUlIRFIAAAACAAAAAQgDAAAAw/yPuAAAAANQTFRF/wAAGeIJNwAAAApJREFUeJxjYAAAAAIAAUivpHEAAAAASUVORK5CYII="
+                                    -- PLTE after IDAT
+                                    , load 5 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAACklEQVR4nGNgAAAAAgABSK+kcQAAAANQTFRF/wAAGeIJNwAAAABJRU5ErkJggg=="
+                                    ]
+                                )
+                                (term 10 5)
+                            )
+                        )
+          }
         , { name = "replies come oldest first and a take empties them"
           , test =
                 \_ ->

@@ -1453,3 +1453,45 @@ node, Linux and Windows; the replay gate's core side 358 of 358.
 Sixel's painting (`Vt.Sixel`) still builds a `Builder UInt8` and copies
 it into `Bytes`, twice its pixels at the end; the review did not name it
 and it is left.
+
+## IM40 · Inflate and PNG held as zlib and libpng hold them (2026-11-25)
+
+The code review's VI16, VI17 and VI18.
+
+**VI16, an incomplete code.** `Inflate` builds a Huffman code after
+puff.c, but refused a set of lengths only when it was over-subscribed;
+an incomplete one, some codes never given out, was used as it was.
+puff.c and zlib refuse a dynamic block's code-length code unless it is
+complete, and its literal/length and distance codes unless complete or
+of one code at most, of length 1. Now `dynamicCode` does as they do; the
+fixed block's distance code, 30 codes of length 5, is incomplete by the
+format, and is built as before. A stream made by hand for it, "AAA" in a
+dynamic block whose code-length code gives symbol 1 length 1 and 18
+length 2, one code of length 2 left over: Python's zlib answers "invalid
+code lengths set", and its twin with 17 given that code, "AAA". vt's
+Replies suite loads both as Kitty's `f=24,o=z` (245): the twin `OK`, the
+incomplete `EINVAL: decompression failed` as Ghostty (zlib) answers it;
+the old code answered `OK` to both.
+
+**VI17, PNG's chunks.** A PLTE not of one to 256 entries of three bytes,
+a second IHDR, and a PLTE after the image data were taken; each is now
+refused, as the PNG specification has them and libpng refuses them. An
+index past the palette is drawn opaque black, as libpng draws it after
+its benign error and as the core drew it until IM39: IM39's rewrite
+wrote the palette's bytes through `Bytes.Builder.pushLast`, which keeps
+the low eight bits of `byteAt`'s -1 for a byte past the end, where
+`UInt8.fromInt` had made it 0, so such a pixel was white. The 288
+images of IM39 had none. It is now a branch of its own. vt's Replies
+suite holds the three refusals and the two palettes' `OK` (Kitty
+`f=100`), its Iterm suite the black (247); the code before failed both,
+its Kitty load answering `OK` to the four-byte PLTE and the late PLTE
+and its pixel white. Pillow takes all three files that are now refused;
+what wuffs, Ghostty's PNG decoder, answers is for nene's oracle.
+
+**VI18, CRC-32.** Each chunk's CRC was worked eight steps a byte, and for
+every chunk, though only a critical one's is checked. Now only a
+critical chunk's is, a byte a step through zlib's table of 256. The
+table is written out: made at the top level by 256 calls, it was more
+than the refinement checker's memory ("JS heap out of memory"). A
+2000-by-2000 PNG of noise (6.0 MB) through iTerm2: 0.47 to 0.48 s
+before, 0.45 s after, the same pixels.

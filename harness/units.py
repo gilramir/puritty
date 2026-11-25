@@ -112,8 +112,10 @@ SUITES = [
     # jumps across pages; 240 since VS6: a DCS body logged by its size;
     # 241 since VS7: base64's unused bits; 242 since VI12: a flat grey JPEG;
     # 243 since VI14: iTerm2's limit on what is kept; 244 since VI15: why
-    # an iTerm2 image is not shown
-    Suite("vt", 244, runs_of("vt/tests")),
+    # an iTerm2 image is not shown; 245 since VI16: an incomplete code;
+    # 247 since VI17: PNG's chunks held, an index past the palette; 248
+    # since VI19: a JPEG's second frame
+    Suite("vt", 248, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

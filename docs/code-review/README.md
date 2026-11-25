@@ -388,10 +388,10 @@ covered" sections. The larger gaps:
 | [VI13](03-vt-images.md) | speed | confirmed | **fixed** TIFF to RGBA allocates an array per pixel and a range of every pixel index |
 | [VI14](03-vt-images.md) | bug | confirmed | **fixed** iTerm2: the limit is tested against the drawn size even when no pixels of that size are made |
 | [VI15](03-vt-images.md) | design | confirmed | **fixed** iTerm2 decode failures are dropped to `Nothing` |
-| [VI16](03-vt-images.md) | inaccuracy | confirmed | Inflate accepts incomplete code sets that puff.c and zlib refuse |
-| [VI17](03-vt-images.md) | inaccuracy | confirmed | PNG: a palette index past PLTE, a repeated IHDR, and PLTE/tRNS of bad length are accepted |
-| [VI18](03-vt-images.md) | speed | confirmed | PNG: CRC-32 is worked a bit at a time, for every chunk, including those whose CRC is not checked |
-| [VI19](03-vt-images.md) | bug | plausible | JPEG `markers` recurses through `Result.andThen` for SOF, so it is not a loop there |
+| [VI16](03-vt-images.md) | inaccuracy | confirmed | **fixed** Inflate accepts incomplete code sets that puff.c and zlib refuse |
+| [VI17](03-vt-images.md) | inaccuracy | confirmed | **fixed** PNG: a palette index past PLTE, a repeated IHDR, and PLTE/tRNS of bad length are accepted |
+| [VI18](03-vt-images.md) | speed | confirmed | **fixed** PNG: CRC-32 is worked a bit at a time, for every chunk, including those whose CRC is not checked |
+| [VI19](03-vt-images.md) | bug | plausible | **fixed** JPEG `markers` recurses through `Result.andThen` for SOF, so it is not a loop there |
 | [SC9](04-ssh-core.md) | inaccuracy | confirmed | The hourly rekey in the design is not built: `Transport.rekey` has no caller |
 | [SC10](04-ssh-core.md) | bug | confirmed | `WINDOW_ADJUST` can wrap the server's window negative, after which the channel never sends again |
 | [SC11](04-ssh-core.md) | security | plausible | A server that names a tiny maximum packet makes the client cut a write into one packet a byte, recursively |

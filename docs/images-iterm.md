@@ -240,3 +240,14 @@ it to the diagnostic log at level 2, as it says a sequence it ignores
 (DG6): `iTerm2 image not shown: JPEG: a JPEG process not decoded
 (lossless, hierarchical or arithmetic)`. vt's Heard suite holds three
 (244).
+
+## IT10 · One frame a JPEG (2026-11-25)
+
+The code review's VI19. A SOF segment was read by `frameOf body |>
+Result.andThen (\f -> markers ...)`, the next marker read from inside
+the closure, so every SOF met nested one more call where every other
+marker is a loop, and a second SOF replaced the frame that the scans
+before it were read for. Now `markers` takes `frameOf`'s answer by
+`when`, a tail call, and refuses a second frame ("a second frame"). vt's
+Jpeg suite: an 8-by-8 JPEG decodes, the same with its SOF0 segment
+written twice is refused (248); the old decoder decoded both.

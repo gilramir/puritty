@@ -318,6 +318,7 @@ Facts the findings lean on, all read from the tree:
   oracle would report, and a lenient path for malformed data.
 - Fix: carry `left` out of `huffman`; require 0 for the code-length code, and for the other two
   allow `left > 0` only when the set is one code of length 1.
+- Fixed: 2026-11-25, `docs/images.md` IM40. `dynamicCode` as puff.c and zlib: the code-length code complete, the others complete or one code of length 1; vt Replies test with a hand-made stream zlib refuses.
 
 ### VI17 · PNG: a palette index past PLTE, a repeated IHDR, and PLTE/tRNS of bad length are accepted
 - Where: vt/src/Vt/Png.geng:556-569 (palette lookup), 117-132 (chunks)
@@ -332,6 +333,7 @@ Facts the findings lean on, all read from the tree:
   data`; `kitty-png-errors` has none of these cases.
 - Fix: check PLTE's length at the chunk, refuse a second IHDR, and make an index past the
   palette an error (or decide the leniency and write it in IM15).
+- Fixed: 2026-11-25, `docs/images.md` IM40. A PLTE of a bad length, a second IHDR and a PLTE after IDAT are refused; an index past the palette is opaque black (IM39 had made it white); vt Replies and Iterm tests.
 
 ### VI18 · PNG: CRC-32 is worked a bit at a time, for every chunk, including those whose CRC is not checked
 - Where: vt/src/Vt/Png.geng:104-105, 579-605; 453-459 (`placeAt`)
@@ -346,6 +348,7 @@ Facts the findings lean on, all read from the tree:
   of the 0.19 s that is cheap to remove.
 - Fix: a 256-entry table (a top-level array), computed only for critical chunks; push the four
   channel bytes without the intermediate arrays for the non-interlaced case.
+- Fixed: 2026-11-25, `docs/images.md` IM40. CRC-32 through zlib's table, for critical chunks only: a 6 MB PNG 0.48 s to 0.45 s. (`placeAt`'s per-pixel arrays went with IM39.)
 
 ### VI19 · JPEG `markers` recurses through `Result.andThen` for SOF, so it is not a loop there
 - Where: vt/src/Vt/Jpeg.geng:142-147
@@ -359,6 +362,7 @@ Facts the findings lean on, all read from the tree:
   costs more than about 290 bytes of stack the terminal dies at the stack limit. A second SOF
   is also simply accepted, replacing the frame the earlier scans were read for.
 - Fix: `when frameOf body is` with direct tail calls, and refuse a second SOF.
+- Fixed: 2026-11-25, `docs/images-iterm.md` IT10. SOF read by `when`, a tail call; a second frame refused; vt Jpeg test.
 
 ### VI20 · No malformed-input tests for the JPEG, GIF, TIFF and Sixel decoders
 - Where: vt/tests/src/Jpeg.geng, Gif.geng, Iterm.geng, Sixel.geng
