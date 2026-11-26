@@ -218,6 +218,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: the only cancel outside the conflict question is a click on the note bar, and the bar shows the batch only once the engine has emitted `Progress` (the first file opened) and a second has passed. `Transfer` waits in `Starting` for the server's version and in `Checking` for every `STAT` with no limit.
 - Scenario: the `sftp` subsystem starts but says nothing (a wrapper that hangs, a forced command waiting on input). `m.sending` stays set with nothing on screen; every later drop answers "Files are still being sent; drop these again when they are done" until the tab's session ends.
 - Fix: show the batch in the note bar from `begin` ("starting…", click to cancel), and give up `Starting` after some seconds.
+- Fixed: In part, 2026-11-25, `docs/sftp.md` FT44: a batch with no progress is shown after a second, click to cancel; native app test. No time limit on `Starting` or `Checking`, and a cancel during the checks waits for their answers.
 
 ### ST22 · Options from `~/.ssh/config`: `SetEnv` with `=` in the value is dropped, `IdentitiesOnly true` is not yes, a bare IPv6 jump or quick-connect host is cut at its last colon
 - Where: packages/ssh/src/Ssh/Session.geng:1560-1569, 1552, 1431-1436; app/src/Hosts.geng:63-74

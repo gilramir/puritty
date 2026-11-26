@@ -218,8 +218,8 @@ SUITES = [
         # shell upload's block of channels bounded; 617 since ST26: a dropped
         # folder that can't be read; 618 since ST19: a channel not opened
         # is not SFTP turned off; 619 since ST24: the picker after its SFTP
-        # broke
-        619,
+        # broke; 620 since ST21: a batch not started shown
+        620,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

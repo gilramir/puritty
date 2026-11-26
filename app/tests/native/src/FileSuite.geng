@@ -19,6 +19,7 @@ import Schema
 import Sending
 import SettingsFile
 import Ssh.Connection as Connection
+import Ssh.Transfer
 import Task
 import Test.Runner.UnitNode as U
 import UInt8
@@ -163,6 +164,17 @@ settingsFile =
                                 asked.answers
                     in
                     Task.succeed (Expect.equal { failed = True, sent = 0 } { failed = failedNow, sent = Bytes.length asked.send })
+                )
+            , U.test "a batch that has not started is shown after a second, so that it can be cancelled (review ST21)"
+                (\_ ->
+                    let
+                        begun =
+                            Sending.begin { ref = 10, tab = 1, folder = Bytes.fromString "/tmp", jobs = [ Ssh.Transfer.MakeDir { path = Bytes.fromString "/tmp/a" } ], refused = [], allowShell = False, ms = 0 }
+                    in
+                    Task.succeed
+                        (Expect.equal { early = Nothing, later = Just "starting to send 1 items · click to cancel" }
+                            { early = Sending.progressText 500 begun.sending, later = Sending.progressText 1500 begun.sending }
+                        )
                 )
             , U.test "a setting written to config.toml of mode 600: the mode kept, no temporary left (review PS12)"
                 (\_ ->

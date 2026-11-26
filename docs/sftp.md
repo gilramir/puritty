@@ -2470,3 +2470,18 @@ queued before the version came fail with it, and nothing more is sent.
 The native app suite breaks the stream and asks a listing: the old
 source queued it and answered nothing (619). Left: a listing begun
 cannot be abandoned when the user moves on; it is read to its end.
+
+## FT44 · A batch that has not started is shown, and can be cancelled (2026-11-25)
+
+The code review's ST21, in part. The note bar showed a batch only once
+its engine had said `Progress`, the first file opened, and a click on the
+bar is the only way to cancel it outside the conflict question: an SFTP
+subsystem that started but said nothing (a wrapper that hangs) left the
+batch on with nothing on screen, and every later drop was told files are
+still being sent, until the session ended. `Sending.progressText` now
+shows a batch with no progress after a second, "starting to send N items
+· click to cancel". A cancel while the server has not said its version
+finishes the batch at once; one while its checks are unanswered still
+waits for those answers, and nothing gives up `Starting` or `Checking`
+on its own. The native app suite holds the text at 0.5 s and 1.5 s: the
+old code showed nothing (620).
