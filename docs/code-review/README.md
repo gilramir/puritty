@@ -435,7 +435,7 @@ covered" sections. The larger gaps:
 | [TP7](06-tmux-package.md) | bug | plausible | `Command.pasteBytes` on tmux 2.x loses a `;` that ends a piece |
 | [TP8](06-tmux-package.md) | bug | confirmed | **fixed** `unescape` drops the text before a backslash that is not an escape |
 | [TP9](06-tmux-package.md) | bug | plausible | A notification that arrives inside a reply is kept as a reply line and never acted on |
-| [TP10](06-tmux-package.md) | security | plausible | A layout's nesting depth is not bounded, and a split's box is not clamped as a pane's is |
+| [TP10](06-tmux-package.md) | security | plausible | **fixed** A layout's nesting depth is not bounded, and a split's box is not clamped as a pane's is |
 | [TP11](06-tmux-package.md) | inaccuracy | confirmed | Escapes inside double quotes are not decoded: `\n`, `\t`, `\e`, `\ooo`, `\u…` read as the letter or digits |
 | [TP12](06-tmux-package.md) | design | confirmed | `Command.quote` cannot say a newline and does not refuse one; three builders take an unquoted name |
 | [TP13](06-tmux-package.md) | efficiency | confirmed | Outside tmux, every ESC in the terminal's output costs a 7-byte slice and compare; under tmux every `%output` is scanned once more, and an entry split across two is missed |

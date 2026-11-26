@@ -49,7 +49,13 @@ type Cell
 {-| A layout from either form, or why not. -}
 parse : String -> Result String Cell
 parse text =
-    if String.startsWith "{" text then
+    if nestedPast mostDepth text then
+        -- both readers go down a level a bracket, on the stack: printed
+        -- bytes nested tens of thousands deep crashed the window (the
+        -- code review's TP10)
+        Err ("a layout nested deeper than " ++ String.fromInt mostDepth)
+
+    else if String.startsWith "{" text then
         Decode.decodeString (Decode.field "L" cellDecoder) text
             |> Result.mapError Decode.errorToString
 
@@ -105,7 +111,7 @@ cellDecoder =
 splitDecoder : Bool -> Decoder Cell
 splitDecoder leftRight =
     Decode.map5
-        (\w h x y kids -> Split { leftRight = leftRight, w = w, h = h, x = x, y = y, children = kids })
+        (\w h x y kids -> Split { leftRight = leftRight, w = bounded w, h = bounded h, x = bounded x, y = bounded y, children = kids })
         (Decode.field "w" Decode.int)
         (Decode.field "h" Decode.int)
         (Decode.field "x" Decode.int)
@@ -164,6 +170,42 @@ oldForm text =
                 meant Reason.FromOutside Err why
 
 
+{-| The brackets a layout may nest: 512 levels of the old form, 256 of
+the JSON, which takes two a level. Each level is two panes or more, each
+a cell and a border at the least, so a window nested so deep is over a
+thousand cells across; tmux's are far smaller. -}
+mostDepth : Int
+mostDepth =
+    512
+
+
+{-| Whether the text's `{` and `[` nest deeper than `most`, read in one
+pass before any reader goes down them. -}
+nestedPast : Int -> String -> Bool
+nestedPast most text =
+    String.foldl
+        (\c acc ->
+            if acc.over then
+                acc
+
+            else if c == '{' || c == '[' then
+                let
+                    deeper =
+                        clamp 0 1000000 (acc.depth + 1)
+                in
+                { depth = deeper, over = deeper > most }
+
+            else if c == '}' || c == ']' then
+                { acc | depth = clamp 0 1000000 (acc.depth - 1) }
+
+            else
+                acc
+        )
+        { depth = 0, over = False }
+        text
+        |> .over
+
+
 {-| A place or a size kept inside what a pane's box may hold. -}
 bounded : Int -> (r : Int where 0 <= r && r <= 16384)
 bounded v =
@@ -209,11 +251,11 @@ oldRest chars box at =
 
         Just 0x7B ->
             children chars (at + 1) 0x7D []
-                |> Result.map (\c -> { cell = Split { leftRight = True, w = box.w, h = box.h, x = box.x, y = box.y, children = c.cells }, at = c.at })
+                |> Result.map (\c -> { cell = Split { leftRight = True, w = bounded box.w, h = bounded box.h, x = bounded box.x, y = bounded box.y, children = c.cells }, at = c.at })
 
         Just 0x5B ->
             children chars (at + 1) 0x5D []
-                |> Result.map (\c -> { cell = Split { leftRight = False, w = box.w, h = box.h, x = box.x, y = box.y, children = c.cells }, at = c.at })
+                |> Result.map (\c -> { cell = Split { leftRight = False, w = bounded box.w, h = bounded box.h, x = bounded box.x, y = bounded box.y, children = c.cells }, at = c.at })
 
         _ ->
             meant Reason.FromOutside Err ("a layout cell with no pane and no children at " ++ String.fromInt at)

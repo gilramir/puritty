@@ -536,7 +536,47 @@ wallMessage =
 layout : U.Suite
 layout =
     run "Layout"
-        [ { name = "the old form: two panes side by side"
+        [ { name = "a layout nested past 512 brackets is refused, not read down the stack; 500 deep is read; a split's box clamped (review TP10)"
+          , test =
+                \_ ->
+                    let
+                        -- a split of one child, `depth` deep, then a pane
+                        oldNest depth =
+                            "0000," ++ String.repeat depth "1x1,0,0{" ++ "1x1,0,0,7" ++ String.repeat depth "}"
+
+                        jsonNest depth =
+                            "{\"V\":2,\"L\":"
+                                ++ String.repeat depth "{\"t\":\"h\",\"w\":1,\"h\":1,\"x\":0,\"y\":0,\"c\":["
+                                ++ "{\"t\":\"p\",\"w\":1,\"h\":1,\"x\":0,\"y\":0,\"I\":\"%7\"}"
+                                ++ String.repeat depth "]}"
+                                ++ "}"
+
+                        refused r =
+                            when r is
+                                Err why ->
+                                    String.contains "nested deeper" why
+
+                                Ok _ ->
+                                    False
+
+                        splitWidth r =
+                            when r is
+                                Ok (Layout.Split sp) ->
+                                    sp.w
+
+                                _ ->
+                                    -1
+                    in
+                    Expect.equal
+                        { oldDeep = True, jsonDeep = True, old500 = Ok [ 7 ], json200 = Ok [ 7 ], clamped = 16384 }
+                        { oldDeep = refused (Layout.parse (oldNest 100000))
+                        , jsonDeep = refused (Layout.parse (jsonNest 100000))
+                        , old500 = Layout.parse (oldNest 500) |> Result.map (Layout.panes >> Array.map .id)
+                        , json200 = Layout.parse (jsonNest 200) |> Result.map (Layout.panes >> Array.map .id)
+                        , clamped = splitWidth (Layout.parse "0000,99999x24,0,0{40x24,0,0,0}")
+                        }
+          }
+        , { name = "the old form: two panes side by side"
           , test =
                 \_ ->
                     Expect.equal

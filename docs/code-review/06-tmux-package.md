@@ -107,6 +107,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: each `{` or `[` adds several native frames (`Result.andThen` closures included). The text comes from `%layout-change` or a `list-panes` reply, that is from whatever speaks control mode. `Pane` boxes go through `bounded`, but `Split`'s `w h x y` are whatever nine digits (old form) or any JSON int say, and the app reads them (`heightOf`, TmuxMode.geng:2316; the size shown at :1464).
 - Scenario: a stream holding `ESC P 1000 p` and `%layout-change @0 0000,1x1,0,0{1x1,0,0{1x1,0,0{…` nested some tens of thousands deep (a few hundred KB) can overflow the stack: a crash from printed bytes. The JSON form has the same shape through `Decode.lazy`.
 - Fix: carry a depth and fail past a small limit (tmux cannot make more levels than panes); clamp a split's box with `bounded` as well, so the type says the same for both.
+- Fixed: 2026-11-26, `docs/tmux.md` TM127. `Layout.parse` refuses nesting past 512 brackets in one pass before either reader; a split's box clamped by `bounded`. Old code: node died of stack overflow at 100,000 deep; native did not. Tmux suite test.
 
 ### TP11 · Escapes inside double quotes are not decoded: `\n`, `\t`, `\e`, `\ooo`, `\u…` read as the letter or digits
 - Where: packages/tmux/src/Tmux/Syntax.geng:174-175 and :189-190 (`word`); used for values by `Customize.unquoted` (Customize.geng:279-290)

@@ -4774,3 +4774,22 @@ old code gave `\x` and the line end. The suite's expected count was 145
 in `units.py` while the suite held 148 since 2026-11-24's TM123 (TP2),
 TP3's reply bound and the customize filter: the `tmux` units gate had
 been failing since then, unrun. It is 150 now.
+
+## TM127 · A layout's nesting bounded, and a split's box clamped (2026-11-26)
+
+The code review's TP10. Both of `Layout`'s readers go down a level for
+each `{` or `[` on the stack (the old form's `oldCell`, `oldRest` and
+`children`; the JSON's `Decode.lazy`, and the JSON parser before it),
+and a layout comes from whatever speaks control mode: `ESC P 1000 p`
+printed in a pane, then a `%layout-change` nested deep. `Layout.parse`
+now counts the brackets' depth in one pass first and refuses a layout
+past 512 (`mostDepth`: 512 levels of the old form, 256 of the JSON),
+far past any window: each level is two panes or more. A split's box is
+clamped as a pane's was (`bounded`, 0 to 16384); it was any number.
+
+**Measured** (the tmux suite, a split of one child 100,000 deep): with
+the old code the node run died, `RangeError: Maximum call stack size
+exceeded` in `oldRest`, `oldCell` and `children`; the native Linux and
+Windows runs read it without a crash, and kept a split 99999 cells wide.
+Now each refuses both forms 100,000 deep, reads the old form 500 deep
+and the JSON 200 deep, and clamps the split to 16384 (151).

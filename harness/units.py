@@ -130,8 +130,9 @@ SUITES = [
     # since TA3: an entry not expected, asked (docs/tmux.md TM108); 148
     # since TM123/TP2, TP3's 64 MiB reply and the customize filter (11-24,
     # the count left at 145 then); 149 since TP8: the text before a bare
-    # backslash; 150 since TP6: a binding's spaces kept
-    Suite("tmux", 150, runs_of("packages/tmux/tests")),
+    # backslash; 150 since TP6: a binding's spaces kept; 151 since TP10: a
+    # layout's depth bounded
+    Suite("tmux", 151, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
