@@ -11,8 +11,11 @@
  * its socket all the same. Sounds are played on a thread of their own, the loop only
  * leaving a request: a key sound replaces whatever plays, and a bell asked
  * for while a bell plays is dropped, since bells come in floods (`cat` of
- * a binary file). The stream is opened once and kept, with a small buffer
- * (20 ms) so that a key's sound is not late. The structures and constants
+ * a binary file). The stream is opened at the first sound and kept, with a
+ * small buffer (20 ms) so that a key's sound is not late; when a write
+ * fails, the server has gone (restarted), and the stream is freed and
+ * opened again; when it cannot be opened, no sound is taken for 5 s, so
+ * that the caller's "not played" is true (X11). The structures and constants
  * are PulseAudio's, written here so that no header is needed. */
 
 #define _GNU_SOURCE
@@ -20,6 +23,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #include "geng.h"
 #include "../../../../assets/sounds/puritty_sounds.h"
@@ -40,12 +44,23 @@ static void *(*pa_new)(const char *, const char *, int, const char *, const char
                        const void *, const pa_buffer_attr *, int *);
 static int (*pa_write)(void *, const void *, size_t, int *);
 static int (*pa_flush)(void *, int *);
+static void (*pa_free)(void *);
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t asked = PTHREAD_COND_INITIALIZER;
 static int wanted = -1;  /* the sound asked for and not yet begun */
 static int playing = -1; /* the sound being played */
-static int started, broken;
+static int started;
+/* no audio: the library is not there (for good), or the server would not
+ * open a stream (until `retry_at`, CLOCK_MONOTONIC seconds) */
+static int broken, gone;
+static double retry_at;
+
+static double now_s(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double) t.tv_sec + (double) t.tv_nsec / 1e9;
+}
 
 /* A WAV file's samples: its data chunk. */
 static const unsigned char *samples(int id, size_t *length) {
@@ -74,23 +89,35 @@ static void *player(void *arg) {
                             const void *, const pa_buffer_attr *, int *)) dlsym(lib, "pa_simple_new");
         pa_write = (int (*)(void *, const void *, size_t, int *)) dlsym(lib, "pa_simple_write");
         pa_flush = (int (*)(void *, int *)) dlsym(lib, "pa_simple_flush");
-    }
-    void *stream = NULL;
-    if (pa_new != NULL && pa_write != NULL && pa_flush != NULL) {
-        pa_sample_spec spec = {PA_SAMPLE_S16LE, 44100, 1};
-        pa_buffer_attr attr = {(uint32_t) -1, 44100 * 2 / 50, (uint32_t) -1, (uint32_t) -1, (uint32_t) -1};
-        int error = 0;
-        stream = pa_new(NULL, "puritty", PA_STREAM_PLAYBACK, NULL, "bell", &spec, NULL, &attr, &error);
+        pa_free = (void (*)(void *)) dlsym(lib, "pa_simple_free");
     }
     pthread_mutex_lock(&lock);
-    if (stream == NULL) {
-        broken = 1;
+    if (pa_new == NULL || pa_write == NULL || pa_flush == NULL || pa_free == NULL) {
+        broken = gone = 1;
         wanted = -1;
         pthread_mutex_unlock(&lock);
         return NULL;
     }
+    pa_sample_spec spec = {PA_SAMPLE_S16LE, 44100, 1};
+    pa_buffer_attr attr = {(uint32_t) -1, 44100 * 2 / 50, (uint32_t) -1, (uint32_t) -1, (uint32_t) -1};
+    void *stream = NULL;
     for (;;) {
+        if (stream == NULL) {
+            /* opened at the first sound, and again after the server went
+             * away (a restarted PipeWire): the code review's X11 */
+            pthread_mutex_unlock(&lock);
+            int error = 0;
+            stream = pa_new(NULL, "puritty", PA_STREAM_PLAYBACK, NULL, "bell", &spec, NULL, &attr, &error);
+            pthread_mutex_lock(&lock);
+            if (stream == NULL) {
+                /* no server: sounds are not taken for 5 s, then tried */
+                broken = 1;
+                retry_at = now_s() + 5;
+                wanted = -1;
+            }
+        }
         while (wanted < 0) pthread_cond_wait(&asked, &lock);
+        if (stream == NULL) continue;
         int id = wanted;
         wanted = -1;
         playing = id;
@@ -102,7 +129,13 @@ static void *player(void *arg) {
         int error = 0;
         while (length > 0) {
             size_t n = length < piece ? length : piece;
-            if (pa_write(stream, at, n, &error) < 0) break;
+            if (pa_write(stream, at, n, &error) < 0) {
+                /* the server went away: this stream is dead, and the next
+                 * sound opens another */
+                pa_free(stream);
+                stream = NULL;
+                break;
+            }
             at += n;
             length -= n;
             pthread_mutex_lock(&lock);
@@ -127,6 +160,7 @@ int puritty_sound_play(int id) {
     pthread_mutex_lock(&lock);
     int bell = id >= PURITTY_SOUND_FIRST_BELL;
     int busy_with_bell = playing >= PURITTY_SOUND_FIRST_BELL || wanted >= PURITTY_SOUND_FIRST_BELL;
+    if (broken && !gone && now_s() >= retry_at) broken = 0;
     if (!broken && !(bell && busy_with_bell)) {
         wanted = id;
         if (!started) {

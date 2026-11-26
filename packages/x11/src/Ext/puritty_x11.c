@@ -606,21 +606,23 @@ static void record(const uint8_t *r, int n) {
 
 static struct xkb_context *xctx;
 static struct xkb_keymap *keymap;
-static struct xkb_state *kstate;
 static int32_t kbd = -1;
 static uint8_t xkb_event;
 
 static void note(const char *fmt, int a, int b, int c, int d);
 
-/* The keymap and its state fetched from the server for the core keyboard,
- * which may be a new device: several round trips and a keymap of 100 KB or
- * more, compiled. The old ones are kept if the fetch fails. */
+/* The keymap fetched from the server for the core keyboard, which may be a
+ * new device: several round trips and a keymap of 100 KB or more, compiled.
+ * The old one is kept if the fetch fails. No xkb_state is kept, nor
+ * StateNotify asked for: a key is read with its own event's state (V46),
+ * and a state kept up to date was read nowhere, each modifier's press and
+ * release an event (the code review's X21). */
 static void key_fetch(void) {
     int32_t device = xkb_x11_get_core_keyboard_device_id(conn);
     if (device < 0) return;
     if (device != kbd) {
         kbd = device;
-        uint16_t events = XCB_XKB_EVENT_TYPE_NEW_KEYBOARD_NOTIFY | XCB_XKB_EVENT_TYPE_MAP_NOTIFY | XCB_XKB_EVENT_TYPE_STATE_NOTIFY;
+        uint16_t events = XCB_XKB_EVENT_TYPE_NEW_KEYBOARD_NOTIFY | XCB_XKB_EVENT_TYPE_MAP_NOTIFY;
         uint16_t parts = XCB_XKB_MAP_PART_KEY_TYPES | XCB_XKB_MAP_PART_KEY_SYMS | XCB_XKB_MAP_PART_MODIFIER_MAP |
                          XCB_XKB_MAP_PART_EXPLICIT_COMPONENTS | XCB_XKB_MAP_PART_KEY_ACTIONS | XCB_XKB_MAP_PART_VIRTUAL_MODS |
                          XCB_XKB_MAP_PART_VIRTUAL_MOD_MAP;
@@ -631,15 +633,9 @@ static void key_fetch(void) {
                                  XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT, 0, 0, 0);
     }
     struct xkb_keymap *map = xkb_x11_keymap_new_from_device(xctx, conn, device, XKB_KEYMAP_COMPILE_NO_FLAGS);
-    struct xkb_state *state = map ? xkb_x11_state_new_from_device(map, conn, device) : NULL;
-    if (!state) {
-        if (map) xkb_keymap_unref(map);
-        return;
-    }
+    if (!map) return;
     if (keymap) xkb_keymap_unref(keymap);
-    if (kstate) xkb_state_unref(kstate);
     keymap = map;
-    kstate = state;
     note("keymap fetched", 0, 0, 0, 0);
 }
 
@@ -801,12 +797,7 @@ static void key_event(int press, uint8_t keycode, uint16_t state, uint32_t time,
 
 static void xkb_event_in(xcb_generic_event_t *e) {
     uint8_t type = ((uint8_t *) e)[1];
-    if (type == XCB_XKB_STATE_NOTIFY) {
-        xcb_xkb_state_notify_event_t *s = (xcb_xkb_state_notify_event_t *) e;
-        if (kstate)
-            xkb_state_update_mask(kstate, s->baseMods, s->latchedMods, s->lockedMods, (xkb_layout_index_t) s->baseGroup,
-                                  (xkb_layout_index_t) s->latchedGroup, s->lockedGroup);
-    } else if (type == XCB_XKB_NEW_KEYBOARD_NOTIFY || type == XCB_XKB_MAP_NOTIFY) {
+    if (type == XCB_XKB_NEW_KEYBOARD_NOTIFY || type == XCB_XKB_MAP_NOTIFY) {
         keymap_stale = 1;
     }
 }
@@ -1253,8 +1244,11 @@ static void pointers_setup(void) {
     /* Nix's xcb-util-cursor searches its own store path and the home
      * directory's, not /usr/share/icons where a distribution's themes are;
      * libXcursor's own path, as other programs search it, unless the user
-     * named one */
-    setenv("XCURSOR_PATH", "~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps", 0);
+     * named one. Only while the cursors load: the programs puritty starts
+     * take its environment, and theirs would lose libXcursor's own
+     * default (the code review's X19). */
+    int ours = getenv("XCURSOR_PATH") == NULL;
+    if (ours) setenv("XCURSOR_PATH", "~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps", 1);
     xcb_cursor_context_t *ctx = NULL;
     if (xcb_cursor_context_new(conn, screen, &ctx) >= 0) {
         pointer_text = xcb_cursor_load_cursor(ctx, "text");
@@ -1271,6 +1265,7 @@ static void pointers_setup(void) {
         }
         xcb_cursor_context_free(ctx);
     }
+    if (ours) unsetenv("XCURSOR_PATH");
     if (pointer_text == XCB_CURSOR_NONE) pointer_text = font_cursor(152);
     if (pointer_arrow == XCB_CURSOR_NONE) pointer_arrow = font_cursor(68);
     /* the cursor font's: sb_h_double_arrow, sb_v_double_arrow,

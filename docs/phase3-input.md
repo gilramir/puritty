@@ -764,3 +764,18 @@ program asking for focus reports; another client grabs the keyboard
 focus moves to the root window and back. Before: the grabs reported
 `CSI O CSI I` three times; now nothing, and the real move `CSI O CSI I`
 both before and after.
+
+## 20. No keyboard state kept that nothing reads (2026-11-26)
+
+The code review's X21. With the keymap (§17) the window fetched an
+`xkb_state` for the keyboard, a round trip of its own, and asked the
+server for XKB StateNotify to keep it up to date. Nothing read it: a key
+is read with its own event's state (V46), through a state made for that
+key. And each press and release of a modifier, and each change of group,
+was an event that woke the loop. The state, its fetch and the
+StateNotify selection are gone; a fetch succeeds when the keymap does.
+
+**Tested**: `harness/xkbstate.py` runs puritty through a proxy that reads
+what the server sends it and presses Shift and lets it go ten times.
+Before: 20 key events and 20 XKB StateNotify. Now 20 and 0. The keymap
+gate (§17) and the compose gate (§18) pass.

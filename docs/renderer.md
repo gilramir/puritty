@@ -1195,3 +1195,42 @@ opens. Before: `IBM 3270 Semi-Condensed` opened Fira Code, and
 `Foo:weight=nonsense` opened no window. Now
 `3270SemiCondensed-Regular`, `3270-Regular` for `IBM 3270`, and a window
 in the closest font (Fira Code) for the name no font has.
+
+## R29. The fallback cache answers for the cluster it was asked about (2026-11-26, the code review's X14)
+
+R22's fallback cache was keyed by a cluster's first code point that is
+not ignorable, and its answer, a face or none, was for the whole
+cluster. A later cluster with the same base and other marks took that
+answer without the platform being asked: `e` and a mark no font has
+cached -1 under `e`, and `e` and a mark an installed fallback font has
+was then drawn as `e` alone, the mark dropped, until the font changed.
+The key is now a hash (FNV-1a, 64 bits) of all the cluster's code points
+that are not ignorable and of whether it asks for color; a face it
+answers is checked against the cluster again, for two clusters whose
+hashes meet. A code point alone is asked once as before.
+
+**Tested**: `packages/text/tests/cases.sh` (R25), with Terminus as the
+only face: `e` and U+20D0, which the platform is made to find no font
+for, then `e` and U+0309, which it answers with DejaVu Sans Mono. Before,
+the platform was asked once and the second cluster had no face; now
+twice, and it has DejaVu's. `harness/fallbacks.py` (R22) still asks 6,000
+times for 6,000 code points drawn four times; the pixel gate passes 55
+of 55.
+
+## R30. A glyph centered in its box is placed at its pad, not uploaded with it (2026-11-26, the code review's X24)
+
+A glyph alone in a cluster narrower than its cells is centered: half of
+what its box has over its advance on each side. It was uploaded a second
+time with that pad in its bearing, under a key with one bit for
+"shifted", not for how much, so the pad of the first box it was drawn in
+was kept for every later box: drawn in one cell and then as a wide
+cell's head, the second drawing was where the first was. It is now
+placed at its pad with its own bearing, as any glyph; the pad's only
+cost is that it may start an element of the glyph run, and the shift's
+key bit and parameter are gone. The squeezed form (C§4.4) is kept.
+
+**Tested**: `packages/text/tests/cases.sh` (R25) opens Terminus at 16
+px (cells of 8) as the window does and draws U+0249, which only DejaVu
+Sans of the test's three fonts has, in one cell and then in two. Before,
+its ink was at x = 1 both times; now at 1 and 5, half a cell apart, the
+two pads' difference. The pixel gate passes 55 of 55.

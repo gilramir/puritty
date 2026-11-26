@@ -402,3 +402,19 @@ session committed.
   (`focus: false` throws).
 - **`CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`** is still needed (CL10): without
   it the row kept its room and drew only its alt text.
+
+## CL12 · A notification's body is plain text (2026-11-26)
+
+The code review's X28. On Linux a notification (CL8) is shown by
+`notify-send` with the title and the body as they came. `--` closes
+argument injection and no shell is run, but the Desktop Notifications
+spec lets a service read the body as markup, and GNOME Shell, KDE and
+dunst do: a program's text, a remote one's too (OSC 9, 777, 99), could
+make a link or an image reference the service shows, or break the markup
+so the body shows empty. `NotifyText.plain` writes `&`, `<` and `>` as
+entities, the spec's rule for plain text; the title is plain text to the
+spec already. Windows shows the text in a balloon, which reads no markup.
+
+**Tested** (the app suite, 629, on node, Linux and Windows): `a <b>bold</b> & <a
+href="x">link</a>` is given as `a &lt;b&gt;bold&lt;/b&gt; &amp; &lt;a
+href="x"&gt;link&lt;/a&gt;`. Before, the body went as it came.

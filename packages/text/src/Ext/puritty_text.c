@@ -124,8 +124,9 @@ static void fill(uint32_t rgb, int x, int y, int w, int h) {
 
 #define FACES 32
 /* A glyph's key in its face: its index, and the bits of the form it was
- * uploaded in (shifted 1, squeezed 2, synthetic bold 4, synthetic italic
- * 8, from bit 16); a glyph set id is the face above it. */
+ * uploaded in (squeezed 2, synthetic bold 4, synthetic italic 8, from
+ * bit 16; 1 was a centered form's, X24); a glyph set id is the face above
+ * it. */
 #define KEYS (1 << 20)
 /* The last face's number is the box drawing's (V41), whose glyphs the C
  * draws itself; it is no font. */
@@ -311,9 +312,11 @@ static void table_clear(Table *t) {
     *t = (Table) {0};
 }
 
-/* A cache from a cluster's first code point to the face the platform
- * gave it, so that the platform is asked once a code point; -1 where it
- * found none. */
+/* A cache from a cluster to the face the platform gave it, so that the
+ * platform is asked once a cluster; -1 where it found none. Keyed by all
+ * of the cluster's code points that are not ignorable (a hash), not its
+ * first: `e` and a mark no font has, then `e` and a mark one does, are two
+ * questions (the code review's X14). */
 static Table fcache;
 
 static int fallback(const uint32_t *cps, int n) {
@@ -322,12 +325,14 @@ static int fallback(const uint32_t *cps, int n) {
      * one asking for text only a face that is not. */
     for (int f = 0; f < nfaces; f++)
         if (faces[f].color == color && covers(f, cps, n)) return f;
-    uint32_t key = 0;
-    for (int i = 0; i < n && !key; i++)
-        if (!ignorable(cps[i])) key = cps[i];
-    if (color) key |= 0x40000000;
-    const Slot *known = table_get(&fcache, key + 1);
-    if (known) return known->value;
+    /* FNV-1a over the code points that are not ignorable, and the color */
+    uint64_t key = 0xcbf29ce484222325ull ^ (uint64_t) color;
+    for (int i = 0; i < n; i++)
+        if (!ignorable(cps[i])) key = (key ^ cps[i]) * 0x100000001b3ull;
+    if (key == 0) key = 1;
+    const Slot *known = table_get(&fcache, key);
+    /* a face is checked again, for a cluster whose hash met another's */
+    if (known && (known->value < 0 || covers(known->value, cps, n))) return known->value;
     double t0 = ns();
     st.fc_queries++;
     int face = -1;
@@ -343,7 +348,7 @@ static int fallback(const uint32_t *cps, int n) {
         free(file);
     }
     if (face < 0) st.fc_failed++;
-    table_put(&fcache, key + 1, 0, face);
+    table_put(&fcache, key, 0, face);
     st.fc_ns += ns() - t0;
     return face;
 }
@@ -374,12 +379,13 @@ static void reset_glyphs(void) {
 /* A glyph's advance on the server is fixed when it is uploaded: the pen
  * moves by it inside an element, whatever the run asks. The first use
  * chooses it; a glyph placed elsewhere starts a new element. A glyph alone
- * in a cluster narrower than its cells is uploaded a second time with its
- * centering in its bearing (`shift`), so a line of them stays in one
- * element; one wider than the one cell the core gives it a third way,
- * squeezed to the cell (`squeeze`, 16.16; PuTTY's narrow trick, C§4.4). */
-static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squeeze, int synth) {
-    uint32_t k = (g & 0xFFFF) | (shift ? 0x10000 : 0) | (squeeze ? 0x20000 : 0) | ((uint32_t) synth << 18);
+ * in a cluster narrower than its cells is placed at its centering, which
+ * may start an element; its centering is not uploaded in its bearing,
+ * which kept the first box's for every later one (X24). One wider than the
+ * one cell the core gives it is uploaded a second way, squeezed to the
+ * cell (`squeeze`, 16.16; PuTTY's narrow trick, C§4.4). */
+static uint32_t upload(int f, uint32_t g, int advance, FT_Fixed squeeze, int synth) {
+    uint32_t k = (g & 0xFFFF) | (squeeze ? 0x20000 : 0) | ((uint32_t) synth << 18);
     uint32_t id = ((uint32_t) f << 20) | k;
     Face *F = &faces[f];
     if (F->uploaded[k >> 3] & (1 << (k & 7))) return id;
@@ -431,7 +437,7 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
     uint8_t *data = must(calloc(size > 0 ? size : 4, 1));
     for (unsigned y = 0; y < b->rows; y++) memcpy(data + y * stride, b->buffer + y * b->pitch, b->width);
     PtGlyph glyph = {.width = (int) b->width, .height = (int) b->rows, .stride = stride,
-                     .left = failed ? 0 : F->ft->glyph->bitmap_left + shift, .top = failed ? 0 : F->ft->glyph->bitmap_top,
+                     .left = failed ? 0 : F->ft->glyph->bitmap_left, .top = failed ? 0 : F->ft->glyph->bitmap_top,
                      .advance = advance, .data = data};
     pt_glyph_add(id, &glyph);
     FT_Bitmap_Done(library, &gray);
@@ -507,9 +513,9 @@ static void ink_cells(int y, int cell, int n, int w0, int w1, int first) {
     gbox.any = 0;
 }
 
-static void place(int f, uint32_t g, int x, int y, int style, int advance, int shift, FT_Fixed squeeze) {
+static void place(int f, uint32_t g, int x, int y, int style, int advance, FT_Fixed squeeze) {
     if (nplaced == 8192) return;
-    uint32_t id = upload(f, g, advance, shift, squeeze, synth_for(f, style));
+    uint32_t id = upload(f, g, advance, squeeze, synth_for(f, style));
     const int16_t *ink = faces[f].ink + (size_t) (id & (KEYS - 1)) * 4;
     if (ink[2] > 0 && ink[3] > 0) {
         int x0 = x + ink[0], y0 = y - ink[1], x1 = x0 + ink[2], y1 = y0 + ink[3];
@@ -650,13 +656,14 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
             int yy = y * pt_ch + pt_ascent - (gp[k].y_offset >> 6);
             int a = k + 1 < e ? 0 : box - pad - (pen >> 6);
             if (k + 1 < e) a = (gp[k].x_advance + gp[k + 1].x_offset - gp[k].x_offset) >> 6;
-            if (e - g == 1 && pad > 0 && gp[k].x_offset == 0)
-                place(f, gi[k].codepoint, x - pad, yy, C->style, box, pad, 0);
-            else if (e - g == 1 && box == pt_cw && (adv >> 6) > pt_cw && gp[k].x_offset == 0) {
-                place(f, gi[k].codepoint, x, yy, C->style, pt_cw, 0, (FT_Fixed) ((double) pt_cw * 64 / adv * 65536));
+            /* a glyph centered is placed at its pad, not uploaded with the
+             * pad in its bearing, which kept the first box's pad for every
+             * later box (the code review's X24) */
+            if (e - g == 1 && box == pt_cw && (adv >> 6) > pt_cw && gp[k].x_offset == 0) {
+                place(f, gi[k].codepoint, x, yy, C->style, pt_cw, (FT_Fixed) ((double) pt_cw * 64 / adv * 65536));
                 st.squeezed++;
             } else
-                place(f, gi[k].codepoint, x, yy, C->style, a, 0, 0);
+                place(f, gi[k].codepoint, x, yy, C->style, a, 0);
             pen += gp[k].x_advance;
         }
         ink_cells(y, x0 + C->cell, box / pt_cw, x0 + C->w0, x0 + C->w1, first);

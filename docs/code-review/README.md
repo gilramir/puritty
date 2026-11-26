@@ -446,24 +446,24 @@ covered" sections. The larger gaps:
 | [TP18](06-tmux-package.md) | efficiency | confirmed | **fixed** `Customize.table` is rebuilt from its text on every call, and `Borders.cells` parses the two border styles once per border cell |
 | [TP19](06-tmux-package.md) | dead-code | confirmed | **fixed** Dead or duplicated: `prefixesOf`'s `byTable` and `hasSendKeysK`; `indexOf`/`byteAt` twice |
 | [TP20](06-tmux-package.md) | test-gap | confirmed | **fixed** Test gaps |
-| [X11](07-x11-text.md) | bug | confirmed | After the sound server goes away, every sound is lost and still reported as played |
+| [X11](07-x11-text.md) | bug | confirmed | **fixed** After the sound server goes away, every sound is lost and still reported as played |
 | [X12](07-x11-text.md) | bug | confirmed | The paste's 10 s rule measures from the start, not from the last progress, and the abandoned paste shares the property and leaks its reply |
 | [X13](07-x11-text.md) | bug | plausible | **fixed** Font names go to `FcNameParse` unescaped, and its NULL is not checked |
-| [X14](07-x11-text.md) | bug | plausible | The fallback cache is keyed by a cluster's first code point but answers for the whole cluster |
+| [X14](07-x11-text.md) | bug | plausible | **fixed** The fallback cache is keyed by a cluster's first code point but answers for the whole cluster |
 | [X15](07-x11-text.md) | bug | confirmed | **fixed** `ui_glyph`'s key loses the face's top bit, and reads a 1-bit bitmap past its end |
 | [X16](07-x11-text.md) | bug | confirmed | **fixed** `WM_CLASS` is sent with a length one past the string |
 | [X17](07-x11-text.md) | bug | confirmed | **fixed** The X screen is always the first, whatever `DISPLAY` names |
 | [X18](07-x11-text.md) | inaccuracy | confirmed | Draw-path round trips the README's sentence does not allow for |
-| [X19](07-x11-text.md) | bug | plausible | `setenv("XCURSOR_PATH", ...)` changes the environment the terminal's programs may inherit |
+| [X19](07-x11-text.md) | bug | plausible | **fixed** `setenv("XCURSOR_PATH", ...)` changes the environment the terminal's programs may inherit |
 | [X20](07-x11-text.md) | design | confirmed | The event buffer drops records silently when it is full |
-| [X21](07-x11-text.md) | dead-code | confirmed | `kstate` and the XKB StateNotify subscription are dead |
+| [X21](07-x11-text.md) | dead-code | confirmed | **fixed** `kstate` and the XKB StateNotify subscription are dead |
 | [X22](07-x11-text.md) | bug | plausible | At most 256 image placements a frame are drawn; the rest are dropped without a trace |
 | [X23](07-x11-text.md) | bug | plausible | A picture's source offset is cut to 16 bits |
-| [X24](07-x11-text.md) | bug | plausible | A glyph centered once keeps that centering for every later box width |
+| [X24](07-x11-text.md) | bug | plausible | **fixed** A glyph centered once keeps that centering for every later box width |
 | [X25](07-x11-text.md) | bug | confirmed | **fixed** `upload` does not check `FT_Load_Glyph`/`FT_Render_Glyph`, and allocation results are unchecked throughout |
 | [X26](07-x11-text.md) | bug | confirmed | **fixed** `draw_run` can hand `draw_glyphs` a run longer than the bytes that remain |
 | [X27](07-x11-text.md) | design | confirmed | The build turns Nix's hardening off and names one machine's paths |
-| [X28](07-x11-text.md) | security | plausible | A notification's body is given to `notify-send` as markup |
+| [X28](07-x11-text.md) | security | plausible | **fixed** A notification's body is given to `notify-send` as markup |
 | [X29](07-x11-text.md) | inaccuracy | confirmed | Comments that no longer say what the code does |
 | [W7](08-win32.md) | bug | plausible | `refit` changes the text layer and the window's size state outside the locks the window thread uses for them |
 | [W8](08-win32.md) | bug | confirmed | The event queue is 64 KB and a record that does not fit is dropped with no trace, a resize, a close or a release included |

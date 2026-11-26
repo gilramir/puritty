@@ -117,6 +117,7 @@ not by a run.
 - What: when `pa_write` fails the loop breaks, but the dead `stream` is kept and `broken` is not set; nothing reopens it. `puritty_sound_play` keeps answering `taken = !broken` = 1. Also, the first call answers 1 before the thread knows whether there is any audio at all.
 - Scenario: PipeWire/PulseAudio is restarted (a session's `systemctl --user restart pipewire`, a suspended ETX audio forward) while puritty runs: no key sound or bell is heard again until puritty restarts, and the log line says "played" (`Main.geng:2138`).
 - Fix: on a failed write free the stream (`pa_simple_free`) and open a new one on the next request (with a short back-off); set `broken` only when opening fails repeatedly, so the caller's "not played" is true.
+- Fixed: 2026-11-26, `docs/sounds.md` SN9. A failed write frees the stream and the player opens another; a refused open takes no sound for 5 s. Test: `harness/soundloss.py` (a stand-in libpulse-simple): before, one dead stream and every bell logged played; now reopened, and not played while the server is gone.
 
 ### X12 · The paste's 10 s rule measures from the start, not from the last progress, and the abandoned paste shares the property and leaks its reply
 - Where: packages/x11/src/Ext/puritty_x11.c:1791, 1814, 1970 (`ns() - pst.started > 10e9`), 1704-1710, 1735-1745, 1720-1733
@@ -145,6 +146,7 @@ not by a run.
 - What: the key is the first non-ignorable code point (`key = cps[i]`), the value the face found (or -1) for all of the cluster's code points. A later cluster with the same base and other marks gets the cached answer without `covers` being asked of it.
 - Scenario: `e` + a combining mark no font has is drawn: -1 is cached under `e`. Later `e` + a mark that an installed, not yet loaded, fallback font does have (the primary lacks it) hits the cache, gets -1, and is drawn as its first code point alone (`cl[i].n = 1`), the mark dropped, until the font is changed. The reverse (a cached face that lacks the new mark) draws `.notdef`.
 - Fix: on a cache hit with a face, check `covers` and fall through to a query when it fails; key negative answers by the code point that is actually missing, or by a hash of the cluster.
+- Fixed: 2026-11-26, `docs/renderer.md` R29. The fallback cache is keyed by a hash of the cluster's code points (and color); a cached face is checked against the cluster. Test: `packages/text/tests/cases.sh`: e+U+0309 after e+U+20D0 was answered -1 from the cache before, asked and found now.
 
 ### X15 · `ui_glyph`'s key loses the face's top bit, and reads a 1-bit bitmap past its end
 - Where: packages/text/src/Ext/puritty_text.c:1270 (`(uint32_t) f << 26`), 1141 (`UI_FACES 128`), 1285-1289
@@ -193,6 +195,7 @@ not by a run.
 - What: to help Nix's xcb-util-cursor, the process's own environment gets `XCURSOR_PATH=~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps` when it was unset.
 - Scenario: if children inherit `environ`, every GUI program started from a puritty shell gets this fixed path in place of libXcursor's default (which also searches `XDG_DATA_DIRS`, `/usr/local/share/icons`, Nix and Flatpak paths), and can lose its cursor theme.
 - Fix: set it only around `xcb_cursor_context_new`/`load_cursor` and `unsetenv` after, or make sure the spawn's environment is taken before `open`.
+- Fixed: 2026-11-26, `docs/window-state.md` WP12. `XCURSOR_PATH` set only while the cursors load, and unset after when puritty set it. Test: `harness/cursorpath.py`: the program saw the four folders before, `unset` now.
 
 ### X20 · The event buffer drops records silently when it is full
 - Where: packages/x11/src/Ext/puritty_x11.c:568-575 (`put`), 794-800
@@ -210,6 +213,7 @@ not by a run.
 - Confidence: confirmed
 - What: `kstate` is created and updated on every `XCB_XKB_STATE_NOTIFY` and read nowhere: keys are read from each event's own state (V46). Selecting `XCB_XKB_EVENT_TYPE_STATE_NOTIFY` makes the server send an event, and wake the loop, on every modifier press and release and every group change.
 - Fix: drop `kstate`, the `xkb_x11_state_new_from_device` round trip and the StateNotify selection.
+- Fixed: 2026-11-26, `docs/phase3-input.md` §20. `kstate`, its fetch and the StateNotify selection removed. Test: `harness/xkbstate.py`: Shift ten times, 20 StateNotify before, 0 now.
 
 ### X22 · At most 256 image placements a frame are drawn; the rest are dropped without a trace
 - Where: packages/text/src/Ext/puritty_text.c:1565-1567, 1611-1620
@@ -237,6 +241,7 @@ not by a run.
 - What: `upload`'s key records only that a glyph was shifted, not by how much; the shift (`pad`, half of `box - advance`) is baked into the uploaded glyph's bearing the first time. `place` is later called with `x - pad` for the current `pad`.
 - Scenario: the same fallback glyph drawn alone in a one-cell box and later in a wider one (a cluster the shaper merged over more cells, or a code point whose width differs between two tabs' settings) is drawn off by the difference of the two pads until the next glyph reset.
 - Fix: key the shifted form by the pad (a small table of pads per glyph), or do not bake the shift and start a new element instead when the cached pad differs.
+- Fixed: 2026-11-26, `docs/renderer.md` R30. A centered glyph is placed at its pad with its own bearing; the shifted upload, its key bit and parameter removed. Test: `packages/text/tests/cases.sh`: U+0249 in one cell then two, ink at 1 and 1 before, 1 and 5 now.
 
 ### X25 · `upload` does not check `FT_Load_Glyph`/`FT_Render_Glyph`, and allocation results are unchecked throughout
 - Where: packages/text/src/Ext/puritty_text.c:329-337, 354-355, 228-230, 419, 459, 471, 799-803, 1253, 1284, 1385; packages/x11/src/Ext/puritty_x11.c:188, 304-305, 320, 1053, 1543, 1574, 1689, 2007, 2110, 2116
@@ -274,6 +279,7 @@ not by a run.
 - What: `[ "--app-name=puritty", "--", n.title, n.body ]`: argument injection is closed by `--` and there is no shell, but the Desktop Notifications spec lets a server read the body as markup (`<b>`, `<a href>`, `<img src>`), and GNOME Shell, KDE and dunst do. The title and body are a remote program's text (OSC 9/777/99).
 - Scenario: a program on a remote host posts a notification whose body holds a link or an image reference the notification daemon renders, or simply text that breaks the markup so the body shows empty.
 - Fix: escape `&`, `<` and `>` in the body before it is passed (the spec's own rule for plain text).
+- Fixed: 2026-11-26, `docs/claude-code.md` CL12. `NotifyText.plain` writes `&`, `<`, `>` as entities in the body given to `notify-send`. App suite test.
 
 ### X29 · Comments that no longer say what the code does
 - Where: packages/text/src/Ext/puritty_text.c:24-26; packages/x11/src/Ext/puritty_x11.c:23-63, 1109-1116, 1355-1359, 1411-1417, 1677; packages/text/src/Ext/include/puritty_text.h:104-106

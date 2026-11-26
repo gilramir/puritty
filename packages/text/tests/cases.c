@@ -2,7 +2,7 @@
  * included, so its static functions can be called, and the platform's
  * functions are stubs that record what was asked of them.
  *
- *   cases TTF OTB
+ *   cases TTF OTB SANS
  *
  * The interface's glyph cache (the code review's X15): *
  * TTF is an outline font, loaded as 70 faces by 70 links to it in a fresh
@@ -15,24 +15,57 @@
  * A run in a frame's list that says more cells than the list holds (X26):
  * `draw_run` must give up the frame and fill nothing (before X26 it went
  * on with the cells' styles left from before, and its glyph pass read the
- * missing cells past the list). */
+ * missing cells past the list).
+ *
+ * The fallback cache (X14): with Terminus as the only face, `e` and
+ * U+20D0, which the platform finds no font for, then `e` and U+0309,
+ * which it answers with TTF: the second must be asked, and drawn in TTF
+ * (before X14 the cache was keyed by `e` alone and gave the first's -1).
+ *
+ * A glyph centered in its box (X24): with OTB the primary font (opened as
+ * the window does), U+0249, which only SANS of the three has and which is
+ * narrower than a cell, drawn in one cell and then as a wide cell's head,
+ * two cells: its ink must move right by half a cell, the second pad less
+ * the first (before X24 the first pad was kept in the uploaded glyph, and
+ * the second drawing was where the first was). */
 #include "../src/Ext/puritty_text.c"
 
 #include <unistd.h>
 
 static int added;
+/* each glyph's left bearing as uploaded, by id */
+static uint32_t added_id[4096];
+static int added_left[4096];
 void pt_glyph_add(uint32_t id, const PtGlyph *glyph) {
-    (void) id;
-    (void) glyph;
+    if (added < 4096) {
+        added_id[added] = id;
+        added_left[added] = glyph->left;
+    }
     added++;
 }
-char *pt_font_file(const char *font, int variant, int *index) {
-    (void) font, (void) variant, (void) index;
-    return NULL;
+static int left_of(uint32_t id) {
+    for (int i = added < 4096 ? added - 1 : 4095; i >= 0; i--)
+        if (added_id[i] == id) return added_left[i];
+    return -10000;
 }
+/* the last glyph placed, and its x */
+static uint32_t drawn_id;
+static int drawn_x;
+/* the primary font's file, whatever its name */
+static const char *primary_file;
+char *pt_font_file(const char *font, int variant, int *index) {
+    (void) font, (void) variant;
+    *index = 0;
+    return primary_file ? copy(primary_file) : NULL;
+}
+/* what the platform's fallback answers: a copy of this file, or none */
+static const char *fallback_answer;
+static int fallback_asked;
 char *pt_fallback_file(const uint32_t *cps, int n, int color, const char *lang, int *index) {
-    (void) cps, (void) n, (void) color, (void) lang, (void) index;
-    return NULL;
+    (void) cps, (void) n, (void) color, (void) lang;
+    fallback_asked++;
+    *index = 0;
+    return fallback_answer ? copy(fallback_answer) : NULL;
 }
 const char *pt_fallback_family(void) { return ""; }
 static int filled;
@@ -42,7 +75,10 @@ void pt_fill(uint32_t rgb, int x, int y, int w, int h) {
 }
 void pt_fill_rects(uint32_t rgb, const PtRect *rects, int n) { (void) rgb, (void) rects, (void) n; }
 void pt_glyphs_reset(void) {}
-void pt_glyphs_draw(const PtPlaced *placed, int n, const PtRect *clips) { (void) placed, (void) n, (void) clips; }
+void pt_glyphs_draw(const PtPlaced *placed, int n, const PtRect *clips) {
+    (void) clips;
+    if (n > 0) drawn_id = placed[n - 1].id, drawn_x = placed[n - 1].x;
+}
 void *pt_picture_add(const uint32_t *argb, int w, int h) {
     (void) argb, (void) w, (void) h;
     return NULL;
@@ -58,12 +94,16 @@ void pt_target(int c, int r) { (void) c, (void) r; }
 void pt_scroll(int top, int bottom, int k) { (void) top, (void) bottom, (void) k; }
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        fprintf(stderr, "usage: cases TTF OTB\n");
+    if (argc != 4) {
+        fprintf(stderr, "usage: cases TTF OTB SANS\n");
         return 2;
     }
     setvbuf(stdout, NULL, _IONBF, 0);
-    if (FT_Init_FreeType(&library) != 0) return 2;
+    primary_file = argv[2];
+    if (pt_open("Terminus", "en", 12, 96, 64L << 20) != 0) {
+        fprintf(stderr, "the primary font did not open\n");
+        return 2;
+    }
     char dir[] = "/tmp/textcases-XXXXXX";
     if (!mkdtemp(dir)) return 2;
     int wrong = 0;
@@ -107,6 +147,35 @@ int main(int argc, char **argv) {
         wrong = 1;
     }
     free(list);
+
+    /* the fallback cache, keyed by the whole cluster */
+    int terminus = load_face(argv[2], 0, 1);
+    const uint32_t nowhere[2] = {'e', 0x20D0}, hook[2] = {'e', 0x0309};
+    fallback_answer = NULL;
+    int first = fallback(nowhere, 2);
+    fallback_answer = argv[1];
+    int second = fallback(hook, 2);
+    printf("fallback with Terminus as face %d: e+20D0 face %d, e+0309 face %d, the platform asked %d times\n", terminus, first,
+           second, fallback_asked);
+    if (first != -1 || second < 0 || fallback_asked != 2) {
+        printf("FAIL: e+0309 was answered from e+20D0's miss\n");
+        wrong = 1;
+    }
+
+    /* a glyph centered in a box of one cell, then of two */
+    fallback_answer = argv[3];
+    const uint8_t in_one[6] = {1, 0, 0, 0x00, 0x02, 0x49}, in_two[9] = {(1 << 6) | 1, 0, 0, 0x00, 0x02, 0x49, 2 << 6, 0, 0};
+    draw_glyphs(0, 0, 1, in_one);
+    flush_placed();
+    int narrow = drawn_x + left_of(drawn_id);
+    draw_glyphs(0, 0, 2, in_two);
+    flush_placed();
+    int wide = drawn_x + left_of(drawn_id);
+    printf("U+0249 centered, cell %d px: its ink at %d in one cell, %d in two\n", pt_cw, narrow, wide);
+    if (wide - narrow != pt_cw / 2) {
+        printf("FAIL: the two-cell drawing is not half a cell right of the one-cell one\n");
+        wrong = 1;
+    }
     rmdir(dir);
     printf(wrong ? "FAILED\n" : "OK\n");
     return wrong;

@@ -332,3 +332,26 @@ byte for byte. SN2.1's note on the 1984 BIOS (about 0.17 s) took
 
 **Kept (Gilbert, 2026-11-14):** the 0.218 s bell stays; 0.484 s was too
 long to hear as a terminal's bell, whatever IBM meant.
+
+## SN9 · The sound server gone and back (2026-11-26)
+
+The code review's X11. Linux's player opened its stream once and kept
+it. When a write failed (PipeWire or PulseAudio restarted, an ETX audio
+forward suspended) the sound stopped there, but the dead stream was kept
+and written to again: no sound was heard until puritty restarted, and
+`puritty_sound_play` went on answering that each was taken, so the log
+said "played". Now a failed write frees the stream and the player opens
+another; when the server will not open one, no sound is taken for 5 s,
+then it is tried again, so the log's "not played" is true meanwhile.
+The first sound is still answered as taken before the player knows
+whether there is a server at all.
+
+**Tested**: `harness/soundloss.py` runs puritty with a stand-in for
+libpulse-simple (`harness/soundloss/fake_pulse.c`, first on
+`LD_LIBRARY_PATH`) that writes each call down and plays a server gone
+while a file exists. The tab rings the bell four times, three seconds
+apart, the server gone around the second. Before: one stream, `write
+failed` for each bell after, and all four logged as played. Now the
+failed write frees the stream, the open while the server is gone is
+refused, the third bell is logged as not played, and the fourth opens a
+stream and is written.

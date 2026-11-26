@@ -243,3 +243,20 @@ with `DISPLAY` naming the second, and reads every top-level window's
 `WM_CLASS` with Xlib. Before, the window was on screen 0 and its
 `WM_CLASS` was `puritty\0Puritty\0\0\0`, 18 bytes; now it is on screen 1
 and the property is the 16 bytes.
+
+## WP12 · The cursor path is set only while the cursors load (2026-11-26)
+
+The code review's X19. Nix's xcb-util-cursor looks for cursor themes in
+its own store path and the home directory, not /usr/share/icons, so the
+window set `XCURSOR_PATH` to libXcursor's own path when the user had not
+set one. It set it in the process's environment and left it there: the
+programs puritty starts take that environment, and every GUI program
+started from one of its shells had libXcursor's default (which also
+searches `XDG_DATA_DIRS`, /usr/local/share/icons and Flatpak's paths)
+replaced by the four folders. It is now set only while the cursors load
+and unset after, when it was puritty that set it.
+
+**Tested**: `harness/cursorpath.py` starts puritty with `XCURSOR_PATH`
+unset, its program a shell that writes what it sees. Before:
+`~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps`. Now
+`unset`.
