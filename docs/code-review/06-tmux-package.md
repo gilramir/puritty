@@ -138,6 +138,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - Confidence: confirmed
 - What: `TmuxMode.read` runs `Control.feed` over every read whether or not tmux is in use. For each ESC, `outside` allocates `Bytes.slice esc (min n (esc + 7)) data` and compares it with `entry`, then on a miss allocates a second slice of `entry` for the prefix test. Colored output has an ESC every few bytes. Under tmux, `startsControl` does the same over each `%output`'s bytes. `startsControl` also has no carry between calls, so `ESC P 1000 p` cut between two `%output` lines (tmux cuts anywhere) is not seen and the nested client's control text is fed to the pane's terminal as a DCS.
 - Fix: look at the byte after the ESC first (`P`), and only then compare the rest by index; give the nested check the same `Reader` hold `feed` has (start each pane with a `Reader` and let `feed` find the entry) instead of a separate stateless scan.
+- Fixed: 2026-11-26, `docs/tmux.md` TM139. `Control.carryEntry` holds an entry's start to the pane's next output (app `entryHeld`); `outside` and `startsFrom` look at the byte after an ESC before slicing. Tmux and app suite tests; `feed` over 520,000 colored bytes 1-2 to 0-1 ms native, 5-12 to 2-7 ms on node.
 
 ### TP14 · `Style.themed` rewrites `theme…` words in expanded text, not only inside `#[…]`
 - Where: packages/tmux/src/Tmux/Style.geng:182-189; callers app/src/TmuxMode.geng:15421, :16051 (`Style.themed theme l.text`)
@@ -185,6 +186,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - Confidence: confirmed
 - What: `table` splits about 1,300 rows at `\n` and `\t`, builds a Dict of rows, then three Dicts, each call; the completion only wants the option names. `styleAt` runs `Style.apply` (replace, split, color lookup through `ColorNames`) and `Style.sgr` for each candidate cell, though only four results exist (active or not, marked or not).
 - Fix: keep the built table in the state by version (or make `table38`'s parse a top-level value and apply the diff once); compute the four SGR strings before the loop.
+- Fixed: 2026-11-26, `docs/tmux.md` TM138. `Borders.cells` makes its four colors once a call (a frame of a 2x2 window: 0.19 to 0.06 ms native, 0.65-0.86 to 0.18-0.34 ms on node). `Customize.table` measured and left: 0.7 ms native, 2.5 ms on node a build.
 
 ### TP19 · Dead or duplicated: `prefixesOf`'s `byTable` and `hasSendKeysK`; `indexOf`/`byteAt` twice
 - Where: packages/tmux/src/Tmux/Bindings.geng:52-85 (`byTable`, `hasSendKeysK`, `leadingDigits`); packages/tmux/src/Tmux/Control.geng:678-719 and packages/tmux/src/Tmux/Passthrough.geng:142-183

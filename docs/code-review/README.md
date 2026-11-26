@@ -438,12 +438,12 @@ covered" sections. The larger gaps:
 | [TP10](06-tmux-package.md) | security | plausible | **fixed** A layout's nesting depth is not bounded, and a split's box is not clamped as a pane's is |
 | [TP11](06-tmux-package.md) | inaccuracy | confirmed | **fixed** Escapes inside double quotes are not decoded: `\n`, `\t`, `\e`, `\ooo`, `\u…` read as the letter or digits |
 | [TP12](06-tmux-package.md) | design | confirmed | **fixed** `Command.quote` cannot say a newline and does not refuse one; three builders take an unquoted name |
-| [TP13](06-tmux-package.md) | efficiency | confirmed | Outside tmux, every ESC in the terminal's output costs a 7-byte slice and compare; under tmux every `%output` is scanned once more, and an entry split across two is missed |
+| [TP13](06-tmux-package.md) | efficiency | confirmed | **fixed** Outside tmux, every ESC in the terminal's output costs a 7-byte slice and compare; under tmux every `%output` is scanned once more, and an entry split across two is missed |
 | [TP14](06-tmux-package.md) | bug | confirmed | **fixed** `Style.themed` rewrites `theme…` words in expanded text, not only inside `#[…]` |
 | [TP15](06-tmux-package.md) | inaccuracy | confirmed | **fixed** `Style.color` takes `colourN` for any N and does not know tmux's digit names |
 | [TP16](06-tmux-package.md) | efficiency | confirmed | **checked, left** `quoteFrom` builds each paste piece by appending to a String per byte, and slices per byte |
 | [TP17](06-tmux-package.md) | inaccuracy | plausible | **fixed** An ESC that is not doubled inside a passthrough envelope is kept; tmux drops it |
-| [TP18](06-tmux-package.md) | efficiency | confirmed | `Customize.table` is rebuilt from its text on every call, and `Borders.cells` parses the two border styles once per border cell |
+| [TP18](06-tmux-package.md) | efficiency | confirmed | **fixed** `Customize.table` is rebuilt from its text on every call, and `Borders.cells` parses the two border styles once per border cell |
 | [TP19](06-tmux-package.md) | dead-code | confirmed | **fixed** Dead or duplicated: `prefixesOf`'s `byTable` and `hasSendKeysK`; `indexOf`/`byteAt` twice |
 | [TP20](06-tmux-package.md) | test-gap | confirmed | **fixed** Test gaps |
 | [X11](07-x11-text.md) | bug | confirmed | After the sound server goes away, every sound is lost and still reported as played |

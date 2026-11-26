@@ -4994,3 +4994,47 @@ text (quotes, `$`, `~`, a tab, a line end, Korean and accented UTF-8;
 runs) and 106 to 127 ms on node (two programs of three runs). A paste is
 one act of the user's, so the code is left as it is: a saving of a
 tenth of a second on node, for a rare act, does not buy a rewrite.
+
+## TM138 · A border's four colors made once a frame; the options table measured, left (2026-11-26)
+
+The code review's TP18. `Borders.cells`, which draws tmux's pane
+borders in tmux's look every frame, ran `Style.apply` and `Style.sgr`
+over the border styles for each border cell, though a cell can take only
+four colors: the active pane's border or another's, marked or not. They
+are now made once a call. `Customize.table`, which builds the option
+table from its text on each call (up to three times a Tab in the
+command prompt's completion), is left as it is.
+
+**Measured** (scratch bench as TM137, gmktec7), a hundred calls each:
+`Borders.cells` for a 2×2 window of 200×60, 19 ms native and 65 to 86 ms
+on node before, 6 to 7 ms native and 18 to 34 ms on node after, the same
+25,900 characters of cells. `Customize.table` 68 to 71 ms native and 230
+to 261 ms on node, so 0.7 ms and 2.5 ms a table: under 8 ms for a Tab on
+node, which does not buy keeping the table in the state.
+
+## TM139 · A nested `tmux -CC` found though tmux cut its entry; ESC looked at by its next byte (2026-11-26)
+
+The code review's TP13. Inside a pane, `Control.startsControl` looked for
+a nested client's `ESC P 1000 p` in each `%output` on its own, so an
+entry tmux cut between two `%output` lines (tmux cuts a pane's output
+anywhere) was missed: the pane's terminal took `ESC P 10…` as the start
+of a DCS, and the nested client's control lines went to it. Now
+`Control.carryEntry` holds the start of the entry an output ends with,
+up to six bytes from an ESC, and the app (`TmuxMode.outputOutside`)
+joins it to the pane's next output before looking, as `feed`'s own hold
+does outside tmux. The hold is kept by pane (`entryHeld`) and dropped
+with the pane.
+
+Besides, for each ESC `outside` and `startsFrom` sliced seven bytes and
+compared them with the entry; they now look at the byte after the ESC
+first and slice only for `P`.
+
+**Tested**: the tmux suite (161) on `carryEntry` (a partial entry held,
+then made whole; `ESC [`, a lone ESC, `ESC P x`, a part still short),
+and the app suite (628, the test run for six tmux versions): `before
+ESC P 10` then `00p` in two `%output`
+lines shows the text and says a nested `tmux -CC` is not shown. The old
+code did not find it (0 of 6). **Measured** (scratch bench as TM137):
+`Control.feed` outside control mode over 520,000 bytes of colored
+output, an ESC every 7 to 13 bytes, in 32 KiB reads: 1 to 2 ms native
+and 5 to 12 ms on node before, 0 to 1 ms and 2 to 7 ms after.

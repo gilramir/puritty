@@ -158,6 +158,9 @@ type alias State =
     -- panes in which a `tmux -CC` was started, each read as control mode
     -- so that its lines are dropped until it ends (TM19)
     , nested : Dict Int Control.Reader
+    -- the start of `ESC P 1000 p` a pane's output ended with, joined to
+    -- its next output (the code review's TP13)
+    , entryHeld : Dict Int Bytes
     -- the tab bar at the window's top, or at its bottom where tmux's
     -- status line was (`[tmux] tabs`, TM22)
     , barTop : Bool
@@ -853,6 +856,7 @@ idle _ =
     , clicks = { at = -1000, count = 0, pane = -1, point = { row = 0, col = 0 } }
     , tabs = []
     , nested = Dict.empty
+    , entryHeld = Dict.empty
     , barTop = False
     , barTopConfig = False
     , keys = Bindings.follow
@@ -4416,68 +4420,7 @@ notice n acc =
 
                 Nothing ->
                     meant Reason.NotOpen
-                        if Control.startsControl o.bytes then
-                            -- `tmux -CC` run inside a pane (TM19): what it sends in
-                            -- control mode is dropped and the pane says why; no
-                            -- key is sent for it, since the bytes may be any
-                            -- program's (the code review's TA15), and a line
-                            -- that is not tmux's ends it
-                            let
-                                fed =
-                                    nestedFeed o.bytes (Control.strict (Control.expect True Control.reader))
-
-                                said =
-                                    feedPane o.pane
-                                        (Bytes.flatten
-                                            [ outsideOf fed.events
-                                            , if Control.isInside fed.reader then
-                                                Bytes.fromString "\r\npuritty: tmux -CC inside a tmux pane is not shown; an empty line (Enter) detaches it.\r\n"
-
-                                              else
-                                                Bytes.empty
-                                            ]
-                                        )
-                                        { st
-                                            | nested =
-                                                if Control.isInside fed.reader then
-                                                    Dict.set o.pane fed.reader st.nested
-
-                                                else
-                                                    st.nested
-                                        }
-                            in
-                            { acc | state = said }
-
-                        else
-                            let
-                                copying =
-                                    inCopy o.pane st
-
-                                caps =
-                                    st.caps
-
-                                -- what a program asked past tmux, answered
-                                -- into its pane (IM33)
-                                out =
-                                    feedOutput o.pane o.bytes st
-
-                                answered =
-                                    if Array.isEmpty out.replies then
-                                        { state = out.state, commands = [] }
-
-                                    else
-                                        sent (bytesTo caps o.pane (Bytes.flatten out.replies)) out.state
-
-                                next =
-                                    { acc | state = answered.state, commands = acc.commands ++ answered.commands }
-                            in
-                            if copying then
-                                -- tmux keeps a copy mode's view where it was as
-                                -- lines arrive: asked again (TM31)
-                                askCopy o.pane next
-
-                            else
-                                next
+                        (outputOutside o.pane o.bytes { acc | state = st })
 
         LayoutChange l ->
             if l.window == st.window || st.window < 0 then
@@ -4653,6 +4596,99 @@ notice n acc =
 
         _ ->
             { acc | state = st }
+
+
+{-| A pane's output where no nested client's control mode is open: the
+start of `ESC P 1000 p` it ends with is held to be joined to the pane's
+next output, since tmux cuts a pane's output anywhere (the code review's
+TP13), and a nested `tmux -CC` is found in the whole of it. -}
+outputOutside : Int -> Bytes -> (taken acc : Acc) -> Acc
+outputOutside pane more acc =
+    let
+        prior =
+            acc.state
+
+        carried =
+            Control.carryEntry (Maybe.withDefault (meant Reason.NotSet Bytes.empty) (Dict.get pane prior.entryHeld)) more
+
+        bytes =
+            carried.bytes
+
+        st =
+            { prior
+                | entryHeld =
+                    if Bytes.isEmpty carried.held then
+                        Dict.remove pane prior.entryHeld
+
+                    else
+                        Dict.set pane carried.held prior.entryHeld
+            }
+    in
+    if Bytes.isEmpty bytes then
+        { acc | state = st }
+
+    else if Control.startsControl bytes then
+        -- `tmux -CC` run inside a pane (TM19): what it sends in
+        -- control mode is dropped and the pane says why; no
+        -- key is sent for it, since the bytes may be any
+        -- program's (the code review's TA15), and a line
+        -- that is not tmux's ends it
+        let
+            fed =
+                nestedFeed bytes (Control.strict (Control.expect True Control.reader))
+
+            said =
+                feedPane pane
+                    (Bytes.flatten
+                        [ outsideOf fed.events
+                        , if Control.isInside fed.reader then
+                            Bytes.fromString "\r\npuritty: tmux -CC inside a tmux pane is not shown; an empty line (Enter) detaches it.\r\n"
+
+                          else
+                            Bytes.empty
+                        ]
+                    )
+                    { st
+                        | nested =
+                            if Control.isInside fed.reader then
+                                Dict.set pane fed.reader st.nested
+
+                            else
+                                st.nested
+                    }
+        in
+        { acc | state = said }
+
+    else
+        let
+            copying =
+                inCopy pane st
+
+            caps =
+                st.caps
+
+            -- what a program asked past tmux, answered
+            -- into its pane (IM33)
+            out =
+                feedOutput pane bytes st
+
+            answered =
+                if Array.isEmpty out.replies then
+                    { state = out.state, commands = [] }
+
+                else
+                    sent (bytesTo caps pane (Bytes.flatten out.replies)) out.state
+
+            next =
+                { acc | state = answered.state, commands = acc.commands ++ answered.commands }
+        in
+        if copying then
+            -- tmux keeps a copy mode's view where it was as
+            -- lines arrive: asked again (TM31)
+            askCopy pane next
+
+        else
+            next
 
 
 {-| A hash of each of a selection's rows on the pane's screen, by row,
@@ -17043,6 +17079,7 @@ forgetGone listed s =
             , panes = stay.panes
             , info = Dict.keepIf (\i _ -> Array.member i listed) s.info
             , nested = Dict.keepIf (\i _ -> Array.member i listed) s.nested
+            , entryHeld = Dict.keepIf (\i _ -> Array.member i listed) s.entryHeld
             , scans = Dict.keepIf (\i _ -> Array.member i listed) s.scans
             , status = { status | panes = Dict.keepIf (\i _ -> Array.member i listed) status.panes }
         }

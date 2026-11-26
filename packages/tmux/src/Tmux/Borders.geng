@@ -314,25 +314,34 @@ cells o panes =
         arrows =
             o.indicators == "arrows" || o.indicators == "both"
 
+        -- the four colors a border cell can take, made once, not per cell
+        -- (the code review's TP18)
+        activeBase =
+            Style.apply o.activeStyle Style.plain
+
+        otherBase =
+            Style.apply o.borderStyle Style.plain
+
+        colors =
+            { active = Style.sgr activeBase
+            , other = Style.sgr otherBase
+            , activeMarked = Style.sgr (Style.apply "reverse" activeBase)
+            , otherMarked = Style.sgr (Style.apply "reverse" otherBase)
+            }
+
         styleAt px py =
-            let
-                base =
-                    Style.apply
-                        (if onBorderOf activePane px py then
-                            o.activeStyle
+            when { active = onBorderOf activePane px py, marked = onBorderOf markedPane px py } is
+                { active = True, marked = True } ->
+                    colors.activeMarked
 
-                         else
-                            o.borderStyle
-                        )
-                        Style.plain
-            in
-            Style.sgr
-                (if onBorderOf markedPane px py then
-                    Style.apply "reverse" base
+                { active = True, marked = False } ->
+                    colors.active
 
-                 else
-                    base
-                )
+                { active = False, marked = True } ->
+                    colors.otherMarked
+
+                { active = False, marked = False } ->
+                    colors.other
 
         -- the cells that can be borders: around every pane, inside the
         -- window, each once

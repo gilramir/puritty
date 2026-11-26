@@ -137,8 +137,9 @@ SUITES = [
     # expanded text only inside #[…]; 157 since TP11: tmux's escapes decoded, two;
     # 158 since TP17: an undoubled ESC in passthrough dropped; 157 since
     # TP19: the version's send-keys -K answer, never used, gone; 160 since
-    # TP20: a long line over many reads, a later piece's ~, quoted names
-    Suite("tmux", 160, runs_of("packages/tmux/tests")),
+    # TP20: a long line over many reads, a later piece's ~, quoted names;
+    # 161 since TP13: an entry's start held to the next output
+    Suite("tmux", 161, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
@@ -230,8 +231,10 @@ SUITES = [
         # is not SFTP turned off; 619 since ST24: the picker after its SFTP
         # broke; 620 since ST21: a batch not started shown; 621 since ST20:
         # a read's extra bytes answer the next piece; 622 since ST27: a
-        # broken SFTP stream ends the batch once
-        622,
+        # broken SFTP stream ends the batch once; 628 since TP13: tmux -CC
+        # found though tmux cut its entry between two %output lines, once
+        # for each of six tmux versions
+        628,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

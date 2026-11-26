@@ -538,6 +538,30 @@ control =
                             [ "\u{001B}P1000p", "ab\u{001B}[1m\u{001B}P1000p%begin", "\u{001B}P1q", "plain" ]
                         )
           }
+        , { name = "a pane's output ending in the start of ESC P 1000 p holds it for the next; a whole entry or an ESC that is not its start holds nothing (review TP13)"
+          , test =
+                \_ ->
+                    let
+                        carry held more =
+                            Control.carryEntry (Bytes.fromString held) (Bytes.fromString more)
+                                |> (\c -> [ Bytes.toStringLossy c.bytes, Bytes.toStringLossy c.held ])
+                    in
+                    Expect.equal
+                        [ [ "ab", "\u{001B}P10" ]
+                        , [ "\u{001B}P1000pc", "" ]
+                        , [ "x\u{001B}[1m", "" ]
+                        , [ "x", "\u{001B}" ]
+                        , [ "x\u{001B}Px", "" ]
+                        , [ "", "\u{001B}P1000" ]
+                        ]
+                        [ carry "" "ab\u{001B}P10"
+                        , carry "\u{001B}P10" "00pc"
+                        , carry "" "x\u{001B}[1m"
+                        , carry "" "x\u{001B}"
+                        , carry "" "x\u{001B}Px"
+                        , carry "\u{001B}P10" "00"
+                        ]
+          }
         , { name = "unescape: three octal digits, and a backslash without them kept"
           , test =
                 \_ ->

@@ -2024,6 +2024,20 @@ onVersion version =
                     Expect.equal { keys = [], shown = True }
                         { keys = sentTo0, shown = Array.any (String.contains "hello from cat") seen.rows }
           }
+        , { name = "tmux -CC in a pane whose ESC P 1000 p tmux cut between two %output lines is still found (the code review's TP13)"
+          , test =
+                \_ ->
+                    let
+                        seen =
+                            attached (start version)
+                                |> deliver (Bytes.fromString "%output %0 before\\033P10\u{000D}\n")
+                                |> deliver (Bytes.fromString "%output %0 00p\u{000D}\n")
+                                |> settle
+                                |> look
+                    in
+                    Expect.equal { before = True, told = True }
+                        { before = Array.any (String.contains "before") seen.rows, told = Array.any (String.contains "tmux -CC inside a tmux pane is not shown") seen.rows }
+          }
         , { name = "a tree open when control mode ends is gone when tmux -CC is run again (TM102)"
           , test =
                 \_ ->
