@@ -196,6 +196,13 @@ largest differences from libjpeg over the suite's fourteen files are as
 before (2, and 3 for 4:2:0) but for the 4:2:2 file of 13 by 7, 2 now 1;
 they are the transforms', so the bound of 3 stays.
 
+The pixel gate's `image-iterm-jpeg-gif` pin was made with the old green,
+and that gate was not run with this change: it failed from then, and was
+found on 2026-11-26 with the code review's X fixes. Of its 216 by 102
+pixels, 2,444 differed, each in green alone and each by one, the drawn
+one lower: this section's rounding, no other change. The pin was made
+again.
+
 ## IT8 · TIFF made RGBA by a counted loop (2026-11-25)
 
 The code review's VI13. An uncompressed TIFF of three samples or grey

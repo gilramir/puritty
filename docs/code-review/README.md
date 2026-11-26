@@ -448,11 +448,11 @@ covered" sections. The larger gaps:
 | [TP20](06-tmux-package.md) | test-gap | confirmed | **fixed** Test gaps |
 | [X11](07-x11-text.md) | bug | confirmed | After the sound server goes away, every sound is lost and still reported as played |
 | [X12](07-x11-text.md) | bug | confirmed | The paste's 10 s rule measures from the start, not from the last progress, and the abandoned paste shares the property and leaks its reply |
-| [X13](07-x11-text.md) | bug | plausible | Font names go to `FcNameParse` unescaped, and its NULL is not checked |
+| [X13](07-x11-text.md) | bug | plausible | **fixed** Font names go to `FcNameParse` unescaped, and its NULL is not checked |
 | [X14](07-x11-text.md) | bug | plausible | The fallback cache is keyed by a cluster's first code point but answers for the whole cluster |
-| [X15](07-x11-text.md) | bug | confirmed | `ui_glyph`'s key loses the face's top bit, and reads a 1-bit bitmap past its end |
-| [X16](07-x11-text.md) | bug | confirmed | `WM_CLASS` is sent with a length one past the string |
-| [X17](07-x11-text.md) | bug | confirmed | The X screen is always the first, whatever `DISPLAY` names |
+| [X15](07-x11-text.md) | bug | confirmed | **fixed** `ui_glyph`'s key loses the face's top bit, and reads a 1-bit bitmap past its end |
+| [X16](07-x11-text.md) | bug | confirmed | **fixed** `WM_CLASS` is sent with a length one past the string |
+| [X17](07-x11-text.md) | bug | confirmed | **fixed** The X screen is always the first, whatever `DISPLAY` names |
 | [X18](07-x11-text.md) | inaccuracy | confirmed | Draw-path round trips the README's sentence does not allow for |
 | [X19](07-x11-text.md) | bug | plausible | `setenv("XCURSOR_PATH", ...)` changes the environment the terminal's programs may inherit |
 | [X20](07-x11-text.md) | design | confirmed | The event buffer drops records silently when it is full |
@@ -460,8 +460,8 @@ covered" sections. The larger gaps:
 | [X22](07-x11-text.md) | bug | plausible | At most 256 image placements a frame are drawn; the rest are dropped without a trace |
 | [X23](07-x11-text.md) | bug | plausible | A picture's source offset is cut to 16 bits |
 | [X24](07-x11-text.md) | bug | plausible | A glyph centered once keeps that centering for every later box width |
-| [X25](07-x11-text.md) | bug | confirmed | `upload` does not check `FT_Load_Glyph`/`FT_Render_Glyph`, and allocation results are unchecked throughout |
-| [X26](07-x11-text.md) | bug | confirmed | `draw_run` can hand `draw_glyphs` a run longer than the bytes that remain |
+| [X25](07-x11-text.md) | bug | confirmed | **fixed** `upload` does not check `FT_Load_Glyph`/`FT_Render_Glyph`, and allocation results are unchecked throughout |
+| [X26](07-x11-text.md) | bug | confirmed | **fixed** `draw_run` can hand `draw_glyphs` a run longer than the bytes that remain |
 | [X27](07-x11-text.md) | design | confirmed | The build turns Nix's hardening off and names one machine's paths |
 | [X28](07-x11-text.md) | security | plausible | A notification's body is given to `notify-send` as markup |
 | [X29](07-x11-text.md) | inaccuracy | confirmed | Comments that no longer say what the code does |

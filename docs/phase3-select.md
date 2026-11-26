@@ -1287,6 +1287,12 @@ CR and its LF. With `pastedCr` left out (each piece afresh) it received
 two CRs; the large case passed so, as no boundary fell inside a CR LF.
 The tab paste gate (§25) passes 2 of 2.
 
+The pointer gate's `paste-unsafe` pin still held the CR LF as two CRs
+(`e\x0d\x0df`), since that gate was not run with this change; it failed
+there from then, and was found on 2026-11-26 with the code review's X
+fixes. Its pin now holds the one CR (`e\x0df`), as this section has it;
+`paste-unsafe-bracketed`'s was already so.
+
 ## 29. Base64's unused bits, as Ghostty takes them (2026-11-25)
 
 The code review's VS7. `Vt.Base64.decode` said it was strict as Ghostty's

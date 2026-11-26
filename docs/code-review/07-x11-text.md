@@ -135,6 +135,7 @@ not by a run.
 - What: `pt_font_file` builds `"<name>:bold"` and parses it as a fontconfig pattern; in that syntax `-` starts a size list and `:` a property, `,` separates families. `app/linux/src/Platform.geng:218` escapes `sans\-serif` for this reason, but the families `puritty_x11_fonts` lists for the settings window are given back as they are and passed in unescaped (also by `ui_named` for the list's own preview). And `FcNameParse` returns NULL for a pattern it cannot parse; `family_used` checks, `pt_font_file` does not and passes NULL to `FcConfigSubstitute`.
 - Scenario: a family with a hyphen ("IBM 3270 Semi-Narrow", "Semi-Condensed") chosen from the list is looked up as family "IBM 3270 Semi" and another font is shown; a hand-written `font = "Foo:weight=nonsense"` can crash at start.
 - Fix: build the pattern with `FcPatternCreate` + `FcPatternAddString(FC_FAMILY, name)` and `FcPatternAddInteger(FC_WEIGHT/FC_SLANT)` for the variant (or escape `-`, `:`, `,`, `\` when the name is a family from the list), and treat a NULL pattern as "no such font".
+- Fixed: 2026-11-26, `docs/renderer.md` R28. `family_pattern` builds the pattern from the family as it is (weight and slant for the variant); no name is parsed; the interface font is `sans-serif`. Test: `harness/fontnames.py`: before, `IBM 3270 Semi-Condensed` opened Fira Code and `Foo:weight=nonsense` no window; now the right file and a window.
 
 ### X14 · The fallback cache is keyed by a cluster's first code point but answers for the whole cluster
 - Where: packages/text/src/Ext/puritty_text.c:241-276
@@ -153,6 +154,7 @@ not by a run.
 - What: (1) `f` goes up to 127 but only 6 bits fit above bit 26, so faces `f` and `f + 64` share keys at the same size and glyph index. (2) The loop reads `uint8_t v = b->buffer[r * pitch + c]` for every `c < width` before testing `pixel_mode`; for `FT_PIXEL_MODE_MONO` the row is `pitch = ceil(width / 8)` bytes, so on the last row this reads up to `width - pitch` bytes past the bitmap.
 - Scenario: (1) the settings window's font list draws each family in its own face (`ui_named`); on a machine with more than 64 monospace families plus fallbacks, a name is drawn with another font's glyphs of the same index. (2) an interface or fallback font with embedded 1-bit strikes at the UI size (the code's own example, AR PL UMing) makes a heap over-read on each new glyph.
 - Fix: widen the key (a 64-bit key, or hash the three fields separately); read `v` only in the gray branch.
+- Fixed: 2026-11-26, `docs/renderer.md` R25. The tables' keys are 64 bits: a UI glyph's is face, size and index whole, a corner's tagged apart; a 1-bit glyph read as bits only. Test: `packages/text/tests/cases.sh` (ASan): before, faces 1 and 65 shared a glyph and the 1-bit glyph over-read; now neither.
 
 ### X16 · `WM_CLASS` is sent with a length one past the string
 - Where: packages/x11/src/Ext/puritty_x11.c:1219
@@ -162,6 +164,7 @@ not by a run.
 - What: `xcb_change_property(..., XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 18, "puritty\0Puritty\0")`: the literal is 16 characters and the compiler's terminator makes 17 bytes; 18 are sent.
 - Scenario: a one-byte read past the literal on every open, and a WM_CLASS with two bytes after the class's terminator, one of them whatever follows in `.rodata`.
 - Fix: length 16 (`sizeof "puritty\0Puritty" `).
+- Fixed: 2026-11-26, `docs/window-state.md` WP11. `WM_CLASS` sent as its 16 bytes. Test: `harness/screens.py`: before, 18 bytes (`puritty\0Puritty\0\0\0`).
 
 ### X17 · The X screen is always the first, whatever `DISPLAY` names
 - Where: packages/x11/src/Ext/puritty_x11.c:1169-1174, 2102
@@ -171,6 +174,7 @@ not by a run.
 - What: `xcb_connect(NULL, &screen_number)` gives the screen `DISPLAY` asks for, but `screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data` takes screen 0; `xim_setup(screen_number)` then uses the other number.
 - Scenario: `DISPLAY=:0.1` on a multi-screen (Zaphod) server: the window opens on screen 0 with the IME looked for on screen 1.
 - Fix: step the roots iterator `screen_number` times (as `xcb_aux_get_screen`).
+- Fixed: 2026-11-26, `docs/window-state.md` WP11. `screen_of` steps to the screen `DISPLAY` names, for the window and `raise`. Test: `harness/screens.py`, two-screen Xvfb, `DISPLAY=:N.1`: before, the window on screen 0; now on 1.
 
 ### X18 · Draw-path round trips the README's sentence does not allow for
 - Where: packages/x11/src/Ext/puritty_x11.c:1261 (`drain()` in `puritty_x11_draw`) → 1937-1949 (XdndEnter: `xcb_get_property_reply`, `xcb_translate_coordinates_reply`), 708-710 (keymap, above); 437 (`xcb_get_maximum_request_length`, a blocking BIG-REQUESTS reply the first time an image or color glyph is uploaded); README.md:38
@@ -242,6 +246,7 @@ not by a run.
 - What: after a failed load the slot's bitmap is whatever FreeType left (empty in current versions), and the glyph is recorded as uploaded, so it is never tried again. `calloc`/`malloc`/`realloc` results are used at once; `paste_add` does `pbuf = realloc(pbuf, pcap)` with a size a selection's owner chooses and then `memcpy`s, and `selection_request` copies the whole selection for every request (also for one that fits a piece and needs no copy).
 - Scenario: an out-of-memory during a very large paste or image is a NULL write, not an error; in practice Linux overcommits, so this is rare. The uncopied small-request path is a needless copy of up to 256 KB per request.
 - Fix: check the FreeType calls and do not set the `uploaded` bit on failure; route allocations through one checked helper (`geng_crash` on NULL, as `puritty_text_rows.c` does); send small selections straight from `sel[which].data`.
+- Fixed: 2026-11-26, `docs/renderer.md` R27. A glyph FreeType fails on is uploaded empty and not asked again; allocations in both C files go through `must` (crash with a message); a selection of a piece or less is sent without a copy. No test fails on the old code (FreeType 2.14 empties the slot; out of memory not provoked).
 
 ### X26 · `draw_run` can hand `draw_glyphs` a run longer than the bytes that remain
 - Where: packages/text/src/Ext/puritty_text.c:939-957, 815-834
@@ -251,6 +256,7 @@ not by a run.
 - What: the style loop stops at `q + 3 <= end`, and only `q > end` returns early. A run whose count `n` is larger than its cells present ends the loop with `q <= end`; the passes then use `styles[i]` left from an earlier run and `draw_glyphs(y, x, n, cell)` reads `n` cells from `cell` without an end pointer.
 - Scenario: a list cut short (a future encoder bug, a truncated frame): an out-of-bounds read of the list's buffer instead of a stopped frame.
 - Fix: return `end` when the loop ends with `i < n`; pass `end` to `draw_glyphs`.
+- Fixed: 2026-11-26, `docs/renderer.md` R26. `draw_run` gives the frame up when fewer cells than the run's count are in the list. Test: `packages/text/tests/cases.sh`: a run of 5 with 2 cells filled 40 pixels before, none now.
 
 ### X27 · The build turns Nix's hardening off and names one machine's paths
 - Where: app/build.sh:9, 19 (`NIX_HARDENING_ENABLE=`), 15-16 (`|| true`); app/release.sh

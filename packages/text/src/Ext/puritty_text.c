@@ -43,10 +43,20 @@
 
 #include "puritty_text.h"
 
+/* An allocation's result: out of memory stops the program with a message,
+ * not a write through NULL (the code review's X25). */
+static void *must(void *p) {
+    if (p == NULL) {
+        fputs("puritty-text: out of memory\n", stderr);
+        abort();
+    }
+    return p;
+}
+
 static char *copy(const char *s) {
     size_t n = strlen(s) + 1;
-    char *d = malloc(n);
-    if (d) memcpy(d, s, n);
+    char *d = must(malloc(n));
+    memcpy(d, s, n);
     return d;
 }
 
@@ -238,23 +248,27 @@ static int load_face(const char *file, int index, int is_primary) {
     F->primary = is_primary;
     size_face(F);
     F->hb = hb_ft_font_create_referenced(F->ft);
-    F->uploaded = calloc(KEYS / 8, 1);
-    F->advance = calloc(KEYS, sizeof *F->advance);
-    F->ink = calloc((size_t) KEYS * 4, sizeof *F->ink);
+    F->uploaded = must(calloc(KEYS / 8, 1));
+    F->advance = must(calloc(KEYS, sizeof *F->advance));
+    F->ink = must(calloc((size_t) KEYS * 4, sizeof *F->ink));
     if (pt_verbose) fprintf(stderr, "face %d: %s#%d scale %.3f\n", nfaces, F->file, index, F->scale);
     return nfaces++;
 }
 
-/* A table from a nonzero 32-bit key to an id and a value, open
+/* A table from a nonzero 64-bit key to an id and a value, open
  * addressed, doubled when half full, so a lookup always ends at the key or
  * an empty slot and nothing asked once is asked again (X3). Where it
- * cannot grow, a full table's new entry takes its key's home slot. */
-typedef struct { uint32_t key, id; int value; } Slot;
+ * cannot grow, a full table's new entry takes its key's home slot. The
+ * key is 64 bits so that the interface's glyphs can be keyed by face,
+ * size and glyph whole (X15). */
+typedef struct { uint64_t key; uint32_t id; int value; } Slot;
 typedef struct { Slot *slot; unsigned size, used; } Table;
 
-static Slot *table_get(const Table *t, uint32_t key) {
+static unsigned table_hash(uint64_t key) { return (unsigned) ((key * 0x9E3779B97F4A7C15ull) >> 32); }
+
+static Slot *table_get(const Table *t, uint64_t key) {
     if (t->size == 0) return NULL;
-    unsigned h = (key * 2654435761u) & (t->size - 1);
+    unsigned h = table_hash(key) & (t->size - 1);
     for (unsigned k = 0; k < t->size; k++) {
         Slot *s = &t->slot[(h + k) & (t->size - 1)];
         if (s->key == key) return s;
@@ -263,14 +277,14 @@ static Slot *table_get(const Table *t, uint32_t key) {
     return NULL;
 }
 
-static void table_put(Table *t, uint32_t key, uint32_t id, int value) {
+static void table_put(Table *t, uint64_t key, uint32_t id, int value) {
     if ((t->used + 1) * 2 > t->size) {
         unsigned size = t->size ? t->size * 2 : 1024;
         Slot *slot = calloc(size, sizeof *slot);
         if (slot) {
             for (unsigned i = 0; i < t->size; i++)
                 if (t->slot[i].key) {
-                    unsigned j = (t->slot[i].key * 2654435761u) & (size - 1);
+                    unsigned j = table_hash(t->slot[i].key) & (size - 1);
                     while (slot[j].key) j = (j + 1) & (size - 1);
                     slot[j] = t->slot[i];
                 }
@@ -280,7 +294,7 @@ static void table_put(Table *t, uint32_t key, uint32_t id, int value) {
         }
     }
     if (t->size == 0) return;
-    unsigned h = (key * 2654435761u) & (t->size - 1);
+    unsigned h = table_hash(key) & (t->size - 1);
     for (unsigned k = 0; k < t->size; k++) {
         Slot *s = &t->slot[(h + k) & (t->size - 1)];
         if (s->key == key || s->key == 0) {
@@ -385,15 +399,19 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
     }
     /* A synthetic form is made from the outline, never an embedded bitmap,
      * which can be neither slanted nor widened. */
-    FT_Load_Glyph(F->ft, g, (transformed ? FT_LOAD_NO_HINTING : 0) | ((synth & 1) ? 0 : FT_LOAD_RENDER) | (synth ? FT_LOAD_NO_BITMAP : 0));
-    if (synth & 1) {
+    int failed = FT_Load_Glyph(F->ft, g, (transformed ? FT_LOAD_NO_HINTING : 0) | ((synth & 1) ? 0 : FT_LOAD_RENDER) | (synth ? FT_LOAD_NO_BITMAP : 0)) != 0;
+    if ((synth & 1) && !failed) {
         FT_GlyphSlot slot = F->ft->glyph;
         if (slot->format == FT_GLYPH_FORMAT_OUTLINE)
             FT_Outline_EmboldenXY(&slot->outline, FT_MulFix(F->ft->units_per_EM, F->ft->size->metrics.y_scale) / 24, 0);
-        FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL);
+        failed = FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL) != 0;
     }
     if (transformed) FT_Set_Transform(F->ft, NULL, NULL);
-    FT_Bitmap *b = &F->ft->glyph->bitmap;
+    /* a glyph FreeType could not load or render is uploaded empty, not
+     * from whatever the slot held before, and not asked for again (X25) */
+    FT_Bitmap none;
+    FT_Bitmap_Init(&none);
+    FT_Bitmap *b = failed ? &none : &F->ft->glyph->bitmap;
     /* An embedded bitmap may be 1 bit a pixel (AR PL UMing's strikes, the
      * Han that Debian and Mint fall back to, §R18): converted to a byte a
      * pixel, its levels spread to 0..255, as the glyph set takes them. */
@@ -410,10 +428,11 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
     }
     int stride = ((int) b->width + 3) & ~3;
     size_t size = (size_t) stride * b->rows;
-    uint8_t *data = calloc(size > 0 ? size : 4, 1);
+    uint8_t *data = must(calloc(size > 0 ? size : 4, 1));
     for (unsigned y = 0; y < b->rows; y++) memcpy(data + y * stride, b->buffer + y * b->pitch, b->width);
     PtGlyph glyph = {.width = (int) b->width, .height = (int) b->rows, .stride = stride,
-                     .left = F->ft->glyph->bitmap_left + shift, .top = F->ft->glyph->bitmap_top, .advance = advance, .data = data};
+                     .left = failed ? 0 : F->ft->glyph->bitmap_left + shift, .top = failed ? 0 : F->ft->glyph->bitmap_top,
+                     .advance = advance, .data = data};
     pt_glyph_add(id, &glyph);
     FT_Bitmap_Done(library, &gray);
     int16_t *ink = F->ink + (size_t) k * 4;
@@ -475,7 +494,7 @@ static void ink_cells(int y, int cell, int n, int w0, int w1, int first) {
         if (!bits) continue;
         if (inklen + 5 > inkcap) {
             inkcap = inkcap ? inkcap * 2 : 4096;
-            inkbuf = realloc(inkbuf, (size_t) inkcap);
+            inkbuf = must(realloc(inkbuf, (size_t) inkcap));
         }
         uint8_t *r = inkbuf + inklen;
         r[0] = (uint8_t) (y >> 8);
@@ -515,7 +534,7 @@ static ColorGlyph *color_glyph(int f, uint32_t g, int box) {
     for (ColorGlyph *c = F->pictures; c; c = c->next)
         if (c->g == g && c->box == box) return c;
     double t0 = ns();
-    ColorGlyph *c = calloc(1, sizeof *c);
+    ColorGlyph *c = must(calloc(1, sizeof *c));
     c->g = g;
     c->box = box;
     c->next = F->pictures;
@@ -527,7 +546,7 @@ static ColorGlyph *color_glyph(int f, uint32_t g, int box) {
     if ((double) pt_ch / b->rows < sc) sc = (double) pt_ch / b->rows;
     int w = (int) (b->width * sc + 0.5), h = (int) (b->rows * sc + 0.5);
     if (w < 1 || h < 1) return c;
-    uint32_t *out = calloc((size_t) w * h, 4);
+    uint32_t *out = must(calloc((size_t) w * h, 4));
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
             int x0 = (int) (x / sc), x1 = (int) ((x + 1) / sc), y0 = (int) (y / sc), y1 = (int) ((y + 1) / sc);
@@ -855,11 +874,11 @@ static void place_box(uint32_t cp, int cell, int y, int cells, int style) {
         int stride = (w + 3) & ~3;
         canvas_w = stride;
         canvas_h = pt_ch;
-        canvas = calloc((size_t) stride * pt_ch, 1);
+        canvas = must(calloc((size_t) stride * pt_ch, 1));
         canvas_w = w;
         draw_box(cp, w, pt_ch);
         /* draw_box wrote pt_rows `w` wide; spread them to the stride. */
-        uint8_t *data = calloc((size_t) stride * pt_ch, 1);
+        uint8_t *data = must(calloc((size_t) stride * pt_ch, 1));
         for (int j = 0; j < pt_ch; j++) memcpy(data + j * stride, canvas + j * w, (size_t) w);
         free(canvas);
         PtGlyph glyph = {.width = w, .height = pt_ch, .stride = stride, .left = 0, .top = pt_ascent, .advance = w, .data = data};
@@ -999,11 +1018,15 @@ static const uint8_t *draw_run(const uint8_t *p, const uint8_t *end, int pass) {
     int y = (p[1] << 8) | p[2], x = (p[3] << 8) | p[4], n = (p[5] << 8) | p[6];
     const uint8_t *cell = p + 7, *q = cell;
     static int styles[65536];
-    for (int i = 0; i < n && q + 3 <= end; i++) {
-        styles[i] = cell_style((q[1] << 8) | q[2], y, x + i);
+    int got = 0;
+    for (; got < n && q + 3 <= end; got++) {
+        styles[got] = cell_style((q[1] << 8) | q[2], y, x + got);
         q += 3 + 3 * (q[0] & 63);
     }
-    if (q > end) return end;
+    /* fewer cells than the run says, or the last cut short: the frame is
+       given up, not drawn from styles left from before or cells past the
+       list's end (X26) */
+    if (got < n || q > end) return end;
     if (pass == 0)
         for (int from = 0, i = 1; i <= n; i++)
             if (i == n || style_bg[styles[i]] != style_bg[styles[from]]) {
@@ -1306,7 +1329,7 @@ static int ui_named(const uint8_t *name, int n) {
     for (int k = 0; k < n_ui_names; k++)
         if ((int) strlen(ui_names[k].name) == n && memcmp(ui_names[k].name, name, (size_t) n) == 0) return ui_names[k].face;
     if (n_ui_names == UI_NAMES) return -1;
-    char *z = malloc((size_t) n + 1);
+    char *z = must(malloc((size_t) n + 1));
     memcpy(z, name, (size_t) n);
     z[n] = 0;
     int index = 0, before = n_ui_faces, f = -1;
@@ -1323,7 +1346,9 @@ static int ui_named(const uint8_t *name, int n) {
 }
 
 static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
-    uint32_t key = ((uint32_t) f << 26) ^ ((uint32_t) px << 18) ^ (g + 1u);
+    /* face, size and glyph each in a field of its own (X15: the face's
+       top bit was lost above bit 26), tagged apart from ui_corner's */
+    uint64_t key = (1ull << 62) | ((uint64_t) (uint32_t) f << 40) | ((uint64_t) (uint32_t) px << 24) | (g & 0xFFFFFFu);
     const Slot *known = table_get(&ui_keys, key);
     if (known) {
         *advance = known->value;
@@ -1333,11 +1358,13 @@ static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
     if (FT_Load_Glyph(ft, g, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) return 0;
     FT_Bitmap *b = &ft->glyph->bitmap;
     int stride = ((int) b->width + 3) & ~3;
-    uint8_t *data = calloc((size_t) (stride * (int) b->rows + 1), 1);
+    uint8_t *data = must(calloc((size_t) (stride * (int) b->rows + 1), 1));
     for (unsigned r = 0; r < b->rows; r++)
         for (unsigned c = 0; c < b->width; c++) {
-            uint8_t v = b->buffer[r * (unsigned) b->pitch + c];
-            data[r * (unsigned) stride + c] = b->pixel_mode == FT_PIXEL_MODE_MONO ? ((b->buffer[r * (unsigned) b->pitch + c / 8] >> (7 - c % 8)) & 1) * 255 : v;
+            /* a 1-bit row is pitch bytes of bits, read as bits only (X15) */
+            data[r * (unsigned) stride + c] = b->pixel_mode == FT_PIXEL_MODE_MONO
+                                                  ? ((b->buffer[r * (unsigned) b->pitch + c / 8] >> (7 - c % 8)) & 1) * 255
+                                                  : b->buffer[r * (unsigned) b->pitch + c];
         }
     uint32_t id = ui_next++;
     PtGlyph glyph = {.width = (int) b->width, .height = (int) b->rows, .stride = stride, .left = ft->glyph->bitmap_left,
@@ -1424,11 +1451,11 @@ static void ui_fill(uint32_t rgb, int x, int y, int w, int h) {
  * top right, 2 bottom left, 3 bottom right): each pixel's coverage, from
  * 4 by 4 samples. Uploaded once a radius and quarter. */
 static uint32_t ui_corner(int r, int q) {
-    uint32_t key = 0x80000000u | ((uint32_t) r << 2) | (uint32_t) q;
+    uint64_t key = (1ull << 61) | ((uint64_t) (uint32_t) r << 2) | (uint32_t) q;
     const Slot *known = table_get(&ui_keys, key);
     if (known) return known->id;
     int stride = (r + 3) & ~3;
-    uint8_t *data = calloc((size_t) (stride * r + 1), 1);
+    uint8_t *data = must(calloc((size_t) (stride * r + 1), 1));
     for (int i = 0; i < r; i++)
         for (int j = 0; j < r; j++) {
             int in = 0;
@@ -1555,7 +1582,7 @@ static const uint8_t *image_define(const uint8_t *p, const uint8_t *end) {
     if ((size_t) (end - (p + 10)) < n * bpp) return NULL;
     const uint8_t *px = p + 10;
     image_free(id);
-    uint32_t *argb = n ? malloc(n * sizeof *argb) : NULL;
+    uint32_t *argb = n ? must(malloc(n * sizeof *argb)) : NULL;
     if (n && !argb) return px + n * bpp;
     for (size_t i = 0; i < n; i++) {
         uint32_t r = px[bpp * i], g = px[bpp * i + 1], b = px[bpp * i + 2], a = bpp == 4 ? px[4 * i + 3] : 255;

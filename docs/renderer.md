@@ -1109,3 +1109,89 @@ Measured with `harness/dump/core-dump` built to draw N frames of a 300
 by 100 screen of text after feeding it (`View.frame`, the default look),
 3,000 frames, three runs each: 0.53 to 0.54 s before, 0.46 s after, about
 175 µs a frame then 153; the display lists the same 176,566 bytes in all.
+
+## R25. The interface's glyphs keyed whole, and a 1-bit glyph read as bits (2026-11-26, the code review's X15)
+
+`ui_glyph`, which renders the interface's text (the tab bar, menus, the
+settings window), cached each glyph under a 32-bit key made of the face
+shifted 26 bits, the size shifted 18 and the glyph index. Faces go up to
+127, so only six bits of the face were kept: face 65 was given face 1's
+glyph of the same index and size, which the settings window's font list,
+drawing each family in its own face, reaches on a machine with more than
+64 faces. `ui_corner`'s keys (`0x80000000 | …`) met the glyphs' too from
+face 32. The tables' keys are now 64 bits: a glyph's is the face, the
+size and the index each in a field of its own, a corner's is tagged
+apart, and the code-point caches take theirs as before. And for a 1-bit
+glyph (a font's bitmap strike, as Terminus or AR PL UMing have) each
+pixel read a byte at its column before testing the pixel mode, past the
+row's `pitch` bytes of bits on the last row; it is read as bits only.
+
+**Tested**: `packages/text/tests/cases.sh` builds `cases.c`, which
+includes `puritty_text.c`, with AddressSanitizer and runs it on DejaVu
+Sans Mono loaded as 70 faces and on Terminus's 16 px `.otb`. Before:
+faces 1 and 65 both gave glyph id 1073741824 for glyph 36 at 16 px, and
+the 1-bit glyph was a heap-buffer-overflow at `ui_glyph`'s read. Now
+1073741824 and 1073741825, and the 1-bit glyph is read clean. The pixel
+gate passes 54 of 55 before and after; `image-iterm-jpeg-gif` differs in
+2,444 pixels either way.
+
+## R26. A run that says more cells than the list holds stops the frame (2026-11-26, the code review's X26)
+
+`draw_run` reads a run's cells from the frame's list until it has the
+count the run's header gives or the list ends. It gave the frame up only
+when the last cell ran past the end; a run whose cells stopped short of
+its count, at a cell's edge, was drawn all the same: its backgrounds
+filled from the styles left in `styles` by an earlier run, and its glyph
+pass handed `draw_glyphs` the count, which reads that many cells and has
+no end to stop at. A list cut short is a bug of the encoder's or a frame
+truncated, and is now given up as one cut inside a cell is.
+
+**Tested**: `packages/text/tests/cases.sh` (R25) draws a run that says 5
+cells with 2 in the list. Before, 40 pixels were filled, the five cells'
+width; now none, and `draw_run` answers the list's end.
+
+## R27. A glyph FreeType cannot give is drawn empty; out of memory stops with a message (2026-11-26, the code review's X25)
+
+`upload` did not look at what `FT_Load_Glyph` and `FT_Render_Glyph`
+answered: after a failure the glyph was made from whatever the slot held,
+and marked uploaded, so never asked for again. It is now uploaded empty,
+at no position, and marked so: asking again would fail again, every
+frame. And allocations were used as they came back, NULL too. Each in
+`puritty_text.c` and `puritty_x11.c` now goes through `must`, which stops
+the program with a message (`geng_crash` in the window's C, `abort` in
+the text library, which has no runtime of its own) rather than writing
+through NULL; the two that had a way on (the tables' growth, the
+images') keep it. A selection of a piece or less (256 KB) asked for as
+UTF-8 or text is sent from the selection itself, not from a copy made
+for each request; Latin-1, which converts, and an INCR transfer, which
+keeps its bytes, still copy.
+
+**Tested**: nothing fails on the code before. FreeType 2.14 leaves the
+slot empty after a failed load, and running out of memory is not
+provoked. The app builds; `packages/text/tests/cases.sh`,
+`harness/screens.py` and the pixel gate (54 of 55, the
+`image-iterm-jpeg-gif` difference as before) pass.
+
+## R28. A font family is looked up by its name as it is (2026-11-26, the code review's X13)
+
+On Linux the family the settings give (`[font] family`, a family chosen
+from the settings window's list, a family the list previews itself in)
+was handed to `FcNameParse` with `:bold` or `:italic` after it. In that
+syntax `-` begins a size, `:` a property and `,` another family, so
+`IBM 3270 Semi-Condensed` was looked up as the family `IBM 3270 Semi`, and
+a name it could not parse gave no pattern at all, which `pt_font_file`
+handed on to fontconfig. Now `family_pattern` builds the pattern: the
+family as it is, `FC_WEIGHT_BOLD` for bold and `FC_SLANT_ITALIC` for
+italic, the values `:bold` and `:italic` stood for. The settings
+window's font, which `Platform.interfaceFont` escaped as `sans\-serif`
+for the parser, is `sans-serif`.
+
+**Measured** with fontconfig's own parser (ctypes, `FcNameUnparse` after
+`FcNameParse`): `IBM 3270 Semi-Narrow` gives the family `IBM 3270 Semi`,
+`Semi-Condensed` gives `Semi`, `Foo:weight=nonsense` no pattern.
+**Tested**: `harness/fontnames.py` runs puritty with IBM's 3270 fonts
+from the pinned nixpkgs and `X11_STATS=1`, which names each face it
+opens. Before: `IBM 3270 Semi-Condensed` opened Fira Code, and
+`Foo:weight=nonsense` opened no window. Now
+`3270SemiCondensed-Regular`, `3270-Regular` for `IBM 3270`, and a window
+in the closest font (Fira Code) for the name no font has.

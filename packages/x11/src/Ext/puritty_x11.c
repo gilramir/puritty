@@ -105,6 +105,13 @@
 #include "geng.h"
 #include "puritty_text.h"
 
+/* An allocation's result: out of memory stops the program with a message,
+ * not a write through NULL (the code review's X25). */
+static void *must(void *p) {
+    if (p == NULL) geng_crash("puritty-x11: out of memory");
+    return p;
+}
+
 static xcb_connection_t *conn;
 static xcb_screen_t *screen;
 static xcb_window_t window;
@@ -181,15 +188,23 @@ static xcb_render_picture_t solid_of(uint32_t rgb) {
 
 /* THE RENDERER'S CALLS (packages/text, include/puritty_text.h) */
 
-/* A font as fontconfig names it, in a variant: `:bold`, `:italic` or
- * both added to its name. */
+/* A pattern for the family `name` as it is, in a variant (1 bold, 2
+ * italic): built, not parsed, since in fontconfig's name syntax `-` begins
+ * a size, `:` a property and `,` another family, so `IBM 3270
+ * Semi-Condensed` was the family `IBM 3270 Semi` and a name it could not
+ * parse no pattern at all (the code review's X13). */
+static FcPattern *family_pattern(const char *name, int variant) {
+    FcPattern *p = must(FcPatternCreate());
+    FcPatternAddString(p, FC_FAMILY, (const FcChar8 *) name);
+    if (variant & 1) FcPatternAddInteger(p, FC_WEIGHT, FC_WEIGHT_BOLD);
+    if (variant & 2) FcPatternAddInteger(p, FC_SLANT, FC_SLANT_ITALIC);
+    return p;
+}
+
+/* The file of the font fontconfig matches for the family `font`, in a
+ * variant (1 bold, 2 italic). */
 char *pt_font_file(const char *font, int variant, int *index) {
-    static const char *const variants[4] = {"", ":bold", ":italic", ":bold:italic"};
-    size_t len = strlen(font) + strlen(variants[variant & 3]) + 1;
-    char *spec = malloc(len);
-    snprintf(spec, len, "%s%s", font, variants[variant & 3]);
-    FcPattern *p = FcNameParse((const FcChar8 *) spec);
-    free(spec);
+    FcPattern *p = family_pattern(font, variant);
     FcConfigSubstitute(NULL, p, FcMatchPattern);
     FcDefaultSubstitute(p);
     FcResult r;
@@ -198,7 +213,7 @@ char *pt_font_file(const char *font, int variant, int *index) {
     char *out = NULL;
     *index = 0;
     if (m != NULL && FcPatternGetString(m, FC_FILE, 0, &file) == FcResultMatch) {
-        out = strdup((const char *) file);
+        out = must(strdup((const char *) file));
         FcPatternGetInteger(m, FC_INDEX, 0, index);
     }
     if (m != NULL) FcPatternDestroy(m);
@@ -215,8 +230,7 @@ const char *pt_fallback_family(void) {
  * that one's file (a Type 1 font). */
 static char *family_used(const char *name) {
     for (int pass = 0; pass < 2; pass++) {
-        FcPattern *p = FcNameParse((const FcChar8 *) (pass == 0 ? name : pt_fallback_family()));
-        if (p == NULL) continue;
+        FcPattern *p = family_pattern(pass == 0 ? name : pt_fallback_family(), 0);
         FcConfigSubstitute(NULL, p, FcMatchPattern);
         FcDefaultSubstitute(p);
         FcResult r;
@@ -228,12 +242,12 @@ static char *family_used(const char *name) {
         if (m != NULL && FcPatternGetString(m, FC_FILE, 0, &file) == FcResultMatch &&
             FcPatternGetString(m, FC_FAMILY, 0, &family) == FcResultMatch) {
             FcPatternGetInteger(m, FC_INDEX, 0, &index);
-            if (pass == 1 || pt_readable((const char *) file, index)) out = strdup((const char *) family);
+            if (pass == 1 || pt_readable((const char *) file, index)) out = must(strdup((const char *) family));
         }
         if (m != NULL) FcPatternDestroy(m);
         if (out != NULL) return out;
     }
-    return strdup("");
+    return must(strdup(""));
 }
 
 static int font_order(const void *a, const void *b) {
@@ -302,8 +316,8 @@ geng_cancel puritty_x11_fonts(geng_wait *wait) {
         int seen = 0;
         for (int k = 0; k < n && !seen; k++) seen = strcmp(names[k], (const char *) family) == 0;
         if (seen) continue;
-        names = realloc(names, (size_t) (n + 1) * sizeof *names);
-        names[n++] = strdup((const char *) family);
+        names = must(realloc(names, (size_t) (n + 1) * sizeof *names));
+        names[n++] = must(strdup((const char *) family));
     }
     if (set != NULL) FcFontSetDestroy(set);
     FcObjectSetDestroy(os);
@@ -318,7 +332,7 @@ static char *string_of(void *bytes);
 geng_cancel puritty_x11_font_used(void *name_bytes, geng_wait *wait) {
     fonts_up_to_date();
     char *name = string_of(name_bytes);
-    char **lines = malloc(sizeof *lines);
+    char **lines = must(malloc(sizeof *lines));
     lines[0] = family_used(name);
     free(name);
     geng_succeed(wait, geng_slot_P(family_lines(lines, 1)));
@@ -333,7 +347,7 @@ static int ignorable(uint32_t cp) {
 /* The face fontconfig gives a monospace font with the cluster, in the
  * language, color when asked (V26). */
 char *pt_fallback_file(const uint32_t *cps, int n, int color, const char *lang, int *index) {
-    FcPattern *p = FcNameParse((const FcChar8 *) "monospace");
+    FcPattern *p = family_pattern("monospace", 0);
     if (lang) FcPatternAddString(p, FC_LANG, (const FcChar8 *) lang);
     if (color) FcPatternAddBool(p, FC_COLOR, FcTrue);
     FcCharSet *cs = FcCharSetCreate();
@@ -351,7 +365,7 @@ char *pt_fallback_file(const uint32_t *cps, int n, int color, const char *lang, 
     *index = 0;
     if (m && FcPatternGetString(m, FC_FILE, 0, &file) == FcResultMatch) {
         FcPatternGetInteger(m, FC_INDEX, 0, index);
-        out = strdup((const char *) file);
+        out = must(strdup((const char *) file));
     }
     if (m) FcPatternDestroy(m);
     return out;
@@ -911,7 +925,7 @@ static void repaint_all(void) {
 /* The IME's text as UTF-8, whichever encoding it was given in; free it. */
 static char *xim_utf8(const char *s, size_t n, size_t *out) {
     if (xcb_xim_get_encoding(xim) == XCB_XIM_UTF8_STRING) {
-        char *u = malloc(n + 1);
+        char *u = must(malloc(n + 1));
         if (!u) return NULL;
         memcpy(u, s, n);
         u[n] = 0;
@@ -999,6 +1013,15 @@ static void xim_log(const char *fmt, ...) {
     if (n >= (int) sizeof line) n = (int) sizeof line - 1;
     while (n > 0 && line[n - 1] == '\n') n--;
     record_text(13, line, (size_t) n);
+}
+
+/* The screen DISPLAY names (`:0.1`), not always the first (the code
+   review's X17): xcb_connect says its number, and the roots are stepped to
+   it as xcb_aux_get_screen does. */
+static xcb_screen_t *screen_of(xcb_connection_t *c, int number) {
+    xcb_screen_iterator_t roots = xcb_setup_roots_iterator(xcb_get_setup(c));
+    for (int i = 0; i < number && roots.rem > 1; i++) xcb_screen_next(&roots);
+    return roots.data;
 }
 
 static void xim_setup(int screen_number) {
@@ -1148,7 +1171,7 @@ static xcb_atom_t atom(const char *name) {
 
 static char *string_of(void *bytes) {
     geng_bytes *b = bytes;
-    char *s = malloc((size_t) b->length + 1);
+    char *s = must(malloc((size_t) b->length + 1));
     memcpy(s, b->data, (size_t) b->length);
     s[b->length] = 0;
     return s;
@@ -1269,7 +1292,7 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
         geng_succeed(wait, geng_slot_I4(-2));
         return (geng_cancel) {0};
     }
-    screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data;
+    screen = screen_of(conn, screen_number);
     dpi0 = screen_dpi();
     if (getenv("X11_STATS")) fprintf(stderr, "dpi %d\n", dpi0);
     pt_verbose = getenv("X11_STATS") != NULL;
@@ -1314,7 +1337,7 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
     selection_atoms();
     xdnd_setup();
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, wm_protocols, XCB_ATOM_ATOM, 32, 1, &wm_delete);
-    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 18, "puritty\0Puritty\0");
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 16, "puritty\0Puritty\0");
     /* the icon a dock or a taskbar shows (docs/windows.md WS25), 16 to 64
      * px: 33 KB, sent with each window, over ssh -X too */
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, atom("_NET_WM_ICON"), XCB_ATOM_CARDINAL, 32,
@@ -1682,7 +1705,7 @@ static void notify_requestor(xcb_selection_request_event_t *q, xcb_atom_t prop) 
 /* UTF-8 as Latin-1: a code point past 255, or a byte that does not decode,
  * is '?'. */
 static uint8_t *latin1(const uint8_t *s, size_t n, size_t *out) {
-    uint8_t *o = malloc(n + 1);
+    uint8_t *o = must(malloc(n + 1));
     size_t k = 0;
     for (size_t i = 0; i < n;) {
         uint32_t c = s[i];
@@ -1713,7 +1736,14 @@ static void selection_request(xcb_selection_request_event_t *q) {
     } else if (q->target == utf8_string || q->target == a_plain || q->target == a_text || q->target == XCB_ATOM_STRING) {
         xcb_atom_t type = q->target == a_text ? utf8_string : q->target;
         size_t len = sel[which].len;
-        uint8_t *data = malloc(len + 1);
+        if (q->target != XCB_ATOM_STRING && len <= PIECE) {
+            /* a piece's worth, as it is: sent from the selection, no copy (X25) */
+            xcb_change_property(conn, XCB_PROP_MODE_REPLACE, q->requestor, prop, type, 8, (uint32_t) len, sel[which].data);
+            notify_requestor(q, prop);
+            xcb_flush(conn);
+            return;
+        }
+        uint8_t *data = must(malloc(len + 1));
         memcpy(data, sel[which].data, len);
         if (q->target == XCB_ATOM_STRING) {
             uint8_t *l = latin1(data, len, &len);
@@ -1826,7 +1856,7 @@ static void selection_clear(xcb_selection_clear_event_t *c) {
 static void paste_add(const uint8_t *d, size_t n) {
     if (plen + n > pcap) {
         pcap = (plen + n) * 2;
-        pbuf = realloc(pbuf, pcap);
+        pbuf = must(realloc(pbuf, pcap));
     }
     memcpy(pbuf + plen, d, n);
     plen += n;
@@ -2151,7 +2181,7 @@ geng_cancel puritty_x11_select(int32_t which, void *text, geng_wait *wait) {
     geng_bytes *t = text;
     if (which == 0 || which == 1) {
         free(sel[which].data);
-        sel[which].data = malloc((size_t) t->length + 1);
+        sel[which].data = must(malloc((size_t) t->length + 1));
         memcpy(sel[which].data, t->data, (size_t) t->length);
         sel[which].len = (size_t) t->length;
         sel[which].time = last_time;
@@ -2258,9 +2288,10 @@ static int titled(xcb_connection_t *c, xcb_window_t w, const char *name, xcb_ato
 geng_cancel puritty_x11_raise(void *name_bytes, geng_wait *wait) {
     char *name = string_of(name_bytes);
     int found = 0;
-    xcb_connection_t *c = xcb_connect(NULL, NULL);
+    int screen_number = 0;
+    xcb_connection_t *c = xcb_connect(NULL, &screen_number);
     if (!xcb_connection_has_error(c)) {
-        xcb_screen_t *s = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
+        xcb_screen_t *s = screen_of(c, screen_number);
         xcb_atom_t clients = atom_on(c, "_NET_CLIENT_LIST"), active = atom_on(c, "_NET_ACTIVE_WINDOW");
         xcb_atom_t net_name = atom_on(c, "_NET_WM_NAME"), utf8 = atom_on(c, "UTF8_STRING");
         xcb_window_t *ws = NULL;
@@ -2268,17 +2299,17 @@ geng_cancel puritty_x11_raise(void *name_bytes, geng_wait *wait) {
         xcb_get_property_reply_t *list = xcb_get_property_reply(c, xcb_get_property(c, 0, s->root, clients, XCB_ATOM_WINDOW, 0, 4096), NULL);
         if (list != NULL && xcb_get_property_value_length(list) > 0) {
             n = xcb_get_property_value_length(list) / 4;
-            ws = malloc((size_t) n * sizeof *ws);
+            ws = must(malloc((size_t) n * sizeof *ws));
             memcpy(ws, xcb_get_property_value(list), (size_t) n * sizeof *ws);
         } else {
             xcb_query_tree_reply_t *t = xcb_query_tree_reply(c, xcb_query_tree(c, s->root), NULL);
             for (int i = 0; t != NULL && i < xcb_query_tree_children_length(t); i++) {
                 xcb_window_t top = xcb_query_tree_children(t)[i];
-                ws = realloc(ws, (size_t) (n + 1) * sizeof *ws);
+                ws = must(realloc(ws, (size_t) (n + 1) * sizeof *ws));
                 ws[n++] = top;
                 xcb_query_tree_reply_t *u = xcb_query_tree_reply(c, xcb_query_tree(c, top), NULL);
                 for (int j = 0; u != NULL && j < xcb_query_tree_children_length(u); j++) {
-                    ws = realloc(ws, (size_t) (n + 1) * sizeof *ws);
+                    ws = must(realloc(ws, (size_t) (n + 1) * sizeof *ws));
                     ws[n++] = xcb_query_tree_children(u)[j];
                 }
                 free(u);

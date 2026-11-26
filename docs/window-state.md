@@ -225,3 +225,21 @@ fails the gate. Under Xvfb with openbox, `wmctrl` maximized the window,
 restored it, maximized it again and closed it: `window.txt` says
 `maximized 80 24`, the normal size kept as WP9 has it. The window gates
 (sshwindow 33, pointer 56, tabpaste 2, reload 20, keymaps) pass.
+
+## WP11 · The screen `DISPLAY` names, and a `WM_CLASS` of its own length (2026-11-26)
+
+The code review's X17 and X16. `xcb_connect` says which screen `DISPLAY`
+names (`:0.1` is screen 1), and the open took screen 0 all the same,
+while the input method was set up for the other: on a server with two
+screens the window opened on the first. `screen_of` now steps the roots
+to the screen named, as `xcb_aux_get_screen` does, for the window and for
+`raise`, which looks for a window of the same name to bring forward. And
+`WM_CLASS` was sent as 18 bytes, though `"puritty\0Puritty\0"` is 16 and
+the compiler's terminator makes 17: a byte read past the literal, and two
+after the class's terminator. It is sent as 16.
+
+**Tested**: `harness/screens.py` runs Xvfb with two screens and puritty
+with `DISPLAY` naming the second, and reads every top-level window's
+`WM_CLASS` with Xlib. Before, the window was on screen 0 and its
+`WM_CLASS` was `puritty\0Puritty\0\0\0`, 18 bytes; now it is on screen 1
+and the property is the 16 bytes.
