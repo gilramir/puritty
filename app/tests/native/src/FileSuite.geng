@@ -7,6 +7,7 @@ count the same. -}
 import Bytes
 import Config
 import Expect
+import Int64
 import Os.Directory as Directory
 import Os.Error
 import Os.File as File
@@ -174,6 +175,42 @@ settingsFile =
                     Task.succeed
                         (Expect.equal { early = Nothing, later = Just "starting to send 1 items · click to cancel" }
                             { early = Sending.progressText 500 begun.sending, later = Sending.progressText 1500 begun.sending }
+                        )
+                )
+            , U.test "a read past the piece asked for answers the next piece of that file, to its end (review ST20)"
+                (\_ ->
+                    let
+                        begun =
+                            (Sending.begin { ref = 10, tab = 1, folder = Bytes.fromString "/tmp", jobs = [], refused = [], allowShell = False, ms = 0 }).sending
+
+                        -- 40,000 bytes read at once, the file's end among them
+                        file =
+                            Bytes.fromString (String.repeat 40000 "x")
+
+                        first =
+                            (Sending.localRead { job = 3, offset = Int64.fromInt 0, length = 32768, bytes = file, ended = True } begun).sending
+
+                        second =
+                            Sending.held { job = 3, offset = Int64.fromInt 32768, length = 32768 } first
+
+                        last =
+                            (Sending.localRead { job = 3, offset = Int64.fromInt 32768, length = 32768, bytes = file |> Bytes.slice 32768 40000, ended = True } first).sending
+
+                        lengthOf =
+                            Maybe.map (\h -> { length = Bytes.length h.bytes, ended = h.ended })
+                    in
+                    Task.succeed
+                        (Expect.equal
+                            { second = Just { length = 7232, ended = True }
+                            , otherJob = Nothing
+                            , otherOffset = Nothing
+                            , atEnd = Just { length = 0, ended = True }
+                            }
+                            { second = lengthOf second
+                            , otherJob = lengthOf (Sending.held { job = 4, offset = Int64.fromInt 32768, length = 32768 } first)
+                            , otherOffset = lengthOf (Sending.held { job = 3, offset = Int64.fromInt 0, length = 32768 } first)
+                            , atEnd = lengthOf (Sending.held { job = 3, offset = Int64.fromInt 40000, length = 32768 } last)
+                            }
                         )
                 )
             , U.test "a setting written to config.toml of mode 600: the mode kept, no temporary left (review PS12)"

@@ -1,4 +1,4 @@
-module Sending exposing (Out(..), Sending, answer, begin, cancel, conflictBox, isAsking, isOver, jobsFor, localFailed, localRead, owns, progressText, refsKept, side, summary)
+module Sending exposing (Out(..), Sending, answer, begin, cancel, conflictBox, held, isAsking, isOver, jobsFor, localFailed, localRead, owns, progressText, readSize, refsKept, side, summary)
 
 {-| Files dropped on an ssh tab, sent to the folder chosen (`docs/sftp.md`
 FT25): `Ssh.Transfer` over an SFTP channel of its own, or, where the host
@@ -50,6 +50,11 @@ type alias Sending =
     -- when the progress was last put in the note bar, -1 never: a few
     -- times a second, since each puts a frame on the screen (FT27)
     , shownAt : Int
+    -- what the last read of a file brought past the piece asked for, from
+    -- `offset` on, and whether it reached the file's end: the next piece
+    -- comes from it, not from another open, seek and read (the code
+    -- review's ST20; docs/sftp.md FT45)
+    , readAhead : Maybe { job : Int, offset : Int64, bytes : Bytes, ended : Bool }
     }
 
 
@@ -197,6 +202,7 @@ begin b =
             , refused = b.refused
             , over = Nothing
             , shownAt = -1
+            , readAhead = Nothing
             }
         , out = [ Input (Session.OpenSubsystem { ref = b.ref, name = "sftp" }) ]
         }
@@ -268,15 +274,60 @@ side e s =
             { sending = s, out = [] }
 
 
-{-| A piece of a local file, read. -}
-localRead : { job : Int, offset : Int64, bytes : Bytes } -> Sending -> Step
-localRead r s =
+{-| How much the caller reads of a file at once: what is past the piece
+asked for is kept for the next (FT45). -}
+readSize : Int
+readSize =
+    262144
+
+
+{-| The piece `r` asks for, if the last read already brought it: the bytes
+from its offset on and whether they reach the file's end, to be told back
+with `localRead` as a read would be. -}
+held : { job : Int, offset : Int64, length : Int } -> Sending -> Maybe { bytes : Bytes, ended : Bool }
+held r s =
+    when s.readAhead is
+        Just a ->
+            if a.job == r.job && a.offset == r.offset && (Bytes.length a.bytes >= r.length || a.ended) then
+                Just { bytes = a.bytes, ended = a.ended }
+
+            else
+                Nothing
+
+        Nothing ->
+            -- nothing read yet in this batch
+            meant Reason.NotYet Nothing
+
+
+{-| A file's bytes from `offset` on, as read (or `held`), for a piece of
+`length`: its first `length` go to the engine, the rest is kept for the
+next piece. `ended`: they reach the file's end. -}
+localRead : { job : Int, offset : Int64, length : Int, bytes : Bytes, ended : Bool } -> Sending -> Step
+localRead r s0 =
+    let
+        piece =
+            Bytes.slice 0 r.length r.bytes
+
+        s =
+            { s0
+                | readAhead =
+                    Just
+                        { job = r.job
+                        , offset = r.offset + Int64.fromInt (Bytes.length piece)
+                        , bytes = Bytes.slice r.length (Bytes.length r.bytes) r.bytes
+                        , ended = r.ended || Bytes.length piece < r.length
+                        }
+            }
+
+        told =
+            { job = r.job, offset = r.offset, bytes = piece }
+    in
     when s.engine is
         BySftp t ->
-            stepped { sending = s, out = [] } (fromSftp (Transfer.localRead r t))
+            stepped { sending = s, out = [] } (fromSftp (Transfer.localRead told t))
 
         ByShell t ->
-            stepped { sending = s, out = [] } (fromShell (ShellTransfer.localRead r t))
+            stepped { sending = s, out = [] } (fromShell (ShellTransfer.localRead told t))
 
         Ended ->
             { sending = s, out = [] }

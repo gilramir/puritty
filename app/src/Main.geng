@@ -5016,16 +5016,39 @@ sendingOut side o m =
             side i |> Task.map (\_ -> m)
 
         Sending.Read r ->
-            File.withHandle m.settings.given.fs File.ForRead r.path (\h -> File.seek (File.FromStart r.offset) h |> Task.andThen (\_ -> readUpTo r.length h []))
-                |> Task.map Ok
-                |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
+            let
+                -- the piece from the last read, or a read of the file
+                -- (ST20, docs/sftp.md FT45)
+                already =
+                    when m.sending is
+                        Just s ->
+                            Sending.held { job = r.job, offset = r.offset, length = r.length } s
+
+                        Nothing ->
+                            meant Reason.Gone Nothing
+
+                size =
+                    max r.length Sending.readSize
+            in
+            (when already is
+                Just k ->
+                    Task.succeed (Ok k)
+
+                Nothing ->
+                    -- not read yet: read from the piece on
+                    meant Reason.NotYet
+                        (File.withHandle m.settings.given.fs File.ForRead r.path (\h -> File.seek (File.FromStart r.offset) h |> Task.andThen (\_ -> readUpTo size h []))
+                            |> Task.map (\bytes -> Ok { bytes = bytes, ended = Bytes.length bytes < size })
+                            |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
+                        )
+            )
                 |> Task.andThen
                     (\got ->
                         when m.sending is
                             Just s ->
                                 when got is
-                                    Ok bytes ->
-                                        sendingStep (Sending.localRead { job = r.job, offset = r.offset, bytes = bytes } s) m
+                                    Ok read ->
+                                        sendingStep (Sending.localRead { job = r.job, offset = r.offset, length = r.length, bytes = read.bytes, ended = read.ended } s) m
 
                                     Err why ->
                                         -- the file can't be read here now

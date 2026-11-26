@@ -423,7 +423,7 @@ covered" sections. The larger gaps:
 | [ST17](05-ssh-session-transfer.md) | dead-code | confirmed | **fixed** `ShellTransfer.unsent` never sees the running command, so a failed upload leaves the total below what was moved |
 | [ST18](05-ssh-session-transfer.md) | bug | confirmed | **fixed** `Transfer`'s broken-stream path miscounts, and leaves the part |
 | [ST19](05-ssh-session-transfer.md) | inaccuracy | confirmed | **fixed** Every refusal of the SFTP channel is taken as "SFTP is turned off", and with the setting on it switches to shell commands |
-| [ST20](05-ssh-session-transfer.md) | speed | confirmed | An upload opens, seeks and closes the local file for every 32 KiB, and reads 64 KiB to use 32 |
+| [ST20](05-ssh-session-transfer.md) | speed | confirmed | **fixed** An upload opens, seeks and closes the local file for every 32 KiB, and reads 64 KiB to use 32 |
 | [ST21](05-ssh-session-transfer.md) | bug | plausible | **in part** A batch that has shown no progress cannot be cancelled, and nothing times it out |
 | [ST22](05-ssh-session-transfer.md) | bug | confirmed | **fixed** Options from `~/.ssh/config`: `SetEnv` with `=` in the value is dropped, `IdentitiesOnly true` is not yes, a bare IPv6 jump or quick-connect host is cut at its last colon |
 | [ST23](05-ssh-session-transfer.md) | security | confirmed | **fixed** `ssh` is run with the host's name as a bare argument: a name starting with `-` is read as an option |

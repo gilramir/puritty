@@ -2485,3 +2485,53 @@ finishes the batch at once; one while its checks are unanswered still
 waits for those answers, and nothing gives up `Starting` or `Checking`
 on its own. The native app suite holds the text at 0.5 s and 1.5 s: the
 old code showed nothing (620).
+
+## FT45 · An upload's file read 256 KiB at a time (2026-11-25)
+
+The code review's ST20. Each 32 KiB piece of an upload was an open, a
+seek and a read of the file of its own; `File.read` answers up to 64 KiB,
+so half of every read was thrown away and read again by the next
+piece's open. Now the window reads 256 KiB (`Sending.readSize`) from the
+piece's offset, gives the engine the piece, and `Sending` keeps the rest
+with its file, offset and whether it reached the end (`readAhead`); the
+next piece of that file at that offset comes from it (`Sending.held`),
+with no open. A piece asked for anywhere else, or of another file, is
+read as before. Both engines' pieces are 32 KiB: one open in eight.
+
+**Measured** (a native program reading a 1 GiB file of random bytes as
+the window does, an open, a seek and reads per piece; two runs each,
+warm cache):
+
+| | gmktec7 (Linux) | beelink1 (Windows) |
+|---|---|---|
+| an open per 32 KiB (before) | 488, 522 ms | 3,012 / 4,216 ms; 3,012 / 4,220 ms |
+| an open per 256 KiB (now) | 245, 229 ms | 1,683 / 1,672 ms; 1,638 / 1,710 ms |
+
+On Linux the reads were about a fifth of a local upload's time (383
+MB/s, FT17) and next to nothing over a network. On Windows the reads
+alone held an upload under 250–350 MB/s; they now cost about 1.7 s a
+GiB, 1.3–2.5 s less. An upload's own speed was not measured before
+and after.
+
+**Tested.** `harness/drop.py` gains `pieces-sftp` and `pieces-shell`:
+a file of 5,000,003 seeded random bytes dropped on an ssh tab, by SFTP
+through the chooser and through the shell on a tmux pane; the host holds
+its bytes. The bytes vary from piece to piece, where the larger cases'
+files are holes, which a piece from the wrong offset would match. Both
+fail with the kept bytes made to start one piece late (the file cut
+short or wrong, and "the upload stopped before its end").
+
+On gmktec7 every Nemo case had failed before dropping: Nemo's window
+came 25 s after it started, the screenshot and the drag at about 8 s.
+`drop.py` runs the file manager on a D-Bus session of its own but in
+the user's `XDG_RUNTIME_DIR`, where the `gnome-keyring-daemon` that
+session starts finds the desktop's and leaves `org.freedesktop.secrets`
+unowned; the desktop portal waits on it, and GTK, in
+`nemo_application_startup` (`g_dbus_proxy_new_sync`, gdb), waits on the
+portal for GDBus's 25 s. Measured on a private bus, twice: the secrets
+service and the desktop portal 25.0 s each to fail, the document portal
+and gvfs about 10 ms; Nemo alone, no window at 24 s and one at 27 s,
+and with a runtime folder of its own, one by 3 s. `file_manager` now
+gives each file manager such a folder. The native app suite holds `held` and `localRead` over a
+read of 40,000 bytes, its end among them (621); it fails with the same
+planted fault.

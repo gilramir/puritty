@@ -115,7 +115,7 @@ def host_listing(there, files):
 
 
 def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), sftp=True, shell=False, before=None, big=False, size=4 << 30,
-                  wait=3, drop=None, osc7=None, client="built-in"):
+                  noise=False, wait=3, drop=None, osc7=None, client="built-in"):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     files = home / "files"
@@ -123,7 +123,13 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
     if big:
         # one file, 4 GiB of a hole, long enough to send that it is cancelled
         with open(files / "big.bin", "wb") as f:
-            f.truncate(size)
+            if noise:
+                # bytes that differ piece from piece, so that one sent from
+                # the wrong offset shows (ST20, FT45); a hole would not
+                import random
+                f.write(random.Random(20).randbytes(size))
+            else:
+                f.truncate(size)
     else:
         for n in ["a plain.txt", "it's $HOME.txt", "한글 이름.txt"]:
             (files / n).write_text("x\n")
@@ -193,7 +199,7 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
         time.sleep(1.5)
         shot = [sys.executable, str(ROOT / "probes" / "xdnd" / "shot.py")]
         subprocess.run(shot + [str(home / "before.png")], env=env)
-        x, y = (253, 120) if big else NEMO[items[0]]
+        x, y = NEMO["folder"] if big else NEMO[items[0]]
         xdo(env, "mousemove", x, y)
         xdo(env, "click", 1)
         for it in items[1:]:
@@ -291,7 +297,14 @@ def file_manager(cmd, env):
     its own, so that `ended` can stop the session's bus and the gvfs
     daemons it starts with it: killing `dbus-run-session` alone leaves them
     running, each holding inotify instances, until the user's 128 are gone
-    and `zola serve` cannot start (seen 2026-11-21, 404 sets left)."""
+    and `zola serve` cannot start (seen 2026-11-21, 404 sets left).
+
+    Its XDG_RUNTIME_DIR is a folder of its own: under the user's, the
+    session's gnome-keyring-daemon finds the desktop's and leaves
+    `org.freedesktop.secrets` unowned on the private bus, the desktop
+    portal waits on it, and GTK's start waits on the portal, so Nemo's
+    window came 25 s late, after the screenshot (2026-11-25, sftp.md FT45)."""
+    env = dict(env, XDG_RUNTIME_DIR=tempfile.mkdtemp(prefix="fm-"))
     return subprocess.Popen(["dbus-run-session", "--", *cmd], env=env, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
 
@@ -452,6 +465,13 @@ def main():
          # another tab shown while one sends (FT26; 2 GiB, which a shown tab
          # does not finish in the two seconds before the switch, FT27): the sending goes on in
          # its own session, its tab marked, and its end said with its name
+         # a file of many pieces, by SFTP and by the shell: every piece
+         # from where it belongs, the window's reads 256 KiB at a time and
+         # each piece 32 KiB (ST20, FT45)
+         ("pieces-sftp", lambda: run_tmux_case(env, "pieces-sftp", (950, 300), keys, tmux=False, items=("big",), big=True, size=5000003,
+                                               noise=True, after=TO_HOST, wait=10)),
+         ("pieces-shell", lambda: run_tmux_case(env, "pieces-shell", (760, 250), keys, items=("big",), big=True, size=5000003,
+                                                noise=True, sftp=False, shell=True, drop="allow", wait=20)),
          ("switch-tab", lambda: run_tmux_case(env, "switch-tab", (950, 300), keys, tmux=False, items=("big",), big=True, size=2 << 30,
                                               after=TO_HOST + ["sleep:2", "ctrl+shift+t", "sleep:3"], wait=30))]
     try:

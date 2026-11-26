@@ -209,6 +209,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: each `ReadPiece` is `File.withHandle … seek … readUpTo 32768`. `File.read` answers up to 65,536 bytes, so `readUpTo` gets 64 KiB, slices off the first 32 KiB and drops the rest, which the next piece reads again after a new open and seek. Every byte of the file is read twice and there are four system calls a piece. This is the per-chunk path of every upload; on Windows each open also passes the virus scanner's filter.
 - Scenario: a 4 GiB upload: 131,072 opens and 8 GiB read. FT17 measured 320 MB/s on Linux to a local sshd, so it is not the limit there; on Windows it may be.
 - Fix: keep one handle per file being sent (opened at the first piece, closed on `Done`/`Failed`/cancel), and ask for pieces of the size `File.read` gives, or carry the unused half to the next piece.
+- Fixed: 2026-11-25, `docs/sftp.md` FT45. The window reads 256 KiB a time and `Sending` keeps what is past the piece for the next (`held`, `readAhead`): one open in eight. Measured 1 GiB: Linux 488–522 → 229–245 ms, Windows 3.0–4.2 → 1.6–1.7 s. `drop.py` `pieces-sftp`/`pieces-shell` (random bytes); native app test.
 
 ### ST21 · A batch that has shown no progress cannot be cancelled, and nothing times it out
 - Where: app/src/Sending.geng:500-546 (`progressText` is `Nothing` until a `Progress`); app/src/Main.geng:4902-4937, 6979-6984, 8392-8398; packages/ssh/src/Ssh/Transfer.geng:177-183 (`Starting`)
