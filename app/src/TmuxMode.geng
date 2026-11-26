@@ -10083,17 +10083,21 @@ themedStatus theme raw =
     let
         t =
             Style.themed theme
+
+        -- expanded text: theme names only inside its #[…] (review TP14)
+        tx =
+            Style.themedText theme
     in
     { raw
-        | left = t raw.left
-        , right = t raw.right
+        | left = tx raw.left
+        , right = tx raw.right
         , style = t raw.style
-        , separator = t raw.separator
-        , windows = Dict.map (\_ w -> { w | text = t w.text, style = t w.style }) raw.windows
+        , separator = tx raw.separator
+        , windows = Dict.map (\_ w -> { w | text = tx w.text, style = t w.style }) raw.windows
         , borderStyle = t raw.borderStyle
-        , panes = Dict.map (\_ q -> { q | title = t q.title, border = t q.border, style = t q.style }) raw.panes
+        , panes = Dict.map (\_ q -> { q | title = tx q.title, border = t q.border, style = t q.style }) raw.panes
         , options = Dict.map (\_ v -> t v) raw.options
-        , extra = Dict.map (\_ v -> t v) raw.extra
+        , extra = Dict.map (\_ v -> tx v) raw.extra
     }
 
 
@@ -16096,7 +16100,7 @@ drawTree theme colors tmuxLook version place t =
                     [ { text = l.key ++ l.branch, color = ink "fg=themelightgrey" } ]
                         ++ symbolPieces
                         ++ [ { text = l.name, color = ink base }, { text = ": ", color = ink "fg=themelightgrey" } ]
-                        ++ (Style.runs (Style.apply (Style.themed theme base) Style.plain) (Style.themed theme l.text) |> Array.map (\run -> { text = run.text, color = Style.sgr run.style }))
+                        ++ (Style.runs (Style.apply (Style.themed theme base) Style.plain) (Style.themedText theme l.text) |> Array.map (\run -> { text = run.text, color = Style.sgr run.style }))
             in
             if i == t.selected then
                 [ { row = rowAt, col = place.x, color = colors.mode, text = clipCells place.w l.plain } ]
@@ -16726,7 +16730,7 @@ drawInfo theme colors tmuxLook area pv =
                             { col = acc.col + cellCount cut, out = Array.pushLast { row = area.y + j, col = area.x + acc.col, color = Style.sgr r.style, text = cut } acc.out }
                     )
                     { col = 0, out = [] }
-                    (Style.runs Style.plain (Style.themed theme line))
+                    (Style.runs Style.plain (Style.themedText theme line))
                 ).out
 
             else

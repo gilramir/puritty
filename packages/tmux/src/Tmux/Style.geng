@@ -11,6 +11,7 @@ module Tmux.Style exposing
     , terminalTheme
     , themeNames
     , themed
+    , themedText
     )
 
 {-| tmux's styles (tmux(1) STYLES), as much as puritty needs to draw a
@@ -189,6 +190,34 @@ themed theme text =
         text
 
 
+{-| `themed` for text a format expanded, which holds window names, pane
+titles and commands besides its styles: only what is inside a `#[…]` is
+a style, so only there are theme names written as the theme's colors; a
+window named `themeblack` keeps its name (the code review's TP14). A
+`#[` with no `]` after it is left as it is. -}
+themedText : Array String -> String -> String
+themedText theme text =
+    if String.contains "theme" text then
+        String.split "#[" text
+            |> Array.indexedMap
+                (\i part ->
+                    if i == 0 then
+                        part
+
+                    else
+                        when String.firstIndexOf "]" part is
+                            Just end ->
+                                "#[" ++ themed theme (String.takeFirst end part) ++ String.dropFirst end part
+
+                            Nothing ->
+                                meant Reason.FromOutside ("#[" ++ part)
+                )
+            |> String.join ""
+
+    else
+        text
+
+
 {-| Whether tmux takes a word as a color, other than a theme name
 (`colour_fromstring`). -}
 isColor : String -> Bool
@@ -244,48 +273,73 @@ color base name1 =
                 _ ->
                     Nothing
 
+        digits n =
+            if String.count n == 1 && n >= "0" && n <= "7" then
+                String.toInt n
+
+            else if String.count n == 2 && n >= "90" && n <= "97" then
+                String.toInt n |> Maybe.map (\v -> v - 90 + 60)
+
+            else
+                Nothing
+
         hex s =
             String.toArray (String.toLower s)
                 |> Array.foldl (\c acc -> Maybe.andThen (\v -> Maybe.map (\d -> v * 16 + d) (hexDigit c)) acc) (Just 0)
     in
-    if String.startsWith "bright" name then
-        Maybe.map (\i -> String.fromInt (base + 60 + i)) (named (String.dropFirst 6 name)) |> Maybe.withDefault (meant Reason.NotKnown "")
+    -- tmux's 0 to 7 and 90 to 97 (colour_fromstring), plain or bright
+    when digits name0 is
+        Just n ->
+            String.fromInt (base + n)
 
-    else if String.startsWith "colour" name || String.startsWith "color" name then
-        String.toInt
-            (String.dropFirst
-                (if String.startsWith "colour" name then
-                    6
+        Nothing ->
+            meant Reason.NotKnown
+                if String.startsWith "bright" name then
+                    Maybe.map (\i -> String.fromInt (base + 60 + i)) (named (String.dropFirst 6 name)) |> Maybe.withDefault (meant Reason.NotKnown "")
 
-                 else
-                    5
-                )
-                name
-            )
-            |> Maybe.map (\n -> String.fromInt (base + 8) ++ ";5;" ++ String.fromInt n)
-            |> Maybe.withDefault (meant Reason.FromOutside "")
+                else if String.startsWith "colour" name || String.startsWith "color" name then
+                    String.toInt
+                        (String.dropFirst
+                            (if String.startsWith "colour" name then
+                                6
 
-    else if String.startsWith "#" name && String.count name == 7 then
-        when { r = hex (String.slice 1 3 name), g = hex (String.slice 3 5 name), b = hex (String.slice 5 7 name) } is
-            { r = Just r, g = Just g, b = Just b } ->
-                String.fromInt (base + 8) ++ ";2;" ++ String.fromInt r ++ ";" ++ String.fromInt g ++ ";" ++ String.fromInt b
+                             else
+                                5
+                            )
+                            name
+                        )
+                        |> Maybe.andThen
+                            (\n ->
+                                -- strtonum (…, 0, 255): colour256 or colour-5 is no color
+                                if n >= 0 && n <= 255 then
+                                    Just (String.fromInt (base + 8) ++ ";5;" ++ String.fromInt n)
 
-            _ ->
-                ""
+                                else
+                                    Nothing
+                            )
+                        |> Maybe.withDefault (meant Reason.FromOutside "")
 
-    else
-        when named name is
-            Just i ->
-                String.fromInt (base + i)
+                else if String.startsWith "#" name && String.count name == 7 then
+                    when { r = hex (String.slice 1 3 name), g = hex (String.slice 3 5 name), b = hex (String.slice 5 7 name) } is
+                        { r = Just r, g = Just g, b = Just b } ->
+                            String.fromInt (base + 8) ++ ";2;" ++ String.fromInt r ++ ";" ++ String.fromInt g ++ ";" ++ String.fromInt b
 
-            Nothing ->
-                meant Reason.NotKnown
-                    when Tmux.ColorNames.rgb name is
-                        Just v ->
-                            String.fromInt (base + 8) ++ ";2;" ++ String.fromInt (v // 0x10000) ++ ";" ++ String.fromInt (modBy 0x100 (v // 0x100)) ++ ";" ++ String.fromInt (modBy 0x100 v)
+                        _ ->
+                            ""
+
+                else
+                    when named name is
+                        Just i ->
+                            String.fromInt (base + i)
 
                         Nothing ->
-                            meant Reason.NotKnown ""
+                            meant Reason.NotKnown
+                                when Tmux.ColorNames.rgb name is
+                                    Just v ->
+                                        String.fromInt (base + 8) ++ ";2;" ++ String.fromInt (v // 0x10000) ++ ";" ++ String.fromInt (modBy 0x100 (v // 0x100)) ++ ";" ++ String.fromInt (modBy 0x100 v)
+
+                                    Nothing ->
+                                        meant Reason.NotKnown ""
 
 
 hexDigit : Char -> Maybe Int

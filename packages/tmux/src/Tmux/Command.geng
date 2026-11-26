@@ -501,7 +501,7 @@ listSessions format =
 {-| `show-options -gv NAME`. -}
 globalValue : String -> String
 globalValue name =
-    render globalValueShape [ name ]
+    render globalValueShape [ quoteName name ]
 
 
 {-| `show-prompt-history -T TYPE`. -}
@@ -778,14 +778,14 @@ movePane target x y =
 {-| `set-option -p -t PANE NAME VALUE`: a pane's own option. -}
 setPaneOption : String -> String -> String -> String
 setPaneOption pane name value =
-    render setPaneShape [ quote pane, name, quote value ]
+    render setPaneShape [ quote pane, quoteName name, quote value ]
 
 
 {-| `set-option -p -F NAME FORMAT`: the current pane's option, the format
 expanded. -}
 setPaneFormat : String -> String -> String
 setPaneFormat name format =
-    render setPaneFormatShape [ name, quote format ]
+    render setPaneFormatShape [ quoteName name, quote format ]
 
 
 {-| `set-option -p NAME FORMAT`: the current pane's option, the format
@@ -796,7 +796,7 @@ running a `#()` that a pane's title put there (the code review's TB4,
 puritty `docs/tmux.md` TM121). -}
 setPaneFormatUnexpanded : String -> String -> String
 setPaneFormatUnexpanded name format =
-    render setPaneUnexpandedShape [ name, quote format ]
+    render setPaneUnexpandedShape [ quoteName name, quote format ]
 
 
 {-| `if-shell -F -t PANE CONDITION { COMMANDS }`, the commands given as
@@ -1516,7 +1516,30 @@ listPanes =
 
 
 {-| A word for tmux's command line, single-quoted: tmux takes nothing in
-single quotes as special, and `'` itself is ended, escaped and begun. -}
+single quotes as special, and `'` itself is ended, escaped and begun.
+Text holding a line end (LF or CR) or a NUL is written double-quoted as
+`quoteBytes` writes it instead, `\n` and all: control mode reads a
+command a line, so in single quotes a line end would end the line inside
+the quote and tmux would run what followed it as a command of its own,
+and a NUL would cut the line short (the code review's TP12). A tab or an
+Escape stays inside the single quotes, where tmux keeps it as it is; the
+list formats use the tab as their field separator. -}
 quote : String -> String
 quote s =
-    "'" ++ String.replace "'" "'\\''" s ++ "'"
+    if String.any (\c -> c == '\n' || c == '\r' || Char.toCode c == 0) s then
+        quoteBytes (Bytes.fromString s)
+
+    else
+        "'" ++ String.replace "'" "'\\''" s ++ "'"
+
+
+{-| An option's name as a word: bare when it is only what option names
+are made of (letters, digits, `-`, `_` and a user option's `@`), as
+every name puritty passes is, and through `quote` otherwise (TP12). -}
+quoteName : String -> String
+quoteName name =
+    if name /= "" && String.all (\c -> Char.isAlphaNum c || c == '-' || c == '_' || c == '@') name then
+        name
+
+    else
+        quote name

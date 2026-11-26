@@ -4837,3 +4837,106 @@ also runs `set-buffer` and says what the buffer holds: on 2.x,
 end) and `a;b` all arrive whole; with 3.x's quoting the model gives
 `select 1`, `a;` and the 1023 bytes then `y` (152). Not run against a
 real tmux 2.x.
+
+## TM130 · A word with a line end stays on its line (2026-11-26)
+
+The code review's TP12. Control mode is a command a line, and
+`Command.quote`, which every value puritty passes to tmux goes through,
+single-quoted it and escaped only `'`: a line end in a value ended the
+line inside the quote, and tmux ran the rest as a command of its own. No
+caller passes one today, but values come from prompt answers, the
+pane's screen (`@puritty_mouse_word`), buffer and client names and the
+clipboard. Now text holding LF, CR or NUL is written double-quoted, as
+`quoteBytes` writes a paste (TM94): `\n`, `\r`, `\t`, `\e`, octal for
+the rest, `"`, `\`, `$` and `~` escaped; other text is single-quoted as
+before. The option names `globalValue`, `setPaneOption`, `setPaneFormat`
+and `setPaneFormatUnexpanded` took bare go through `quoteName`: bare when
+the name is only letters, digits, `-`, `_` and `@`, as every name
+puritty passes is, and quoted otherwise.
+
+The first version double-quoted any control character and quoted every
+name. The app suite then failed 84 of 622 on all three targets: the list
+formats use a tab as their field separator, so every query's text
+changed, and TM69's recorded questions and the scenarios, which match a
+command by its text, no longer matched. A tab or an Escape inside single
+quotes is kept by tmux as it is, so only what ends or cuts the line
+switches the quoting, and the commands puritty sends today are the same
+bytes as before.
+
+**Measured**, tmux 3.4 and 3.8 under `tmux -C`: `set-option -g @tp12
+"a\nkill-server"`, what `quote` now writes, stores the two lines as the
+option's value (`show-options -gv` gives `a` and `kill-server`), and the
+server is still there. **Tested** (tmux suite, 153): a line end; a tab,
+a quote, `$`, Escape and CR together; a tab and Escape alone, still
+single-quoted; a `'`; a pane option whose value has CR LF; a
+`show-options` name holding a line end. The old `quote` wrote the line
+ends raw inside single quotes and the name bare (152 of 153).
+
+## TM131 · A color's number held to tmux's range, and its digit names (2026-11-26)
+
+The code review's TP15. `Style.color` took `colourN` and `colorN` for any
+number `String.toInt` read: `colour999` was drawn as `38;5;999`,
+`colour-5` as `38;5;-5`, and `isColor`, which customize mode asks, said
+yes to both. tmux's `colour_fromstring` (read in the 2.7 and 3.6a
+sources) takes N through `strtonum(…, 0, 255)`, so neither is a color
+there. It also takes `0` to `7` and `90` to `97` as the eight colors and
+their bright forms (`fg=1`, `bg=92`), which puritty dropped. Now N is
+held to 0..255 and the digit names are taken, compared before the
+`theme` prefix is dropped, as tmux compares them with `strcmp`.
+
+**Tested** (tmux suite, 154): `colour0` and `color255` are colors,
+`colour256`, `colour-5` and `colour999` are not, `7` and `97` are, `8`
+and `98` are not, and `fg=1 bg=92` draws as `fg=red bg=brightgreen`.
+The old `color` took all three numbers out of range, none of the digit
+names, and drew `fg=1 bg=92` as a plain reset (153 of 154).
+
+## TM132 · Theme names in expanded text only inside `#[…]` (2026-11-26)
+
+The code review's TP14. `Style.themed` (TM65) writes tmux 3.8's theme
+names as the client theme's colors by replacing the words in the whole
+string. That is right for a style option's value, which is all style,
+and wrong for text a format expanded, which holds window names, pane
+titles and commands besides its `#[…]`: a window named `themeblack` was
+shown in the status line and the tree as `gray5`. `Style.themedText`
+replaces only inside each `#[…]`, and leaves a `#[` with no `]` as it
+is. The status line's left, right, separator, window texts, pane titles
+and extra lines, the tree's rows and the tree's preview lines take it;
+the styles and the colour options keep `themed`.
+
+**Tested** (tmux suite, 155): in the dark theme
+`#[fg=themelightgrey]themeblack: use themered here#[fg=themegreen]y`
+gives `#[fg=gray70]themeblack: use themered here#[fg=yellowgreen]y`;
+text with no `#[` and an unclosed `#[fg=themered` are unchanged. The
+same three through the old `themed` gave `gray5: use indianred here`,
+`plain yellowgreen` and `#[fg=indianred` (154 of 155).
+
+## TM133 · tmux's escapes read as tmux reads them (2026-11-26)
+
+The code review's TP11. `Syntax.word`, which reads `list-keys` and
+`show-options` lines (customize mode's values and bindings, and `fill`'s
+templates), took the character after a `\` as itself. That is right for
+`\\`, `\"`, `\$` and `\;`, and wrong for the C-style escapes tmux prints a
+control character with: `"a\tb"` read as `atb`, and customize mode showed
+that and wrote it back. Now `Syntax.escapeOf` decodes them as tmux 3's
+`yylex_token_escape` does (read in the 3.6a source): `\a \b \e \f \n \r
+\s \t \v`, three octal digits whose first is 0 to 3, `\u` with four hex
+digits and `\U` with eight; anything else is itself. As in tmux, this
+holds outside single quotes, unquoted words too. Where tmux refuses a
+malformed octal or `\u`, the characters are taken as they are; an octal
+byte from 0x80 up is taken as the character with that code, not as a raw
+byte.
+
+What is written back can say them: since TM130, `Command.quote`
+double-quotes a line end, and leaves a tab, an Escape or a BEL inside
+single quotes.
+
+**Measured**, tmux 3.4 and 3.8 under `tmux -C`: `set-option -g @tp11
+'a<TAB>b<ESC>c<BEL>d'`, with the characters raw inside single quotes, is
+stored whole (3.8's `show-options -gv` gives the raw bytes), and
+`show-options -g @tp11` prints `@tp11 a\tb\033c\ad`, with escapes and no
+quotes, on both. **Tested** (tmux suite, 157): that line reads as
+`a<TAB>b<ESC>c<BEL>d`; a double-quoted word with `\t \e \n \s`, octal
+`\101`, `é` and `\U0001F600`; an unquoted `x\ty`; `'a\tb'` kept as
+it is in single quotes; `\\ \" \$`; and `\9`, a short `\u00zz` and
+`\400`, which are not escapes, taken as their characters. The old `word`
+read the double-quoted one as `atbens101u00e9U0001F600` (155 of 156).

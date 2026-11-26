@@ -131,8 +131,11 @@ SUITES = [
     # since TM123/TP2, TP3's 64 MiB reply and the customize filter (11-24,
     # the count left at 145 then); 149 since TP8: the text before a bare
     # backslash; 150 since TP6: a binding's spaces kept; 151 since TP10: a
-    # layout's depth bounded; 152 since TP7: a paste's ; on 2.x
-    Suite("tmux", 152, runs_of("packages/tmux/tests")),
+    # layout's depth bounded; 152 since TP7: a paste's ; on 2.x; 153 since
+    # TP12: a word with a line end kept on its line; 154 since TP15: colourN
+    # held to 0..255, the digit names; 155 since TP14: theme names in
+    # expanded text only inside #[…]; 157 since TP11: tmux's escapes decoded, two
+    Suite("tmux", 157, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since

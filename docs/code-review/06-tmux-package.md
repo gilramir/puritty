@@ -119,6 +119,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: after `\` the next character is taken as itself, which is right for `\\`, `\"`, `\$`, `\;`, and wrong for the C-style escapes `list-keys` and `show-options` print for control characters.
 - Scenario: an option or a binding argument holding a tab, a newline or ESC (`set -g @sep "a\tb"`; a status format with a literal ESC) is listed as `"a\tb"`; `Token.value` is `atb`. Customize mode shows that value, offers it as the prompt's first text, and Enter writes `atb` back. In `fill`, a template word that held such an escape and a `%%` is re-quoted from the wrong value.
 - Fix: decode `\a \b \e \f \n \r \s \t \v`, three octal digits and `\uXXXX`/`\UXXXXXXXX` in the double-quote branch as `yylex_token_escape` does, and make what is written back able to say them (a double-quoted word, as `quoteBytes` makes).
+- Fixed: 2026-11-26, `docs/tmux.md` TM133. `Syntax.escapeOf` decodes `\a \b \e \f \n \r \s \t \v`, octal, `\u` and `\U` outside single quotes as `yylex_token_escape`; written back by `quote` since TM130. Measured on tmux 3.4 and 3.8: `show-options` prints `a\tb\033c\ad` unquoted. Tmux suite tests.
 
 ### TP12 · `Command.quote` cannot say a newline and does not refuse one; three builders take an unquoted name
 - Where: packages/tmux/src/Tmux/Command.geng:1451-1453 (`quote`), :500-502 (`globalValue`), :769-778 (`setPaneOption`, `setPaneFormat` names)
@@ -128,6 +129,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: control mode is one command a line. `quote` single-quotes and escapes `'` only, so a `\n` in a value ends the line inside an open quote and the rest of the value is run by tmux as the next command. Every user- or pane-supplied word (prompt answers through `Syntax.fill`, `setOption` values, `@puritty_mouse_word`/`_line` from the pane's screen, buffer and client names, a popup's directory and command) depends on its caller never passing one.
 - Scenario: a later caller hands `quote` text with a line end (a multi-line value from customize mode's editor key, a clipboard string) and its tail is executed as a tmux command.
 - Fix: make the one quoting function safe by construction: write a value that holds LF (or CR, or any control byte) as a double-quoted word with `\n` (`quoteBytes` already does this), and quote the names in the three builders too.
+- Fixed: 2026-11-26, `docs/tmux.md` TM130. `quote` writes text holding LF, CR or NUL double-quoted as `quoteBytes` does (`\n` …), a tab or Escape single-quoted as before; option names go through `quoteName`, bare only when made of option-name characters. Measured on tmux 3.4 and 3.8: the value kept whole, no command run. Tmux suite test.
 
 ### TP13 · Outside tmux, every ESC in the terminal's output costs a 7-byte slice and compare; under tmux every `%output` is scanned once more, and an entry split across two is missed
 - Where: packages/tmux/src/Tmux/Control.geng:178-203 (`outside`), :656-674 (`startsControl`/`startsFrom`); callers app/src/Main.geng:3936, app/src/TmuxMode.geng:4077
@@ -145,6 +147,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: `themed` is `String.replace "themegreen" …` over the whole string. The app applies it to a format's expanded text, which holds window names, pane titles and commands.
 - Scenario: a window named `themeblack` or a pane titled `use themered here` is shown in the tree or status as `gray5` / `use indianred here` (dark theme).
 - Fix: resolve theme names where a color is parsed (`color` already strips the `theme` prefix: give it the theme table), not by text replacement.
+- Fixed: 2026-11-26, `docs/tmux.md` TM132. `Style.themedText` writes theme names as colors only inside `#[…]`; the app's expanded texts (status line, tree rows and preview) take it, styles keep `themed`. Tmux suite test.
 
 ### TP15 · `Style.color` takes `colourN` for any N and does not know tmux's digit names
 - Where: packages/tmux/src/Tmux/Style.geng:254-266, :218-245; `isColor` :194-200
@@ -153,6 +156,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - Confidence: confirmed for the range; plausible for the digit names (`colour_fromstring` from memory: `"0"`…`"7"` and `"90"`…`"97"` are the eight colors and their bright forms)
 - What: `colour999` and `colour-5` become `38;5;999` / `38;5;-5`, and `isColor` says yes where tmux's `strtonum(…, 0, 255)` says no. `fg=1` or `bg=92`, which tmux takes, give `""` here and the color is dropped.
 - Fix: hold N to 0..255, and add the digit names to `named`.
+- Fixed: 2026-11-26, `docs/tmux.md` TM131. `colourN`/`colorN` held to 0..255 as `strtonum` holds it; `0`–`7` and `90`–`97` taken as the colors and their bright forms, as `colour_fromstring` (read in the 2.7 and 3.6a sources). Tmux suite test.
 
 ### TP16 · `quoteFrom` builds each paste piece by appending to a String per byte, and slices per byte
 - Where: packages/tmux/src/Tmux/Command.geng:1119-1193

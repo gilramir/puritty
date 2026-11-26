@@ -172,7 +172,11 @@ word chars i st =
                     word chars (i + 1) { st | quote = ' ' }
 
                 else if c == '\\' then
-                    word chars (i + 2) { st | value = st.value ++ (Array.get (i + 1) chars |> Maybe.map String.fromChar |> Maybe.withDefault (meant Reason.FromOutside "")) }
+                    let
+                        e =
+                            escapeOf (Array.dropFirst (i + 1) chars)
+                    in
+                    word chars (i + e.width) { st | value = st.value ++ e.text }
 
                 else
                     word chars (i + 1) { st | value = st.value ++ String.fromChar c }
@@ -187,10 +191,146 @@ word chars i st =
                 word chars (i + 1) { st | quote = c }
 
             else if c == '\\' then
-                word chars (i + 2) { st | value = st.value ++ (Array.get (i + 1) chars |> Maybe.map String.fromChar |> Maybe.withDefault (meant Reason.FromOutside "")) }
+                let
+                    e =
+                        escapeOf (Array.dropFirst (i + 1) chars)
+                in
+                word chars (i + e.width) { st | value = st.value ++ e.text }
 
             else
                 word chars (i + 1) { st | value = st.value ++ String.fromChar c }
+
+
+{-| What a `\` stands for, given the characters after it, as tmux 3's
+`yylex_token_escape` reads it outside single quotes, and how many
+characters it takes, the `\` with them: `\a \b \e \f \n \r \s \t \v`,
+three octal digits, `\u` with four hex digits and `\U` with eight; any
+other character is itself (`\\`, `\"`, `\$`, `\;`). `list-keys` and
+`show-options` print a control character in a value with these (the code
+review's TP11). tmux refuses a malformed octal or `\u`; here its
+characters are taken as they are. An octal byte from 0x80 up is taken as
+the character with that code, not as a raw byte. -}
+escapeOf : Array Char -> (r : { text : String, width : Int } where 1 <= r.width && r.width <= 10)
+escapeOf after =
+    let
+        octal k =
+            octalDigit (Array.get k after)
+
+        -- the first of three octal digits, 0 to 3, so that they are a byte
+        lead k =
+            octal k
+                |> Maybe.andThen
+                    (\a ->
+                        if a <= 3 then
+                            Just a
+
+                        else
+                            Nothing
+                    )
+
+        hex n =
+            if Array.length after > n then
+                Array.slice 1 (n + 1) after
+                    |> Array.foldl (\c acc -> Maybe.andThen (\v -> Maybe.map (\d -> v * 16 + d) (hexValue c)) acc) (Just 0)
+                    |> Maybe.andThen Char.fromCode
+
+            else
+                Nothing
+    in
+    when Array.get 0 after is
+        Nothing ->
+            meant Reason.FromOutside { text = "", width = 1 }
+
+        Just c ->
+            when c is
+                'a' ->
+                    { text = "\u{0007}", width = 2 }
+
+                'b' ->
+                    { text = "\u{0008}", width = 2 }
+
+                'e' ->
+                    { text = "\u{001B}", width = 2 }
+
+                'f' ->
+                    { text = "\u{000C}", width = 2 }
+
+                'n' ->
+                    { text = "\n", width = 2 }
+
+                'r' ->
+                    { text = "\r", width = 2 }
+
+                's' ->
+                    { text = " ", width = 2 }
+
+                't' ->
+                    { text = "\t", width = 2 }
+
+                'v' ->
+                    { text = "\u{000B}", width = 2 }
+
+                'u' ->
+                    when hex 4 is
+                        Just u ->
+                            { text = String.fromChar u, width = 6 }
+
+                        Nothing ->
+                            meant Reason.FromOutside { text = "u", width = 2 }
+
+                'U' ->
+                    when hex 8 is
+                        Just u ->
+                            { text = String.fromChar u, width = 10 }
+
+                        Nothing ->
+                            meant Reason.FromOutside { text = "U", width = 2 }
+
+                _ ->
+                    when { first = lead 0, second = octal 1, third = octal 2 } is
+                        { first = Just a, second = Just b, third = Just d } ->
+                            { text = String.fromChar (Char.fromCodeProven (a * 64 + b * 8 + d)), width = 4 }
+
+                        _ ->
+                            { text = String.fromChar c, width = 2 }
+
+
+{-| An octal digit's value. -}
+octalDigit : Maybe Char -> Maybe (d : Int where 0 <= d && d <= 7)
+octalDigit given =
+    when given is
+        Just c ->
+            let
+                k =
+                    Char.toCode c
+            in
+            if k >= 0x30 && k <= 0x37 then
+                Just (k - 0x30)
+
+            else
+                Nothing
+
+        Nothing ->
+            meant Reason.NoMore Nothing
+
+
+hexValue : Char -> Maybe Int
+hexValue c =
+    let
+        k =
+            Char.toCode c
+    in
+    if k >= 0x30 && k <= 0x39 then
+        Just (k - 0x30)
+
+    else if k >= 0x61 && k <= 0x66 then
+        Just (k - 0x61 + 10)
+
+    else if k >= 0x41 && k <= 0x46 then
+        Just (k - 0x41 + 10)
+
+    else
+        Nothing
 
 
 {-| The commands of a line, split at its `;`s. -}

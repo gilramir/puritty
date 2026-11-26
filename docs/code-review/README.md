@@ -436,11 +436,11 @@ covered" sections. The larger gaps:
 | [TP8](06-tmux-package.md) | bug | confirmed | **fixed** `unescape` drops the text before a backslash that is not an escape |
 | [TP9](06-tmux-package.md) | bug | plausible | **checked, left** A notification that arrives inside a reply is kept as a reply line and never acted on |
 | [TP10](06-tmux-package.md) | security | plausible | **fixed** A layout's nesting depth is not bounded, and a split's box is not clamped as a pane's is |
-| [TP11](06-tmux-package.md) | inaccuracy | confirmed | Escapes inside double quotes are not decoded: `\n`, `\t`, `\e`, `\ooo`, `\u…` read as the letter or digits |
-| [TP12](06-tmux-package.md) | design | confirmed | `Command.quote` cannot say a newline and does not refuse one; three builders take an unquoted name |
+| [TP11](06-tmux-package.md) | inaccuracy | confirmed | **fixed** Escapes inside double quotes are not decoded: `\n`, `\t`, `\e`, `\ooo`, `\u…` read as the letter or digits |
+| [TP12](06-tmux-package.md) | design | confirmed | **fixed** `Command.quote` cannot say a newline and does not refuse one; three builders take an unquoted name |
 | [TP13](06-tmux-package.md) | efficiency | confirmed | Outside tmux, every ESC in the terminal's output costs a 7-byte slice and compare; under tmux every `%output` is scanned once more, and an entry split across two is missed |
-| [TP14](06-tmux-package.md) | bug | confirmed | `Style.themed` rewrites `theme…` words in expanded text, not only inside `#[…]` |
-| [TP15](06-tmux-package.md) | inaccuracy | confirmed | `Style.color` takes `colourN` for any N and does not know tmux's digit names |
+| [TP14](06-tmux-package.md) | bug | confirmed | **fixed** `Style.themed` rewrites `theme…` words in expanded text, not only inside `#[…]` |
+| [TP15](06-tmux-package.md) | inaccuracy | confirmed | **fixed** `Style.color` takes `colourN` for any N and does not know tmux's digit names |
 | [TP16](06-tmux-package.md) | efficiency | confirmed | `quoteFrom` builds each paste piece by appending to a String per byte, and slices per byte |
 | [TP17](06-tmux-package.md) | inaccuracy | plausible | An ESC that is not doubled inside a passthrough envelope is kept; tmux drops it |
 | [TP18](06-tmux-package.md) | efficiency | confirmed | `Customize.table` is rebuilt from its text on every call, and `Borders.cells` parses the two border styles once per border cell |

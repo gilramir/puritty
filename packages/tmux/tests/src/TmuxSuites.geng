@@ -683,6 +683,13 @@ command =
                         , Array.length (Command.pasteBytes False 0 { first = True, last = True } (Bytes.fromString (String.repeat 2000 "x")))
                         ]
           }
+        , { name = "a word with a line end stays on one line, double-quoted; a tab or an Escape single-quoted as before; a name that is not a plain option name quoted (review TP12)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\"a\\nkill-server\"", "\"x\\ty\\\"\\$z\\e\\r\"", "'x\ty\u{001B}'", "'it'\\''s'", "set-option -p -t '%1' @puritty_mouse_word \"one\\r\\ntwo\"", "show-options -g -v \"@a\\nkill-server\"" ]
+                        [ Command.quote "a\nkill-server", Command.quote "x\ty\"$z\u{001B}\r", Command.quote "x\ty\u{001B}", Command.quote "it's", Command.setPaneOption "%1" "@puritty_mouse_word" "one\r\ntwo", Command.globalValue "@a\nkill-server" ]
+          }
         , { name = "send-keys -H, the pane quoted"
           , test = \_ -> Expect.equal [ "send-keys -t '%3' -H 61 1b 0d" ] (Command.sendBytes 3 (bytes [ 0x61, 0x1B, 0x0D ]))
           }
@@ -1224,6 +1231,16 @@ syntax =
                     Expect.equal [ [ "copy-mode", "-q" ], [ "set-buffer", "x y" ] ]
                         (Syntax.commands (Syntax.tokens "copy-mode -q; set-buffer \"x y\"") |> Array.map (Array.map .value))
           }
+        , { name = "a \\ outside single quotes is tmux's escape: \\t, \\e, \\n, \\s, octal, \\u and \\U decoded; any other character itself (review TP11)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "set", "-g", "@sep", "a\tb\u{001B}\n A\u{00E9}\u{1F600}", "x\ty", "a\\tb", "\\\"$", "9x", "u00zz", "400" ]
+                        (Syntax.tokens "set -g @sep \"a\\tb\\e\\n\\s\\101\\u00e9\\U0001F600\" x\\ty 'a\\tb' \"\\\\\\\"\\$\" \"\\9x\" \"\\u00zz\" \"\\400\"" |> Array.map .value)
+          }
+        , { name = "a value show-options prints with escapes and no quotes, as tmux 3.4 and 3.8 print a tab, an Escape and a BEL, reads as the value (review TP11)"
+          , test = \_ -> Expect.equal [ "@tp11", "a\tb\u{001B}c\u{0007}d" ] (Syntax.tokens "@tp11 a\\tb\\033c\\ad" |> Array.map .value)
+          }
         ]
 
 
@@ -1286,11 +1303,32 @@ style =
                         , Style.themed Style.darkTheme "fg=red"
                         ]
           }
+        , { name = "in expanded text only a #[…] has its theme names written as colors: a window named themeblack keeps its name (review TP14)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "#[fg=gray70]themeblack: use themered here#[fg=yellowgreen]y", "plain themegreen", "#[fg=themered" ]
+                        [ Style.themedText Style.darkTheme "#[fg=themelightgrey]themeblack: use themered here#[fg=themegreen]y"
+                        , Style.themedText Style.darkTheme "plain themegreen"
+                        , Style.themedText Style.darkTheme "#[fg=themered"
+                        ]
+          }
         , { name = "what tmux takes as a color (TM65)"
           , test =
                 \_ ->
                     Expect.equal [ True, True, True, True, False, False ]
                         (Array.map Style.isColor [ "darkgoldenrod", "colour236", "#b8860b", "default", "notacolor", "gray101" ])
+          }
+        , { name = "colourN only from 0 to 255; 0 to 7 and 90 to 97 are the colors and their bright forms, as colour_fromstring (review TP15)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { taken = [ True, True, False, False, False, True, True, False, False ]
+                        , sgr = Style.sgr (Style.apply "fg=1 bg=92" Style.plain)
+                        }
+                        { taken = Array.map Style.isColor [ "colour0", "color255", "colour256", "colour-5", "colour999", "7", "97", "8", "98" ]
+                        , sgr = Style.sgr (Style.apply "fg=red bg=brightgreen" Style.plain)
+                        }
           }
         ]
 
