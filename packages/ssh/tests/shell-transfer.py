@@ -102,7 +102,8 @@ def nix_shell(name):
     """A shell from nixpkgs, for a host whose login shell is not sh-like."""
     out = subprocess.run(["nix", "build", "--impure", "--no-link", "--print-out-paths", f"nixpkgs#{name}"],
                          capture_output=True, text=True, check=True)
-    return out.stdout.split()[0] + "/bin/" + name
+    # the output that holds it: bash's first is its manual
+    return next(p + "/bin/" + name for p in out.stdout.split() if os.path.exists(p + "/bin/" + name))
 
 
 def login_shell(name):
@@ -130,6 +131,12 @@ CASES = [(name, setup, True, []) for name, setup in transfer.CASES if name != "r
     ("quotes-and-backslashes-tcsh", c_quotes_and_backslashes, True, login_shell("tcsh")),
     ("odd-names-fish", c_odd_names, True, login_shell("fish")),
     ("odd-names-tcsh", c_odd_names, True, login_shell("tcsh")),
+    # and under dash and bash, the sh of Debian's hosts and the login shell
+    # of most (the code review's ST27)
+    ("quotes-and-backslashes-dash", c_quotes_and_backslashes, True, login_shell("dash")),
+    ("quotes-and-backslashes-bash", c_quotes_and_backslashes, True, login_shell("bash")),
+    ("odd-names-dash", c_odd_names, True, login_shell("dash")),
+    ("odd-names-bash", c_odd_names, True, login_shell("bash")),
     # a host whose startup files print a line before every command, as a
     # chatty .bashrc does: the name's number is still read (the code
     # review's ST16)

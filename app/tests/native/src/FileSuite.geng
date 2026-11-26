@@ -20,6 +20,7 @@ import Schema
 import Sending
 import SettingsFile
 import Ssh.Connection as Connection
+import Ssh.Session as Session
 import Ssh.Transfer
 import Task
 import Test.Runner.UnitNode as U
@@ -210,6 +211,39 @@ settingsFile =
                             , otherJob = lengthOf (Sending.held { job = 4, offset = Int64.fromInt 32768, length = 32768 } first)
                             , otherOffset = lengthOf (Sending.held { job = 3, offset = Int64.fromInt 0, length = 32768 } first)
                             , atEnd = lengthOf (Sending.held { job = 3, offset = Int64.fromInt 40000, length = 32768 } last)
+                            }
+                        )
+                )
+            , U.test "an SFTP stream that breaks ends the batch once, as a failure, its channel closed once (review ST27, ST1)"
+                (\_ ->
+                    let
+                        begun =
+                            Sending.begin { ref = 10, tab = 1, folder = Bytes.fromString "/tmp", jobs = [ Ssh.Transfer.MakeDir { path = Bytes.fromString "/tmp/a" } ], refused = [], allowShell = False, ms = 0 }
+
+                        -- a packet of no bytes: not SFTP; the transfer says
+                        -- Broken, then Finished
+                        step =
+                            Sending.side { ref = 10, event = Connection.Output (Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0, 0, 0, 0 ])) } begun.sending
+
+                        closes =
+                            step.out
+                                |> Array.keepIf
+                                    (\o ->
+                                        when o is
+                                            Sending.Input (Session.SideClose 10) ->
+                                                True
+
+                                            _ ->
+                                                False
+                                    )
+                                |> Array.length
+                    in
+                    Task.succeed
+                        (Expect.equal { over = True, saysBroken = True, closes = 1, failed = 1 }
+                            { over = Sending.isOver step.sending
+                            , saysBroken = step.sending.over |> Maybe.map (String.contains "stopped making sense") |> Maybe.withDefault False
+                            , closes = closes
+                            , failed = Array.length step.sending.failed
                             }
                         )
                 )

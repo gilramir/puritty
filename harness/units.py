@@ -219,8 +219,9 @@ SUITES = [
         # folder that can't be read; 618 since ST19: a channel not opened
         # is not SFTP turned off; 619 since ST24: the picker after its SFTP
         # broke; 620 since ST21: a batch not started shown; 621 since ST20:
-        # a read's extra bytes answer the next piece
-        621,
+        # a read's extra bytes answer the next piece; 622 since ST27: a
+        # broken SFTP stream ends the batch once
+        622,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

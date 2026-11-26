@@ -414,7 +414,7 @@ covered" sections. The larger gaps:
 | [ST8](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A side channel closed while it is still opening is never closed: quick Esc in the folder chooser leaks a server session each time |
 | [ST9](05-ssh-session-transfer.md) | bug | confirmed | **fixed** `Sending.owns` claims every later side channel while a shell transfer runs |
 | [ST10](05-ssh-session-transfer.md) | inaccuracy | confirmed | **in part** `ConnectTimeout` is read and ignored, and nothing is read from the window while connecting |
-| [ST11](05-ssh-session-transfer.md) | security | plausible | Nothing holds the server back when the window reads slower than the network: output queues without bound |
+| [ST11](05-ssh-session-transfer.md) | security | plausible | **fixed** Nothing holds the server back when the window reads slower than the network: output queues without bound |
 | [ST12](05-ssh-session-transfer.md) | bug | plausible | **fixed** The link is not closed when the loop ends by an error, and an agent's socket is never closed |
 | [ST13](05-ssh-session-transfer.md) | bug | confirmed | **fixed** The keepalive timer starts again on every turn of the loop, so a dead link is not noticed while anything else happens |
 | [ST14](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A second `SSH_FXP_VERSION` restarts the transfer's checks in the middle of a batch |
@@ -430,7 +430,7 @@ covered" sections. The larger gaps:
 | [ST24](05-ssh-session-transfer.md) | bug | confirmed | **in part** After the picker's SFTP stream breaks, later requests wait for ever; and a listing cannot be abandoned |
 | [ST25](05-ssh-session-transfer.md) | bug | confirmed | **fixed** A changed key's rewrite of `known_hosts` goes through lossy UTF-8 and a new file |
 | [ST26](05-ssh-session-transfer.md) | design | confirmed | **fixed** An unreadable folder inside a drop is made on the host empty, with nothing said |
-| [ST27](05-ssh-session-transfer.md) | test-gap | confirmed | No test drives `Sending`, and the shell fallback's quoting is tested under one login shell |
+| [ST27](05-ssh-session-transfer.md) | test-gap | confirmed | **fixed** No test drives `Sending`, and the shell fallback's quoting is tested under one login shell |
 | [TP6](06-tmux-package.md) | bug | confirmed | `Bindings.bindingOf` rebuilds a binding's command from space-split words, so runs of spaces inside its quoted arguments collapse |
 | [TP7](06-tmux-package.md) | bug | plausible | `Command.pasteBytes` on tmux 2.x loses a `;` that ends a piece |
 | [TP8](06-tmux-package.md) | bug | confirmed | `unescape` drops the text before a backslash that is not an escape |

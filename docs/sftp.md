@@ -2535,3 +2535,26 @@ and with a runtime folder of its own, one by 3 s. `file_manager` now
 gives each file manager such a folder. The native app suite holds `held` and `localRead` over a
 read of 40,000 bytes, its end among them (621); it fails with the same
 planted fault.
+
+## FT46 · The code review's ST27: what was left of the test gaps (2026-11-26)
+
+ST27 named three gaps. Where they stand:
+
+- **`Sending`, the module between the engines and the window**, had no
+  test of its own. It has since gained native app tests for `owns` (ST9),
+  the shell only on a refused subsystem (ST19, FT42), a batch not yet
+  started (ST21, FT44), the read-ahead (ST20, FT45) and an unreadable
+  folder (ST26); `harness/drop.py` drives it through the window and pins
+  its summaries' words. New: an SFTP stream that breaks while the batch
+  starts ends it once, as a failure that says so, its channel closed
+  once; with `finish`'s once-only check taken out, the channel is closed
+  twice and the test fails (622).
+- **The SFTP parser's hostile cases**: a count of a million names in 120
+  bytes was already refused; a second version (ST14) and a packet that
+  comes a byte at a time (ST15) gained tests with their fixes.
+- **The shell fallback under one login shell**: fish and tcsh came with
+  FT34. `shell-transfer.py` adds dash and bash, the `quotes-and-
+  backslashes` and `odd-names` cases under each; every file arrives as
+  under fish. Its `nix_shell` took the first path `nix build` printed,
+  which for bash is its manual, with no `bin/bash`: the session ended
+  with nothing sent. It now takes the output that holds the shell.

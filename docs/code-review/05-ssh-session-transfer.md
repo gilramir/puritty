@@ -123,6 +123,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: channel data is emitted to the `notices` source, which does not wait for its reader, and the channel's window is given back as soon as half of it has arrived, not when the window has drawn it. docs/sftp.md has back-pressure for side channels' writes (FT17) but nothing for the session's output. The same holds for a jump host's `toInner` source (Session.geng:1298-1299).
 - Scenario: `cat` of a multi-gigabyte file, `yes`, or a hostile server, on a LAN where decrypting is faster than the terminal parses and draws. The queue of `Output` notices grows by the difference for as long as it lasts; Ctrl-C is answered only after the backlog is drawn.
 - Fix: count bytes emitted and not yet taken by the window (the window acknowledging through an input, or a bounded source) and stop reading the link, or hold back `WINDOW_ADJUST`, past a few megabytes.
+- Fixed: Earlier, 2026-11-23, by `docs/ssh-client.md` SC35 (the review's SC2/MA10, the same defect): the session's window is given back only for output the window has read (`Session.Taken`, `Connection.taken`), data past the window dropped (`Connection.within`); at most 2 MiB waits. A jump host carries no more than the inner session's window. Checked 2026-11-26 against the code; `sshd.py` `flow-taken` and the held-output case test it.
 
 ### ST12 · The link is not closed when the loop ends by an error, and an agent's socket is never closed
 - Where: packages/ssh/src/Ssh/Session.geng:308-328 (`run`, `through`: `st.link.close` only on the success path), 532-579 (`agentOf`, `linkTo`), 380-385
@@ -299,3 +300,4 @@ error (`geng-lang/docs/jvm.md:56`).
 - `Backend.geng`'s OpenSSH `ControlMaster` side channels (FT31) beyond the built-in client's part.
 - How `Main` uses PuTTY sessions as hosts (`SettingsProgram.geng`), e.g. whether a `ProxyHost` naming another session resolves when that session is not yet a host of the settings.
 - Nothing was built or run: findings marked plausible (fish/csh parsing, stack depth, socket finalizers, output back-pressure) want a small reproduction before a fix.
+- Fixed: 2026-11-26, `docs/sftp.md` FT46. `Sending`: native tests since ST9/19/20/21/26, `drop.py` end to end, and a broken stream ending the batch once (622). SFTP parser: a million-name count, a second version (ST14), a byte-a-time packet (ST15) all tested. Shell fallback: dash and bash login shells added to fish and tcsh.
