@@ -1,4 +1,4 @@
-module Tmux27 exposing (Delivered(..), deliver, utf8)
+module Tmux27 exposing (Delivered(..), buffered, deliver, utf8)
 
 {-| What tmux 2.7 writes to a pane for `send-keys` command lines, read from
 its source (puritty `docs/tmux-checks.md` TK3): a control client's line
@@ -85,6 +85,65 @@ line text =
                         )
                         (Wrote [])
                         cmds
+
+
+{-| What a paste's lines leave in its buffer, as 2.7 runs them: each
+line split and cut into commands as for `send-keys`, `set-buffer -b NAME
+DATA` starting the buffer and `set-buffer -a -b NAME DATA` adding to it
+(cmd-set-buffer.c), `paste-buffer` passed over; `Nothing` for a line
+refused, not modeled, or a command that is neither (the code review's
+TP7: a `;` cut off a word's end leaves a command of its own). -}
+buffered : Array String -> Maybe (Array Int)
+buffered lines =
+    Array.foldl (\l acc -> Maybe.andThen (bufferLine l) acc) (Just []) lines
+
+
+bufferLine : String -> Array Int -> Maybe (Array Int)
+bufferLine text buffer =
+    when split (ints (Bytes.fromString text)) is
+        Words words ->
+            commands words
+                |> Maybe.andThen (\cmds -> Array.foldl (\cmd acc -> Maybe.andThen (setBuffer cmd) acc) (Just buffer) cmds)
+
+        Refused ->
+            Nothing
+
+        NotModeled _ ->
+            Nothing
+
+
+setBuffer : Array (Array Int) -> Array Int -> Maybe (Array Int)
+setBuffer cmd buffer =
+    let
+        word t =
+            ints (Bytes.fromString t)
+    in
+    when cmd is
+        [ name, b, _, data ] ->
+            if name == word "set-buffer" && b == word "-b" then
+                Just data
+
+            else
+                Nothing
+
+        [ name, a, b, _, data ] ->
+            if name == word "set-buffer" && a == word "-a" && b == word "-b" then
+                Just (buffer ++ data)
+
+            else
+                Nothing
+
+        _ ->
+            when Array.first cmd is
+                Just first ->
+                    if first == word "paste-buffer" then
+                        Just buffer
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
 
 
 {-| A string's bytes as numbers. -}

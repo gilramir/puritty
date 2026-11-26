@@ -1089,9 +1089,16 @@ after the first), then on its last piece `paste-buffer -p -r -d` into the
 pane, so that tmux brackets it where the program asked for bracketed
 paste, which tmux knows and puritty may not (3.6), keeps its line ends as
 they are (`-r`), as a tmux client passes a paste on, and drops the buffer.
-The first piece starts the buffer again; an empty paste makes nothing. -}
-pasteBytes : Int -> { first : Bool, last : Bool } -> Bytes -> Array String
-pasteBytes pane piece bytes =
+The first piece starts the buffer again; an empty paste makes nothing.
+
+`twoX`: this tmux reads commands as 2.x does (no `send-keys -H`, which
+came with 3.0's parser). Its `cmd_list_parse` takes a word whose text
+ends in `;` as two commands and drops the `;`, unless a `\` comes before
+it, when the two are a `;`: a piece ending in `;` is written so that its
+text ends `\;` (the code review's TP7, where `select 1;` was pasted as
+`select 1`). -}
+pasteBytes : Bool -> Int -> { first : Bool, last : Bool } -> Bytes -> Array String
+pasteBytes twoX pane piece bytes =
     let
         count =
             Bytes.length bytes
@@ -1111,7 +1118,7 @@ pasteBytes pane piece bytes =
                          else
                             setBufferAppend
                         )
-                        [ "puritty-paste", quoteBytes chunk ]
+                        [ "puritty-paste", quotePiece twoX chunk ]
                 )
                 chunks
 
@@ -1123,6 +1130,22 @@ pasteBytes pane piece bytes =
                 []
     in
     sets ++ pasted
+
+
+{-| A paste's piece as `quoteBytes` writes it; on a 2.x tmux one that
+ends in `;` ends `\\;` inside the quotes, which 2.x's parser reads as
+`\;` and `cmd_list_parse` then as `;`. -}
+quotePiece : Bool -> Bytes -> String
+quotePiece twoX chunk =
+    let
+        n =
+            Bytes.length chunk
+    in
+    if twoX && n > 0 && Bytes.slice (n - 1) n chunk == Bytes.fromString ";" then
+        "\"" ++ quoteFrom chunk 0 (n - 1) "" ++ "\\\\;\""
+
+    else
+        quoteBytes chunk
 
 
 {-| Bytes as one double-quoted word of tmux's syntax, which keeps them on

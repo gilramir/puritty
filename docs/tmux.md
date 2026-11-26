@@ -4793,3 +4793,47 @@ exceeded` in `oldRest`, `oldCell` and `children`; the native Linux and
 Windows runs read it without a crash, and kept a split 99999 cells wide.
 Now each refuses both forms 100,000 deep, reads the old form 500 deep
 and the JSON 200 deep, and clamps the split to 16384 (151).
+
+## TM128 · A notification inside a reply: not seen (2026-11-26)
+
+The code review's TP9 says a notification that comes with a reply open
+is kept as a reply line, and asked for a measurement first: a binding's
+`run-shell 'sleep 5'` sent by puritty, a pane printing meanwhile.
+Measured (`tmux -C` attached, a pane printing a line every 0.3 s; each
+line timed as it came), tmux 3.4 (Ubuntu's) and 3.8 (devbox's):
+
+| asked | 3.4 | 3.8 |
+|---|---|---|
+| `run-shell 'echo a; sleep 1.5; echo b'` | `%begin` and `%end` at once; the output went to the pane's view mode (`%pane-mode-changed`) | `%begin` and `%end` at once; `a` and `b` bare 1.5 s later, after the `%end` (TM5.2) |
+| `wait-for` a channel signalled 1.5 s later | `%begin` and `%end` at once | the same |
+
+Every `%output` line, twenty in each, came outside any reply, at its
+0.3 s. No command kept a reply open while a pane printed, so nothing was
+held in a reply, and `Control` is left as it is: reading a reply's lines
+of a notification's shape as notifications would take a reply's own
+lines that begin so (a `display-message` of a pane's text) for them.
+Not measured: tmux before 3.4. TP9 checked, left.
+
+## TM129 · A paste's `;` on tmux 2.x (2026-11-26)
+
+The code review's TP7. A paste goes to tmux as `set-buffer` lines of
+1024 bytes each (TM64), each piece one double-quoted word (TM94). tmux
+2.x's `cmd_list_parse` reads a word whose text ends in `;` as the end of
+a command and drops the `;`, unless a backslash comes before it, when
+the two are a `;`; `sendBytesPlain` already sends a `;` as `\;` for it,
+but `pasteBytes`, used on every tmux, did not. On 2.7 to 2.9a a paste of
+`select 1;` reached the program as `select 1`, a piece ending at a `;`
+lost it, and a paste ending `\;` lost its backslash.
+
+`Command.pasteBytes` now takes whether this tmux reads commands as 2.x
+does (the app passes no `send-keys -H`, as for `sendBytesPlain`), and on
+one a piece ending in `;` ends `\;` inside its quotes: 2.x's parser
+reads `\;`, and `cmd_list_parse` a `;`. 3.0's parser does not split a
+quoted word, so 3.x is sent what it was.
+
+**Tested** through the model of 2.7's parser (`Tmux27`, TK9), which now
+also runs `set-buffer` and says what the buffer holds: on 2.x,
+`select 1;`, `a\;`, 1023 bytes then `;y` (a `;` at the first piece's
+end) and `a;b` all arrive whole; with 3.x's quoting the model gives
+`select 1`, `a;` and the 1023 bytes then `y` (152). Not run against a
+real tmux 2.x.

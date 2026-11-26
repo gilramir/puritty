@@ -432,9 +432,9 @@ covered" sections. The larger gaps:
 | [ST26](05-ssh-session-transfer.md) | design | confirmed | **fixed** An unreadable folder inside a drop is made on the host empty, with nothing said |
 | [ST27](05-ssh-session-transfer.md) | test-gap | confirmed | **fixed** No test drives `Sending`, and the shell fallback's quoting is tested under one login shell |
 | [TP6](06-tmux-package.md) | bug | confirmed | **fixed** `Bindings.bindingOf` rebuilds a binding's command from space-split words, so runs of spaces inside its quoted arguments collapse |
-| [TP7](06-tmux-package.md) | bug | plausible | `Command.pasteBytes` on tmux 2.x loses a `;` that ends a piece |
+| [TP7](06-tmux-package.md) | bug | plausible | **fixed** `Command.pasteBytes` on tmux 2.x loses a `;` that ends a piece |
 | [TP8](06-tmux-package.md) | bug | confirmed | **fixed** `unescape` drops the text before a backslash that is not an escape |
-| [TP9](06-tmux-package.md) | bug | plausible | A notification that arrives inside a reply is kept as a reply line and never acted on |
+| [TP9](06-tmux-package.md) | bug | plausible | **checked, left** A notification that arrives inside a reply is kept as a reply line and never acted on |
 | [TP10](06-tmux-package.md) | security | plausible | **fixed** A layout's nesting depth is not bounded, and a split's box is not clamped as a pane's is |
 | [TP11](06-tmux-package.md) | inaccuracy | confirmed | Escapes inside double quotes are not decoded: `\n`, `\t`, `\e`, `\ooo`, `\u…` read as the letter or digits |
 | [TP12](06-tmux-package.md) | design | confirmed | `Command.quote` cannot say a newline and does not refuse one; three builders take an unquoted name |

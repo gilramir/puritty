@@ -645,7 +645,7 @@ command =
                         [ "set-buffer -b puritty-paste \"a\\\"b\\$\\\\\\n한\""
                         , "paste-buffer -p -r -d -b puritty-paste -t '%3'"
                         ]
-                        (Command.pasteBytes 3 { first = True, last = True } (Bytes.fromString "a\"b$\\\n한"))
+                        (Command.pasteBytes False 3 { first = True, last = True } (Bytes.fromString "a\"b$\\\n한"))
           }
         , { name = "a paste's ~ is escaped, which tmux 3.x would expand at a word's start as a home folder (review TP1)"
           , test =
@@ -654,7 +654,7 @@ command =
                         [ "set-buffer -b puritty-paste \"\\~/.bashrc a\\~b\""
                         , "paste-buffer -p -r -d -b puritty-paste -t '%2'"
                         ]
-                        (Command.pasteBytes 2 { first = True, last = True } (Bytes.fromString "~/.bashrc a~b"))
+                        (Command.pasteBytes False 2 { first = True, last = True } (Bytes.fromString "~/.bashrc a~b"))
           }
         , { name = "a paste's CR, LF, Tab and Escape as every tmux's parser takes them, a byte not UTF-8 in octal (TM94)"
           , test =
@@ -663,24 +663,24 @@ command =
                         [ "set-buffer -b puritty-paste \"x\\r\\ny\\t\\e\\200z\""
                         , "paste-buffer -p -r -d -b puritty-paste -t '%1'"
                         ]
-                        (Command.pasteBytes 1 { first = True, last = True } (Bytes.flatten [ Bytes.fromString "x\r\ny\t\u{001B}", Bytes.fromUInt8s [ UInt8.fromInt 0x80 ], Bytes.fromString "z" ]))
+                        (Command.pasteBytes False 1 { first = True, last = True } (Bytes.flatten [ Bytes.fromString "x\r\ny\t\u{001B}", Bytes.fromUInt8s [ UInt8.fromInt 0x80 ], Bytes.fromString "z" ]))
           }
         , { name = "a paste in pieces: the first starts the buffer, the rest add, the last pastes"
           , test =
                 \_ ->
                     Expect.equal
                         [ [ "set-buffer -b puritty-paste \"one\"" ], [ "set-buffer -a -b puritty-paste \"two\"" ], [ "paste-buffer -p -r -d -b puritty-paste -t '%0'" ] ]
-                        [ Command.pasteBytes 0 { first = True, last = False } (Bytes.fromString "one")
-                        , Command.pasteBytes 0 { first = False, last = False } (Bytes.fromString "two")
-                        , Command.pasteBytes 0 { first = False, last = True } Bytes.empty
+                        [ Command.pasteBytes False 0 { first = True, last = False } (Bytes.fromString "one")
+                        , Command.pasteBytes False 0 { first = False, last = False } (Bytes.fromString "two")
+                        , Command.pasteBytes False 0 { first = False, last = True } Bytes.empty
                         ]
           }
         , { name = "an empty paste makes nothing; a long one goes in pieces of 1024"
           , test =
                 \_ ->
                     Expect.equal [ 0, 3 ]
-                        [ Array.length (Command.pasteBytes 0 { first = True, last = True } Bytes.empty)
-                        , Array.length (Command.pasteBytes 0 { first = True, last = True } (Bytes.fromString (String.repeat 2000 "x")))
+                        [ Array.length (Command.pasteBytes False 0 { first = True, last = True } Bytes.empty)
+                        , Array.length (Command.pasteBytes False 0 { first = True, last = True } (Bytes.fromString (String.repeat 2000 "x")))
                         ]
           }
         , { name = "send-keys -H, the pane quoted"
@@ -1797,6 +1797,28 @@ keys27 =
                     Expect.equal
                         [ "wrote 303033", "wrote 61", "wrote 61", "wrote c3a9ed959c" ]
                         [ one "send-keys -t %0 -l \"\\003\"", one "send-keys -t %0 -l 'a;'", one "send-keys -t %0 -l \"a;\"", one "send-keys -t %0 -l '\u{00E9}\u{D55C}'" ]
+          }
+        , { name = "a paste ending in ; on 2.x: the ; kept, at a piece's end too, a \\; kept, through the model (review TP7)"
+          , test =
+                \_ ->
+                    let
+                        pasted twoX text =
+                            Tmux27.buffered (Command.pasteBytes twoX 0 { first = True, last = True } (Bytes.fromString text))
+                                |> Maybe.map (\b -> Bytes.toStringLossy (bytes b))
+
+                        -- `before`: the quoting 3.x takes, given to 2.x, which
+                        -- loses a ; at a word's end, or a backslash before it
+                        -- a ; at the end of the first 1024-byte piece
+                        boundary =
+                            String.repeat 1023 "x" ++ ";y"
+                    in
+                    Expect.equal
+                        { now = [ Just "select 1;", Just "a\\;", Just boundary, Just "a;b" ]
+                        , before = [ Just "select 1", Just "a;", Just (String.repeat 1023 "x" ++ "y") ]
+                        }
+                        { now = [ pasted True "select 1;", pasted True "a\\;", pasted True boundary, pasted True "a;b" ]
+                        , before = [ pasted False "select 1;", pasted False "a\\;", pasted False boundary ]
+                        }
           }
         , { name = "the model: a key by name, BSpace, C-\\, and a word that begins with - read as flags"
           , test =

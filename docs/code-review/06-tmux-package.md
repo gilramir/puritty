@@ -79,6 +79,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: `sendBytesPlain` works around 2.x's `cmd_list_parse` taking a word's final `;` as a command separator by sending `\;` as its own word; `quoteBytes` does nothing about it, and `pasteBytes` is used for every version (app/src/TmuxMode.geng:5304).
 - Scenario: on 2.7 to 2.9a, pasting `select 1;` or a C line sends `set-buffer -b puritty-paste "select 1;"` and the program gets `select 1`. The same at any 1024-byte boundary that falls after a `;`. docs/tmux.md TM94 measured line ends, a tab and Korean, not a final `;`.
 - Fix: for a tmux without `cmd-parse.y` (Caps: no `send-keys -H`), end such a word so that 2.x's rule gives the `;` back (a word whose unquoted text ends `\;` becomes `;`), or move the cut so no piece ends in `;` and carry a last `;` as its own `set-buffer -a` word; add it to the 2.7 model's cases.
+- Fixed: 2026-11-26, `docs/tmux.md` TM129. `pasteBytes` takes whether tmux reads as 2.x; there a piece ending in `;` ends `\\;` in its quotes. Tested through the 2.7 model, which now runs `set-buffer`; not against a real 2.x.
 
 ### TP8 · `unescape` drops the text before a backslash that is not an escape
 - Where: packages/tmux/src/Tmux/Control.geng:649-651
@@ -98,6 +99,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: with a block open every line that is not its `%end`/`%error` is pushed to `open.lines`, `%output` and `%exit` included.
 - Scenario: the user's binding `run-shell 'sleep 5'` is sent by puritty (`runLine`); panes that write during those five seconds have their `%output` lines swallowed into the reply and never drawn, and a `%pause`/`%layout-change` is lost the same way.
 - Fix: measure it first (a `run-shell 'sleep 2'` under `-CC` with a pane printing). If tmux does interleave, read a line of the exact shape `%output %<digits> …` (and the other known notification names with valid ids) as a notification even with a block open.
+- Checked, left: 2026-11-26, `docs/tmux.md` TM128. Measured on tmux 3.4 and 3.8: `run-shell` (sleeping, printing) and `wait-for` from a control client end their reply at once; all twenty `%output` lines a pane printed meanwhile came outside any reply. Not measured before 3.4.
 
 ### TP10 · A layout's nesting depth is not bounded, and a split's box is not clamped as a pane's is
 - Where: packages/tmux/src/Tmux/Layout.geng:173-241 (`oldCell` → `oldRest` → `children` → `oldCell`, not tail calls), :105-113 (`splitDecoder`, plain `Decode.int`), :212/:216 (split boxes unclamped)
