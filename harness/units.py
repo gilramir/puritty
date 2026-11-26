@@ -127,8 +127,11 @@ SUITES = [
     # TK14: such a line is in doubt until tmux speaks (wall) or not; 139
     # since TP1, TP3 and TP5: ~ in a paste, a line held to 1 MiB, what is
     # held by commands' names; 140 since TP2: ESC \\ inside a reply; 145
-    # since TA3: an entry not expected, asked (docs/tmux.md TM108)
-    Suite("tmux", 145, runs_of("packages/tmux/tests")),
+    # since TA3: an entry not expected, asked (docs/tmux.md TM108); 148
+    # since TM123/TP2, TP3's 64 MiB reply and the customize filter (11-24,
+    # the count left at 145 then); 149 since TP8: the text before a bare
+    # backslash; 150 since TP6: a binding's spaces kept
+    Suite("tmux", 150, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since

@@ -4744,3 +4744,33 @@ sorting and filtering every session's windows and panes) and
 customize-mode's rows (every option, key and variable made to show forty)
 would be kept in the state and made again when what they show changes; that
 is a change to the state's shape, left for when the code is restructured.
+
+## TM126 · `list-keys` read one way, and an escaped reply's text kept (2026-11-26)
+
+The code review's TP6 and TP8.
+
+**TP6.** `Bindings.bindingOf`, which follows tmux's key tables, split a
+`list-keys` line on spaces, dropped the empty words to get past the
+columns' padding, and joined the command again: `send-keys "a  b"` was
+kept as `send-keys "a b"`, which puritty itself sends on a tmux before
+3.4, and a held prompt's padded text lost its spaces. It also took a key
+as written, so one `list-keys` prints in quotes (`'"'`) was kept quoted
+and never matched. `Customize.bindLine` already read the line by
+position. Both now use `Customize.listedBinding`: the flags, the table
+and the key (unquoted) by position, and the command's text as printed,
+its spaces and its ` \; ` kept; `bindLine` shows ` \; ` as ` ; `, as
+before.
+
+**TP8.** `Control.unescape` dropped the text before a backslash not
+followed by three octal digits: `ab\9c` gave `\9c`. tmux writes a
+backslash as `\134`, so only a stream not tmux's own met it. The search
+moves on and the text is kept.
+
+**Tested** (tmux suite, 150): a binding with two spaces in a quoted
+argument, padding inside another and a separator, and a key printed in
+quotes; the old reader gave `send-keys "a b" \; display-message " x "`
+and no binding for the quoted key. `unescape "ab\9c and \x\012"`; the
+old code gave `\x` and the line end. The suite's expected count was 145
+in `units.py` while the suite held 148 since 2026-11-24's TM123 (TP2),
+TP3's reply bound and the customize filter: the `tmux` units gate had
+been failing since then, unrun. It is 150 now.

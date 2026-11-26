@@ -518,6 +518,11 @@ control =
                 \_ ->
                     Expect.equal (bytes [ 0x61, 0x0D, 0x5C, 0x5C, 0x39, 0x62 ]) (Control.unescape (Bytes.fromString "a\\015\\134\\9b"))
           }
+        , { name = "unescape: the text before a backslash without octal digits kept (review TP8)"
+          , test =
+                \_ ->
+                    Expect.equal (Bytes.fromString "ab\\9c and \\x\n") (Control.unescape (Bytes.fromString "ab\\9c and \\x\\012"))
+          }
         ]
 
 
@@ -806,6 +811,21 @@ bindings =
           }
         , { name = "a root binding that is no prompt is sent"
           , test = \_ -> Expect.equal [ { send = True, reset = False, table = "root" } ] (typedAt [ { key = "C-k", ms = 0 } ])
+          }
+        , { name = "a binding's command kept as list-keys printed it, its runs of spaces and its separators; a quoted key unquoted (review TP6)"
+          , test =
+                \_ ->
+                    let
+                        read =
+                            Array.foldl Bindings.bindingOf
+                                Dict.empty
+                                [ "bind-key    -T root   X       send-keys \"a  b\" \\; display-message \"  x  \""
+                                , "bind-key    -T prefix '\"'     split-window"
+                                ]
+                    in
+                    Expect.equal
+                        [ Just "send-keys \"a  b\" \\; display-message \"  x  \"", Just "split-window" ]
+                        [ Dict.get "root X" read |> Maybe.map .command, Dict.get "prefix \"" read |> Maybe.map .command ]
           }
         , { name = "the prefixes and repeat time, None left out"
           , test = \_ -> Expect.equal { prefixes = [ "C-a" ], repeatMs = 600, byTable = True } (Bindings.prefixesOf "C-a None 600 3.8")

@@ -16,6 +16,7 @@ under control mode it would leave the client answering nothing.
 -}
 
 import Dict exposing (Dict)
+import Tmux.Customize as Customize
 import Tmux.Reason as Reason
 import Tmux.Syntax as Syntax
 
@@ -298,34 +299,14 @@ switchedTo command =
 
 
 {-| A `list-keys` line, `bind-key [-r] -T table key command…`, put in the
-bindings by table and key; a key `list-keys` escapes (`\"`, `\#`) without
-its backslash. -}
+bindings by table and key, the key unquoted and the command as printed,
+by `Customize.listedBinding`: one reader for both (the code review's
+TP6). -}
 bindingOf : String -> Dict String Binding -> Dict String Binding
 bindingOf line d =
-    let
-        words =
-            String.split " " line |> Array.keepIf (\w -> w /= "")
-    in
-    when Array.findFirst (\w -> w == "-T") words is
-        Just t ->
-            when { first = Array.get 0 words, table = Array.get (t.index + 1) words, key = Array.get (t.index + 2) words } is
-                { first = Just "bind-key", table = Just table, key = Just key } ->
-                    let
-                        bare =
-                            if String.count key == 2 && String.startsWith "\\" key then
-                                String.dropFirst 1 key
-
-                            else
-                                key
-                    in
-                    Dict.set (table ++ " " ++ bare)
-                        { command = String.join " " (Array.dropFirst (t.index + 3) words)
-                        , repeat = Array.member "-r" (Array.slice 0 t.index words)
-                        }
-                        d
-
-                _ ->
-                    d
+    when Customize.listedBinding line is
+        Just b ->
+            Dict.set (b.table ++ " " ++ b.key) { command = b.command, repeat = b.repeat } d
 
         Nothing ->
             meant Reason.FromOutside d

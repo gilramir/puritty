@@ -69,6 +69,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: the empty words are dropped to get past `list-keys`' column padding, but the same filter runs over the command.
 - Scenario: `bind X send-keys "a  b"` (two spaces) is stored as `send-keys "a b"`. On a tmux before 3.4 puritty sends that text itself (`Command.bindingLine way.ran`, TmuxMode.geng:5493), so the pane gets one space; on any version a held `command-prompt -p "Name:   "` or a `display-menu` item with padding is shown with the spaces gone. `Customize.bindLine` (Customize.geng:383) reads the same lines by position and keeps the command as printed; the two readers have drifted.
 - Fix: read the flags, the table and the key by position as `bindLine` does and take the rest of the line untouched (one reader for both modules).
+- Fixed: 2026-11-26, `docs/tmux.md` TM126. One reader, `Customize.listedBinding`, for `Bindings` and `Customize`: the command's text as printed, spaces kept; a quoted key unquoted. Tmux suite test.
 
 ### TP7 · `Command.pasteBytes` on tmux 2.x loses a `;` that ends a piece
 - Where: packages/tmux/src/Tmux/Command.geng:1072-1104 (`setBufferFirst`/`setBufferAppend` are `allowed = anyTmux`), :1273-1280 (the measurement, in `sendBytesPlain`'s comment)
@@ -87,6 +88,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: in the not-octal branch the call is `unescapeFrom bytes slash (indexOf 0x5C (at + 1) bytes) pieces`: `from` becomes `slash` while `pieces` is passed without `before`, so the bytes in `[from, slash)` are in neither.
 - Scenario: `unescape "ab\9c"` gives `\9c`, not `ab\9c`. The suite's case (`TmuxSuites.geng:348`, `a\015\134\9b`) passes only because its bad backslash comes straight after an escape, where `from == slash`. Real tmux always writes `\` as `\134`, so this needs a stream that is not tmux's (a hand-made one, a nested or truncated line); it is still silent loss of output.
 - Fix: keep `from` as it is in that branch (only the next search position moves), and add a case with text before the bare backslash.
+- Fixed: 2026-11-26, `docs/tmux.md` TM126. Only the search moves past a bare backslash; the text before it kept. Tmux suite test.
 
 ### TP9 · A notification that arrives inside a reply is kept as a reply line and never acted on
 - Where: packages/tmux/src/Tmux/Control.geng:320-333

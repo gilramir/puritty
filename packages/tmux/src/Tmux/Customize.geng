@@ -31,6 +31,7 @@ module Tmux.Customize exposing
     , help
     , keyFormat
     , lines
+    , listedBinding
     , optionValue
     , optionsOf
     , preview
@@ -384,6 +385,17 @@ bindingsOfText listed notes =
 
 bindLine : String -> Maybe Binding
 bindLine line =
+    listedBinding line |> Maybe.map (\b -> { b | command = unescaped b.command })
+
+
+{-| A `list-keys` line, `bind-key [-r] -T table key command…`, read by
+position: the flags, the table and the key (unquoted), and the command's
+text as `list-keys` printed it, its spaces kept, ` \; ` and all, which
+`bind-key` reads back. `Tmux.Bindings` reads the lines with it too (the
+code review's TP6: it split the command on spaces and joined it again,
+so `send-keys "a  b"` lost a space). -}
+listedBinding : String -> Maybe Binding
+listedBinding line =
     let
         chars =
             String.toArray line
@@ -483,7 +495,7 @@ bindLine line =
             , key = keyRead.key
             , repeat = flagged.repeat
             , note = ""
-            , command = unescaped (String.trim (String.fromArray (Array.dropFirst keyRead.next chars)))
+            , command = String.trim (String.fromArray (Array.dropFirst keyRead.next chars))
             }
 
 
