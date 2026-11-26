@@ -32,6 +32,9 @@ type alias Source =
     , waiting : Dict Int Want
     -- the folders being read, by the picker's request
     , readings : Dict Int Reading
+    -- why the stream stopped being SFTP: every request after fails at
+    -- once, as its answer would never come (the code review's ST24)
+    , broken : Maybe String
     }
 
 
@@ -81,7 +84,7 @@ start =
         begun =
             Sftp.start
     in
-    { source = { client = begun.client, ready = False, queued = [], waiting = Dict.empty, readings = Dict.empty }
+    { source = { client = begun.client, ready = False, queued = [], waiting = Dict.empty, readings = Dict.empty, broken = Nothing }
     , send = begun.send
     }
 
@@ -116,6 +119,21 @@ ask r s =
 
 askIn : Picker.Request -> Acc -> Acc
 askIn r acc =
+    let
+        s =
+            acc.source
+    in
+    when s.broken is
+        Just why ->
+            told (Failed { id = r.id, why = why }) acc
+
+        Nothing ->
+            -- the stream not broken: asked as usual
+            meant Reason.NotSet (askReady r acc)
+
+
+askReady : Picker.Request -> Acc -> Acc
+askReady r acc =
     let
         s =
             acc.source
@@ -219,8 +237,18 @@ onEvent e acc =
                 s.queued
 
         Sftp.Broken why ->
-            -- every request of the picker's still waiting fails
-            Dict.foldl (\_ want inner -> failWant want ("the host's SFTP answered what is not SFTP: " ++ why) inner) { acc | source = { s | waiting = Dict.empty } } s.waiting
+            let
+                said =
+                    "the host's SFTP answered what is not SFTP: " ++ why
+
+                gone =
+                    { acc | source = { s | waiting = Dict.empty, queued = [], broken = Just said } }
+            in
+            -- every request of the picker's still waiting fails, and those
+            -- queued before the version came, and every later one (ST24)
+            Array.foldl (\r inner -> told (Failed { id = r.id, why = said }) inner)
+                (Dict.foldl (\_ want inner -> failWant want said inner) gone s.waiting)
+                s.queued
 
         Sftp.Answer a ->
             when Dict.get a.id s.waiting is
@@ -275,12 +303,13 @@ fail id why acc =
                     { acc | source = { s | readings = Dict.remove id s.readings } }
             in
             told (Failed { id = id, why = why })
-                (when r.handle is
-                    Just h ->
+                (when { handle = r.handle, broken = s.broken } is
+                    { handle = Just h, broken = Nothing } ->
                         sftp (Close h) Closing dropped
 
-                    Nothing ->
-                        meant Reason.NotOpen dropped
+                    _ ->
+                        -- no handle open, or no stream to close it on
+                        dropped
                 )
 
         Nothing ->

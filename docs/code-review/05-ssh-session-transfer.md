@@ -245,6 +245,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - Confidence: confirmed
 - What: on `Sftp.Broken` the requests waiting are failed, but the source is not marked broken: a later `ask` still builds SFTP requests, whose answers never come (`Sftp.received` returns nothing once broken), so the picker shows a folder loading with no end. `fail` also sends a `Close` on the broken stream. Separately `Picker.Ask` has no cancel: a listing started is read to its end (`READDIR` after `READDIR`, two requests per link) after the user has moved on, each part still told to the picker.
 - Fix: keep `broken : Maybe String` in `Source` and answer every `ask` with `Failed` at once; let the picker drop a reading by id (close its handle, stop asking).
+- Fixed: In part, 2026-11-25, `docs/sftp.md` FT43: after a break every request fails at once and nothing is sent on the broken stream; native app test. A listing begun still cannot be abandoned.
 
 ### ST25 · A changed key's rewrite of `known_hosts` goes through lossy UTF-8 and a new file
 - Where: packages/ssh/src/Ssh/Session.geng:1010-1044 (`replaceKey`)

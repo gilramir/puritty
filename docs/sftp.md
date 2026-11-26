@@ -2457,3 +2457,16 @@ host would not open a channel for the files (why)", and the folder
 chooser's "The host would not open a channel to read the folders". The
 native app suite refuses a transfer's channel as `MaxSessions` does: the
 old code went to the shell (618).
+
+## FT43 · The picker after its SFTP stream breaks (2026-11-25)
+
+The code review's ST24, in part. When the folder picker's SFTP stream
+stopped being SFTP, the requests waiting failed, but the source went on:
+a later request was still made, its answer never came (`Sftp.received`
+answers nothing once broken), and the folder showed loading for good;
+and failing a request sent `Close` on the broken stream. The source now
+keeps why it broke: a request after it fails at once with that, those
+queued before the version came fail with it, and nothing more is sent.
+The native app suite breaks the stream and asks a listing: the old
+source queued it and answered nothing (619). Left: a listing begun
+cannot be abandoned when the user moves on; it is read to its end.

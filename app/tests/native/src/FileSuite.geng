@@ -12,6 +12,8 @@ import Os.Error
 import Os.File as File
 import Os.Path as Path
 import Os.Process as Process
+import Picker
+import PickerSftp
 import Platform
 import Schema
 import Sending
@@ -19,6 +21,7 @@ import SettingsFile
 import Ssh.Connection as Connection
 import Task
 import Test.Runner.UnitNode as U
+import UInt8
 
 
 {-| `config.toml` written (the code review's PS12): through a symlink to
@@ -136,6 +139,30 @@ settingsFile =
                         (Expect.equal { shell = False, over = True }
                             { shell = Sending.owns 11 refused, over = Sending.isOver refused }
                         )
+                )
+            , U.test "after the picker's SFTP stream breaks, a request fails at once, not waits for ever (review ST24)"
+                (\_ ->
+                    let
+                        -- a packet of no bytes: the stream is broken
+                        broken =
+                            PickerSftp.received (Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0, 0, 0, 0 ])) PickerSftp.start.source
+
+                        asked =
+                            PickerSftp.ask { id = 7, ask = Picker.List (Bytes.fromString "/tmp") } broken.source
+
+                        failedNow =
+                            Array.any
+                                (\a ->
+                                    when a is
+                                        Picker.Failed f ->
+                                            f.id == 7
+
+                                        _ ->
+                                            False
+                                )
+                                asked.answers
+                    in
+                    Task.succeed (Expect.equal { failed = True, sent = 0 } { failed = failedNow, sent = Bytes.length asked.send })
                 )
             , U.test "a setting written to config.toml of mode 600: the mode kept, no temporary left (review PS12)"
                 (\_ ->
