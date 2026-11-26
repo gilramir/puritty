@@ -32,7 +32,8 @@ int pt_open(const char *font, const char *lang, int points, int dpi, long cap);
 
 /* Another primary font, fallback language, size in points and glyph cache
  * in place of the open one: every face closed and the glyphs begun again.
- * -1, with the open font kept, when the platform has no such font. */
+ * -1, with the open font kept, when the platform has no such font (on
+ * Windows; on Linux fontconfig always gives some font, see pt_font_file). */
 int pt_refont(const char *font, const char *lang, int points, int dpi, long cap);
 
 /* The font at `points` (V50's zoom), or at a new resolution: every face
@@ -103,7 +104,10 @@ typedef struct {
 
 /* The file of the font `font` in its regular (0), bold (1), italic (2) or
  * bold italic (3), and the face's index in it; malloc'd, or NULL. A
- * platform with no face of a variant gives the regular's. */
+ * platform with no face of a variant gives the regular's. On Linux
+ * fontconfig always matches some font, so a family that does not exist
+ * gives another's file, not NULL; what the terminal shows is told by the
+ * family it used (docs/settings.md ST35). */
 char *pt_font_file(const char *font, int variant, int *index);
 
 /* The file of a face for the cluster `cps`, asked in `lang` (or NULL), a

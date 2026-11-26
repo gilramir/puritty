@@ -88,6 +88,7 @@ not by a run.
 - What: each face has `advance` (2^20 int16, 2 MB) and `ink` (2^20 × 4 int16, 8 MB), sized for every glyph index in 16 forms. `calloc` leaves them untouched pages, but `pt_zoom` does `memset(faces[f].advance, 0, KEYS * 2); memset(faces[f].ink, 0, KEYS * 4 * 2)` for every face.
 - Scenario: the first Ctrl+plus makes about 10 MB resident per loaded face (up to 31 faces: about 310 MB with CJK, emoji and symbol fallbacks loaded) and every zoom step rewrites all of it; holding Ctrl and scrolling zooms many steps in a row.
 - Fix: the memsets are not needed: `reset_glyphs` clears the `uploaded` bits, and `advance[k]`/`ink[k]` are always written by `upload` before `place` reads them. Drop them; consider a table keyed by glyph actually uploaded (a hash, as `ui_keys`) so a face costs kilobytes, not 10 MB of address space.
+- Fixed: 2026-11-26, `docs/renderer.md` R31. `pt_zoom` no longer clears each face's advance and ink tables. Measured by `harness/zoomrss.py`, 9 faces, eight zoom steps: +103 MB resident before, +14 MB now.
 
 ### X9 · `isMaximized` makes four synchronous round trips, and `Main` calls it on every `Resized`
 - Where: packages/x11/src/Ext/puritty_x11.c:1424-1426 (three `atom()` calls each time), 1442-1443 (`xcb_get_property_reply`); app/src/Main.geng:6792
@@ -127,6 +128,7 @@ not by a run.
 - What: the comment says a new paste is made "unless the first has waited 10 s for an owner that never answered", but the test is elapsed time since the paste began, whatever has arrived since. Resetting sets `pst.waiting = 0` without `xcb_discard_reply`, so an outstanding GetProperty reply (up to the whole property, megabytes) stays in xcb's queue for ever. Both pastes use the one property `PURITTY_PASTE`, and `paste_notify` accepts any SelectionNotify for the window without comparing `n->selection`/`n->target` to what was asked.
 - Scenario: a large INCR paste over `ssh -X` that takes more than 10 s (the document measures 1.1 s for 2.6 MB on a LAN); the user pastes again or drops a file. The new request deletes the property (which the old owner reads as "send the next piece"), and old pieces can be read as the new paste's text. Also, a hostile or broken owner can stream INCR pieces without end: nothing here bounds a paste's size.
 - Fix: keep a last-progress time, updated in `paste_poll`; on abandon, `xcb_discard_reply` the cookie; use a property name per paste (a counter in the atom name, or two alternating atoms) and check the notify's selection and target; give a paste a size limit.
+- Fixed: 2026-11-26, `docs/phase3-select.md` §31. A paste is given up after 10 s without progress, not from its start, its awaited reply discarded; pastes use two properties in turn; a SelectionNotify must match the selection, target and property asked; a paste ends past 256 MB. Test: `harness/slowpaste.py`: a 15 s INCR paste pressed again at 11 s came twice-begun (18,000 bytes) before, once whole (15,000) now.
 
 ### X13 · Font names go to `FcNameParse` unescaped, and its NULL is not checked
 - Where: packages/x11/src/Ext/puritty_x11.c:185-206 (`pt_font_file`), 215-236 (`family_used`), 284-312 (`puritty_x11_fonts` returns raw families)
@@ -205,6 +207,7 @@ not by a run.
 - What: `if (evlen + n > (int) sizeof evbuf) return;`. A dropped record may be a key release, a `Resized` (the C's `win_cols` is updated, Geng is never told, and the two disagree until the next resize), or a paste's last record 11 (the paste then never ends for Geng).
 - Scenario: 64 KB between two takes is far, but the diagnostic records make it nearer: every key adds a 13 line (two with an IME, plus one for every XIM message through `xim_log`, each up to 160 bytes), whether or not the diagnostic log is on.
 - Fix: grow the buffer instead of dropping (it is taken whole at each `take`), or at least never drop kinds 2, 4, 10, 11, 14, 17; make the diagnostic lines conditional on a flag Geng sets when the log is on.
+- Fixed: 2026-11-26, `docs/window-state.md` WP13. The record buffer grows instead of dropping a record. No test fails on the old code (64 KB between two turns is not provoked).
 
 ### X21 · `kstate` and the XKB StateNotify subscription are dead
 - Where: packages/x11/src/Ext/puritty_x11.c:594, 605-608, 703-707
@@ -223,6 +226,7 @@ not by a run.
 - What: `if (nplaces < MAX_PLACES) places[nplaces++] = p;` and the rows are still marked as drawn. `docs/images.md` gives no such limit.
 - Scenario: a frame with more than 256 placements (a thumbnail grid, or many small Kitty placements in view after a resize redraws everything): the ones past 256 are not drawn, and since the view believes they were, they stay missing until their cells are redrawn for another reason.
 - Fix: grow the array, or draw placements in a second walk of the list as the runs are.
+- Fixed: 2026-11-26, `docs/images.md` IM42. A frame's placements are kept in an array that grows. Test: `packages/text/tests/cases.sh`: 300 placements, 256 drawn before, 300 now.
 
 ### X23 · A picture's source offset is cut to 16 bits
 - Where: packages/x11/src/Ext/puritty_x11.c:476-482 (`(int16_t) (sy + y0 - dy)`, `(int16_t) (oy + y0 - dy)`)
@@ -232,6 +236,7 @@ not by a run.
 - What: RENDER's Composite takes the source origin as INT16, and the code casts. An image may be 65,535 pixels a side and its placement may start above the screen's top (`image_place` reads a signed row), so `y0 - dy` is how far the visible part is into the picture.
 - Scenario: an image taller than 32,767 px (a long screenshot shown at its own size) scrolled so that its visible part starts past that: the offset wraps negative and the wrong part, or nothing, is drawn.
 - Fix: put the offset into the picture's transform (a translation) and composite from 0, 0; or reject/clip offsets that do not fit.
+- Checked, left: 2026-11-26, `docs/images.md` IM43. The core holds an image to 10,000 px a side, so the unscaled offset fits; a scaled placement 2,500 rows tall shown at its last rows draws right (pixel case `image-iterm-scaled-far`, pinned).
 
 ### X24 · A glyph centered once keeps that centering for every later box width
 - Where: packages/text/src/Ext/puritty_text.c:308-314 (the key has one bit for `shift`), 356-357 (`left = bitmap_left + shift`), 575-576
@@ -313,3 +318,4 @@ not by a run.
 - The Windows platform's implementation of the `pt_*` calls, and `Vt.View`'s side of the display list (run lengths, scroll records, placement counts).
 - `docs/cjk-and-thai.md` and `docs/rhel8-etx.md` were only searched, not checked claim by claim against the shaping code; box-drawing geometry (`draw_lines_box`) was read for bounds, not for the look of each character.
 - Nothing was run: no finding here was reproduced.
+- Fixed: 2026-11-26. Comments corrected: the text library's header on bold and italic (`synth_for` makes them for any face), the X11 record list now has 12 (Windows' menu, read but not recorded here) and 13 (the log's notes), the doc comments of `puritty_x11_open`, `_zoom` and `_sound` moved to their functions, the paste's 10 s with X12, and `pt_font_file`/`pt_refont` say that fontconfig always gives some font.

@@ -1515,3 +1515,34 @@ Measured with `harness/dump/core-dump` built to draw N frames of 100 by
 same, by a checksum of their bytes over three frames, for those 300 and
 for five with ids 7, 2^31 - 1, 2^31, 4,000,000,000 and 2^32 - 1, one
 of them written over so that its pixels are masked.
+
+## IM42 · Every placement of a frame is drawn (2026-11-26)
+
+The code review's X22. `pt_frame` kept a frame's image placements (record
+0x0C) in an array of 256 and dropped the rest, though their rows were
+counted as drawn: a frame with more (a grid of thumbnails, many small
+Kitty placements redrawn after a resize) left the ones past 256 missing
+until their cells were drawn again for another reason. The array now
+grows, and is kept from frame to frame. No limit on placements is
+documented, and none is meant.
+
+**Tested**: `packages/text/tests/cases.sh` (renderer.md R25) gives
+`pt_frame` an image of one pixel placed in 300 cells. Before, 256 were
+drawn; now 300.
+
+## IM43 · A picture's source offset, checked (2026-11-26)
+
+The code review's X23 reckoned that an image's source origin, which
+RENDER's Composite takes as an INT16, would wrap for an image taller
+than 32,767 pixels scrolled past that. The core holds an image to 10,000
+pixels a side (IM5), so the unscaled path's offset into it fits. The
+scaled path's offset is in the target's pixels, which can be larger: a
+placement of 2,500 rows is 40,000 pixels at 16 a row. **Measured**: the
+pixel gate's new `image-iterm-scaled-far` shows a 2 by 300 image, red
+over blue, 2,500 rows tall, so that only its last rows are on the screen;
+it is drawn blue, its bottom, as it should be. Why it does not wrap (the
+placement's source rectangle cut by the view, most likely) was not
+traced. Left as it is, with the case pinned. Xvfb was also asked for a
+pixmap of 1 by 32,768 and refused it (BadAlloc), as it gives 32,767: a
+picture past that could not be made at all, which the core's limit keeps
+from arising.

@@ -27,7 +27,11 @@
  * narrower than a cell, drawn in one cell and then as a wide cell's head,
  * two cells: its ink must move right by half a cell, the second pad less
  * the first (before X24 the first pad was kept in the uploaded glyph, and
- * the second drawing was where the first was). */
+ * the second drawing was where the first was).
+ *
+ * A frame's image placements (X22): an image of one pixel placed in 300
+ * cells of one frame must be drawn 300 times (before X22 a frame drew 256
+ * and dropped the rest). */
 #include "../src/Ext/puritty_text.c"
 
 #include <unistd.h>
@@ -79,9 +83,10 @@ void pt_glyphs_draw(const PtPlaced *placed, int n, const PtRect *clips) {
     (void) clips;
     if (n > 0) drawn_id = placed[n - 1].id, drawn_x = placed[n - 1].x;
 }
+static int a_picture, pictures_drawn;
 void *pt_picture_add(const uint32_t *argb, int w, int h) {
     (void) argb, (void) w, (void) h;
-    return NULL;
+    return &a_picture;
 }
 void pt_picture_draw(void *picture, int x, int y, int w, int h) { (void) picture, (void) x, (void) y, (void) w, (void) h; }
 void pt_picture_free(void *picture) { (void) picture; }
@@ -89,6 +94,7 @@ void pt_picture_draw_part(void *picture, int sx, int sy, int sw, int sh, int dx,
                           int ch) {
     (void) picture, (void) sx, (void) sy, (void) sw, (void) sh, (void) dx, (void) dy, (void) dw, (void) dh, (void) cx, (void) cy,
         (void) cw, (void) ch;
+    pictures_drawn++;
 }
 void pt_target(int c, int r) { (void) c, (void) r; }
 void pt_scroll(int top, int bottom, int k) { (void) top, (void) bottom, (void) k; }
@@ -174,6 +180,30 @@ int main(int argc, char **argv) {
     printf("U+0249 centered, cell %d px: its ink at %d in one cell, %d in two\n", pt_cw, narrow, wide);
     if (wide - narrow != pt_cw / 2) {
         printf("FAIL: the two-cell drawing is not half a cell right of the one-cell one\n");
+        wrong = 1;
+    }
+
+    /* 300 placements of a 1 by 1 image in one frame */
+    enum { PLACEMENTS = 300 };
+    pt_cols = 80, pt_rows = 24;
+    size_t length = 13 + (size_t) PLACEMENTS * PLACE_SIZE;
+    uint8_t *frame = must(calloc(length, 1));
+    const uint8_t define[13] = {0x0A, 0, 0, 0, 1, 0, 1, 0, 1, 3, 255, 0, 0};
+    memcpy(frame, define, 13);
+    for (int i = 0; i < PLACEMENTS; i++) {
+        uint8_t *q = frame + 13 + (size_t) i * PLACE_SIZE;
+        int x = i % 80, y = i / 80;
+        q[0] = 0x0C, q[4] = 1;
+        q[5] = (uint8_t) (x >> 8), q[6] = (uint8_t) x, q[7] = (uint8_t) (y >> 8), q[8] = (uint8_t) y;
+        q[10] = 1, q[12] = 1, q[18] = 1, q[20] = 1, q[26] = 1, q[28] = 1;
+        q[34] = 80, q[36] = 24;
+    }
+    PtFrame shown;
+    pt_frame(frame, length, &shown);
+    free(frame);
+    printf("%d placements in a frame: %d drawn\n", PLACEMENTS, pictures_drawn);
+    if (pictures_drawn != PLACEMENTS) {
+        printf("FAIL: a frame's placements past some were dropped\n");
         wrong = 1;
     }
     rmdir(dir);

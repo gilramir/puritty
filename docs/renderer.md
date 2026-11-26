@@ -1234,3 +1234,21 @@ px (cells of 8) as the window does and draws U+0249, which only DejaVu
 Sans of the test's three fonts has, in one cell and then in two. Before,
 its ink was at x = 1 both times; now at 1 and 5, half a cell apart, the
 two pads' difference. The pixel gate passes 55 of 55.
+
+## R31. A zoom step clears no glyph tables (2026-11-26, the code review's X8)
+
+Each face keeps an advance and an ink box for every glyph index in each
+form it can be uploaded in: 2^20 of each, 10 MB a face, allocated with
+`calloc`, so only the pages a glyph uses are resident. `pt_zoom` wrote
+zeros over all of them for every loaded face at every step, making the
+whole of each resident. Nothing needs it: `reset_glyphs` forgets what
+was uploaded, and `upload` writes a glyph's advance and ink before
+`place` reads them. The clearing is gone. The tables keep their address
+space; keying them by the glyphs actually uploaded, as the interface's
+are (R25), is left.
+
+**Measured** by `harness/zoomrss.py`: puritty on Xvfb with the system's
+fonts and a line of Han, Hangul, Arabic, Thai, Devanagari and symbols,
+9 faces open, VmRSS before and after eight Ctrl+= steps. Before, 26 MB
+then 129 MB (+103); now 26 then 40 (+14). The gate holds the growth
+under 40 MB.

@@ -1332,3 +1332,32 @@ byte). Two runs each, before and after:
 Both grow with the size alone: the array was pushed in place, so it
 was not the square the review feared, but its copies were two thirds
 of the time.
+
+## 31. A slow paste is not given up while it comes (2026-11-26)
+
+The code review's X12. One paste is read at a time, and one asked for
+while another is under way is not made, unless the first has waited 10
+s for an owner that never answered. The test was 10 s from the paste's
+start, whatever had come since: an INCR paste that took longer, over
+`ssh -X` or from a slow owner, was given up while its pieces still came
+if paste was pressed again, and the new paste asked for the selection
+into the same property, `PURITTY_PASTE`, that the first's owner still
+wrote its pieces to, so they were read as the new paste's. The reply a
+given-up paste waited for stayed in xcb's queue, a property's worth, and
+a SelectionNotify was taken for this paste's answer whatever selection
+and target it said. An owner could also send pieces without end.
+
+Now a paste keeps the time it last made progress (a SelectionNotify, a
+new piece, a reply), and is given up only after 10 s of none; its
+awaited reply is discarded then. Pastes use `PURITTY_PASTE` and
+`PURITTY_PASTE2` in turn, so an owner still writing a paste given up
+writes where the next does not read. A SelectionNotify must name the
+selection, target and property this paste asked for. And a paste ends
+past 256 MB.
+
+**Tested**: `harness/slowpaste.py` owns CLIPBOARD from python-xlib and
+answers UTF8_STRING with INCR and 15 pieces of 1,000 bytes, one a second
+as each is deleted; paste is pressed, and again at 11 s. Before, the
+program received 18,000 bytes: pieces 0 to 9, then 0 to 7 again, the
+second paste begun over the first. Now 15,000, pieces 0 to 14 once. The
+pointer (56), tab paste and CR LF paste gates pass.

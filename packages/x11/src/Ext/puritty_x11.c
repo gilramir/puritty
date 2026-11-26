@@ -50,6 +50,11 @@
  *     §14): 0 PRIMARY, 1 CLIPBOARD;
  *  11 a paste's text has come (docs/phase3-select.md §15): 1 when more is
  *     to come, 0 when it is the last; `puritty_x11_pasted` takes it.
+ *  12 a native menu's choice, the Windows window's alone: never recorded
+ *     here, though `Window.decode` reads it as Windows' does;
+ *  13 a line for the diagnostic log about the window (Window.Note): its
+ *     length in 2 bytes and its text, what the X server did, a key's
+ *     reading or an input method's message; the most frequent record;
  *  14 an image paste's bytes have come (docs/sftp.md FT13), as 11: 1 when
  *     more is to come, 0 when it is the last; `puritty_x11_pasted` takes
  *     them, none when the clipboard has no image.
@@ -580,11 +585,21 @@ static void at_exit(void) {
      XCB_EVENT_MASK_BUTTON_MOTION | XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_VISIBILITY_CHANGE)
 static int all_motion;
 
-static uint8_t evbuf[65536];
+/* The records since Geng last took them. It grows rather than drop one:
+ * a dropped key release, Resized or a paste's last record left Geng and
+ * the window disagreeing (the code review's X20). Geng takes it all at
+ * each turn of its loop. */
+static uint8_t *evbuf;
+static size_t evcap;
 static int evlen;
 
 static void put(const uint8_t *r, int n) {
-    if (evlen + n > (int) sizeof evbuf) return;
+    if ((size_t) evlen + (size_t) n > evcap) {
+        size_t cap = evcap ? evcap : 65536;
+        while (cap < (size_t) evlen + (size_t) n) cap *= 2;
+        evbuf = must(realloc(evbuf, cap));
+        evcap = cap;
+    }
     memcpy(evbuf + evlen, r, (size_t) n);
     evlen += n;
 }
@@ -888,7 +903,6 @@ static xcb_timestamp_t last_time;
 static void record_text(uint8_t kind, const char *s, size_t n) {
     if (n > 4000) n = 4000;
     uint8_t head[3] = {kind, (uint8_t) (n >> 8), (uint8_t) n};
-    if (evlen + 3 + (int) n > (int) sizeof evbuf) return;
     record(head, 3);
     record((const uint8_t *) s, (int) n);
 }
@@ -948,7 +962,6 @@ static void xim_draw(xcb_xim_t *m, xcb_xic_t c, xcb_im_preedit_draw_fr_t *f, voi
     uint32_t nf = f->feedback_array.size > 1000 ? 1000 : f->feedback_array.size;
     uint8_t head[12] = {6, (uint8_t) (f->caret >> 8), (uint8_t) f->caret, (uint8_t) (f->chg_first >> 8), (uint8_t) f->chg_first,
                         (uint8_t) (f->chg_length >> 8), (uint8_t) f->chg_length, (uint8_t) (n >> 8), (uint8_t) n};
-    if (evlen + 9 + (int) n + 2 + (int) nf > (int) sizeof evbuf) { free(t); return; }
     record(head, 9);
     record((const uint8_t *) (t ? t : ""), (int) n);
     uint8_t cnt[2] = {(uint8_t) (nf >> 8), (uint8_t) nf};
@@ -1218,11 +1231,6 @@ static int screen_dpi(void) {
     return dpi >= 24 && dpi <= 1000 ? dpi : 96;
 }
 
-/* Opens the window: `c` by `r` cells of the font `font` at `points`,
- * fallback asked in the language `lang` (empty for none, V25), the glyph
- * set reset past `cap` bytes (V37). Answers the cell's width and height as
- * `width * 65536 + height`, or a negative code: -1 no font, -2 no X server,
- * -3 no RENDER formats it needs. */
 /* One of the cursor font's glyphs, the core protocol's own cursors, for a
  * server with no cursor theme to load from: its I-beam is XC_xterm (152)
  * and its arrow XC_left_ptr (68), each with its mask the glyph after it. */
@@ -1276,6 +1284,11 @@ static void pointers_setup(void) {
     xcb_change_window_attributes(conn, window, XCB_CW_CURSOR, &pointer_text);
 }
 
+/* Opens the window: `c` by `r` cells of the font `font` at `points`,
+ * fallback asked in the language `lang` (empty for none, V25), the glyph
+ * set reset past `cap` bytes (V37). Answers the cell's width and height as
+ * `width * 65536 + height`, or a negative code: -1 no font, -2 no X server,
+ * -3 no RENDER formats it needs. */
 geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
                               void *title_bytes, int32_t padding_x, int32_t padding_y, geng_wait *wait) {
     padx_pt = padding_x;
@@ -1468,9 +1481,6 @@ static void size_hints(void) {
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
 }
 
-/* The font at `points` (V50's zoom): every face sized again, the glyph
- * set begun again, the window kept at its size in pixels and so the cells
- * that fit it reported as a new size. Answers the new cell as `open` does. */
 /* The window fitted to a new cell: its size hints, and the cells that now
  * fit it reported as a new size. */
 static void refit(void) {
@@ -1516,6 +1526,9 @@ geng_cancel puritty_x11_padding(int32_t points_x, int32_t points_y, geng_wait *w
     return (geng_cancel) {0};
 }
 
+/* The font at `points` (V50's zoom): every face sized again, the glyph
+ * set begun again, the window kept at its size in pixels and so the cells
+ * that fit it reported as a new size. Answers the new cell as `open` does. */
 geng_cancel puritty_x11_zoom(int32_t points, geng_wait *wait) {
     if (pt_zoom(points, dpi0)) refit();
     geng_succeed(wait, geng_slot_I4(pt_cw * 65536 + pt_ch));
@@ -1524,8 +1537,6 @@ geng_cancel puritty_x11_zoom(int32_t points, geng_wait *wait) {
 
 int puritty_sound_play(int id);
 
-/* A sound (docs/sounds.md SN6): -1 the X server's own bell (`system`),
- * else one of puritty's, played by puritty_sound.c without waiting. */
 /* Maximized (docs/window-state.md WP8): `want` -1 asks, 0 or 1 sets.
  * Before the window is open it is how the window will open; after, a
  * _NET_WM_STATE request to the window manager, or the window's own
@@ -1575,6 +1586,8 @@ geng_cancel puritty_x11_maximized(int32_t want, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+/* A sound (docs/sounds.md SN6): -1 the X server's own bell (`system`),
+ * else one of puritty's, played by puritty_sound.c without waiting. */
 geng_cancel puritty_x11_sound(int32_t id, geng_wait *wait) {
     int taken = 0;
     if (id < 0) {
@@ -1614,7 +1627,7 @@ geng_cancel puritty_x11_setfont(int32_t points, void *font_bytes, void *lang_byt
  * last, from the event loop, so no request waits on another. */
 
 #define PIECE 262144
-static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr, a_paste, a_png;
+static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr, a_paste, a_paste2, a_png;
 static struct {
     uint8_t *data;
     size_t len;
@@ -1673,9 +1686,9 @@ static int xfer_slot(void) {
 
 static void selection_atoms(void) {
     const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE",
-                           "image/png", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"};
+                           "PURITTY_PASTE2", "image/png", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"};
     xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr,
-                         &a_paste, &a_png, &a_wm_state, &a_max_vert, &a_max_horz};
+                         &a_paste, &a_paste2, &a_png, &a_wm_state, &a_max_vert, &a_max_horz};
     enum { N = sizeof names / sizeof names[0] };
     xcb_intern_atom_cookie_t ck[N];
     for (int i = 0; i < N; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
@@ -1786,12 +1799,50 @@ static struct {
      * with the drop's `time` */
     int active, incr, waiting, which, pending, image, probe;
     xcb_timestamp_t time;
-    xcb_atom_t target;
+    /* what was asked for, and the property it comes in: PURITTY_PASTE and
+     * PURITTY_PASTE2 in turn, so that an owner still writing a paste given
+     * up writes where the next paste does not read (the code review's X12) */
+    xcb_atom_t target, prop;
     xcb_get_property_cookie_t cookie;
-    double started;
+    /* when it last made progress: a notify, a piece, a reply */
+    double progress;
+    size_t total;
 } pst;
 static uint8_t *pbuf;
 static size_t plen, pcap;
+
+/* A paste's most, past which it ends: an owner that sends pieces without
+ * end is not read for ever (X12). */
+#define PASTE_MOST ((size_t) 256 << 20)
+
+/* A paste given up when it has made no progress for 10 s, an owner that
+ * stopped answering: its reply, if one is awaited, is discarded, not left
+ * in xcb's queue (X12). */
+static void paste_give_up_stale(void) {
+    if (!pst.active || ns() - pst.progress <= 10e9) return;
+    if (pst.waiting) xcb_discard_reply(conn, pst.cookie.sequence);
+    pst.waiting = 0;
+    pst.active = 0;
+}
+
+static void paste_ask(xcb_atom_t target);
+
+/* A paste begun: of `which` (0 PRIMARY, 1 CLIPBOARD, 2 a drop), its
+ * targets asked first when `probe`, in the property the last one did not
+ * use. */
+static void paste_begin(int which, int probe) {
+    pst.active = 1;
+    pst.incr = 0;
+    pst.waiting = 0;
+    pst.pending = 0;
+    pst.which = which;
+    pst.image = 0;
+    pst.probe = probe;
+    pst.progress = ns();
+    pst.total = 0;
+    pst.prop = pst.prop == a_paste ? a_paste2 : a_paste;
+    plen = 0;
+}
 
 static void transfer_step(xcb_property_notify_event_t *p) {
     if (p->window == window) {
@@ -1799,7 +1850,8 @@ static void transfer_step(xcb_property_notify_event_t *p) {
         /* the owner put an INCR piece in the paste's property. The owner
          * writes it as soon as a read deletes the last, so it can come
          * before that read's reply is taken: then it is read after it. */
-        if (p->atom == a_paste && p->state == XCB_PROPERTY_NEW_VALUE && pst.active) {
+        if (pst.active && p->atom == pst.prop && p->state == XCB_PROPERTY_NEW_VALUE) {
+            pst.progress = ns();
             if (pst.incr && !pst.waiting) paste_read();
             else pst.pending = 1;
         }
@@ -1839,7 +1891,10 @@ static void selection_clear(xcb_selection_clear_event_t *c) {
  * are read as the owner puts them. What comes is kept here, UTF-8, and
  * a record says so; Geng takes it with puritty_x11_pasted. One paste at
  * a time: another asked for while one is under way is not made, unless
- * the first has waited 10 s for an owner that never answered.
+ * the first has made no progress for 10 s, an owner that stopped
+ * answering (X12: not 10 s from its start, which gave up a slow INCR
+ * paste still coming); two properties in turn keep a paste given up from
+ * writing into the next, and a paste ends past 256 MB.
  *
  * A paste that may be a picture (docs/sftp.md FT13) asks the clipboard's
  * owner for its TARGETS first: any text there is pasted as text; with
@@ -1869,21 +1924,26 @@ static void paste_done(int more) {
 static void paste_read(void) {
     /* any new value seen until now is what this reads */
     pst.pending = 0;
-    pst.cookie = xcb_get_property(conn, 1, window, a_paste, XCB_GET_PROPERTY_TYPE_ANY, 0, UINT32_MAX / 4);
+    pst.cookie = xcb_get_property(conn, 1, window, pst.prop, XCB_GET_PROPERTY_TYPE_ANY, 0, UINT32_MAX / 4);
     pst.waiting = 1;
     xcb_flush(conn);
 }
 
 static void paste_ask(xcb_atom_t target) {
     pst.target = target;
-    xcb_delete_property(conn, window, a_paste);
-    xcb_convert_selection(conn, window, pst.which == 2 ? a_xdnd_selection : pst.which ? a_clipboard : XCB_ATOM_PRIMARY, target, a_paste,
+    xcb_delete_property(conn, window, pst.prop);
+    xcb_convert_selection(conn, window, pst.which == 2 ? a_xdnd_selection : pst.which ? a_clipboard : XCB_ATOM_PRIMARY, target, pst.prop,
                           pst.which == 2 ? pst.time : last_time);
     xcb_flush(conn);
 }
 
 static void paste_notify(xcb_selection_notify_event_t *n) {
     if (!pst.active || n->requestor != window) return;
+    /* the answer to what this paste asked, not to an earlier paste's
+     * request or another client's (X12) */
+    xcb_atom_t asked = pst.which == 2 ? a_xdnd_selection : pst.which ? a_clipboard : XCB_ATOM_PRIMARY;
+    if (n->selection != asked || n->target != pst.target || (n->property != XCB_ATOM_NONE && n->property != pst.prop)) return;
+    pst.progress = ns();
     if (n->property == XCB_ATOM_NONE && pst.probe) {
         pst.probe = 0;
         paste_ask(utf8_string);
@@ -1903,6 +1963,7 @@ static void paste_poll(void) {
     xcb_generic_error_t *err = NULL;
     if (!xcb_poll_for_reply(conn, pst.cookie.sequence, (void **) &r, &err)) return;
     pst.waiting = 0;
+    pst.progress = ns();
     free(err);
     if (!r) {
         paste_done(0);
@@ -1942,8 +2003,14 @@ static void paste_poll(void) {
         } else {
             paste_add(d, (size_t) len);
         }
+        pst.total += (size_t) len;
         if (!pst.incr) paste_done(0);
-        else paste_done(len > 0);
+        else if (pst.total > PASTE_MOST) {
+            /* past the most: ended here, its owner no longer read */
+            paste_done(0);
+            free(r);
+            return;
+        } else paste_done(len > 0);
         if (pst.incr && len > 0 && pst.pending) paste_read();
     }
     free(r);
@@ -1953,17 +2020,9 @@ static void paste_poll(void) {
  * for, 0 when another is under way. */
 geng_cancel puritty_x11_paste(int32_t which, geng_wait *wait) {
     int asked = 0;
-    if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
+    paste_give_up_stale();
     if (!pst.active && (which == 0 || which == 1)) {
-        pst.active = 1;
-        pst.incr = 0;
-        pst.waiting = 0;
-        pst.pending = 0;
-        pst.which = which;
-        pst.image = 0;
-        pst.probe = 0;
-        pst.started = ns();
-        plen = 0;
+        paste_begin(which, 0);
         paste_ask(utf8_string);
         asked = 1;
     }
@@ -1976,17 +2035,9 @@ geng_cancel puritty_x11_paste(int32_t which, geng_wait *wait) {
  * it is asked for, 0 when a paste is under way. */
 geng_cancel puritty_x11_pasteOrImage(geng_wait *wait) {
     int asked = 0;
-    if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
+    paste_give_up_stale();
     if (!pst.active) {
-        pst.active = 1;
-        pst.incr = 0;
-        pst.waiting = 0;
-        pst.pending = 0;
-        pst.which = 1;
-        pst.image = 0;
-        pst.probe = 1;
-        pst.started = ns();
-        plen = 0;
+        paste_begin(1, 1);
         paste_ask(a_targets);
         asked = 1;
     }
@@ -2132,7 +2183,7 @@ static void xdnd_message(xcb_client_message_event_t *m) {
         record(r, 1);
     } else if (m->type == a_xdnd_drop) {
         if (l[0] != dnd.source || !dnd.source) return;
-        if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
+        paste_give_up_stale();
         if (pst.active) {
             /* a paste still being read, whose buffer this would take: as
              * if the drag had left */
@@ -2149,16 +2200,8 @@ static void xdnd_message(xcb_client_message_event_t *m) {
             xdnd_finished(0);
             return;
         }
-        pst.active = 1;
-        pst.incr = 0;
-        pst.waiting = 0;
-        pst.pending = 0;
-        pst.which = 2;
-        pst.image = 0;
-        pst.probe = 0;
+        paste_begin(2, 0);
         pst.time = l[2];
-        pst.started = ns();
-        plen = 0;
         paste_ask(dnd.type);
     }
 }

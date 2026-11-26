@@ -260,3 +260,19 @@ and unset after, when it was puritty that set it.
 unset, its program a shell that writes what it sees. Before:
 `~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps`. Now
 `unset`.
+
+## WP13 · The window's records are never dropped (2026-11-26)
+
+The code review's X20. The window's C keeps the records Geng has not
+taken yet (keys, Resized, a paste's pieces, the diagnostic log's lines)
+in a buffer Geng takes whole at each turn of its loop. It was 64 KB, and
+a record that did not fit was dropped without a trace: a key release, a
+Resized (the C's columns changed and Geng never told), or a paste's last
+record, after which the paste never ended for Geng. Every key adds a log
+line, more with an input method, whether or not the log is on, which
+makes 64 KB between two turns nearer. The buffer now grows, doubling,
+and no record is dropped; the two writers that checked for room before
+a record of several parts no longer need to.
+
+**Tested**: nothing fails on the code before; filling 64 KB between two
+of Geng's turns is not made to happen by any gate. The window gates pass.

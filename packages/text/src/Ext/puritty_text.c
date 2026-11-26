@@ -22,8 +22,9 @@
  *
  * Styles come resolved in each frame's style records (V35) and are kept
  * only for that frame's runs. Bold and italic come from the primary font's
- * own faces; a fallback face draws them as its regular (synthesizing them
- * is docs/renderer.md §R6 step 5's), and blinking text is drawn steady. */
+ * own faces; any face that has no bold or italic of its own, a fallback's
+ * too, has them made (`synth_for`, docs/renderer.md §R6), and blinking
+ * text is drawn steady. */
 #define _GNU_SOURCE
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -1144,8 +1145,10 @@ int pt_zoom(int points, int dpi) {
     for (int f = 0; f < nfaces; f++) {
         if (!faces[f].primary) size_face(&faces[f]);
         hb_ft_font_changed(faces[f].hb);
-        memset(faces[f].advance, 0, (size_t) KEYS * sizeof *faces[f].advance);
-        memset(faces[f].ink, 0, (size_t) KEYS * 4 * sizeof *faces[f].ink);
+        /* no clearing of the advances and inks: reset_glyphs forgets what
+         * was uploaded, and upload writes a glyph's before place reads it.
+         * Clearing wrote all 10 MB of a face's tables, every zoom step
+         * (the code review's X8) */
     }
     reset_glyphs();
     return 1;
@@ -1641,8 +1644,11 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
     if (glyph_bytes > glyph_cap) reset_glyphs();
     const uint8_t *p = list, *end = list + length, *runs = NULL, *over = NULL;
     int first = pt_rows, last = -1, sized = 0;
-    enum { MAX_PLACES = 256 };
-    const uint8_t *places[MAX_PLACES];
+    /* the frame's image placements, as many as it has: a fixed 256 dropped
+     * the rest, drawn nowhere until their cells were redrawn (the code
+     * review's X22); kept between frames */
+    static const uint8_t **places;
+    static int capplaces;
     int nplaces = 0;
     inklen = 0;
     sel_from = sel_to = -1;
@@ -1689,7 +1695,11 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
             p += 5;
         } else if (p[0] == 0x0C && p + PLACE_SIZE <= end) {
             /* drawn after the runs' backgrounds, under or over their glyphs */
-            if (nplaces < MAX_PLACES) places[nplaces++] = p;
+            if (nplaces == capplaces) {
+                capplaces = capplaces ? 2 * capplaces : 256;
+                places = must(realloc(places, (size_t) capplaces * sizeof *places));
+            }
+            places[nplaces++] = p;
             int y = (int16_t) u16(p + 31), rows = u16(p + 35);
             int y0 = y < 0 ? 0 : y, y1 = y + rows - 1 < pt_rows ? y + rows - 1 : pt_rows - 1;
             if (y1 >= y0) {
