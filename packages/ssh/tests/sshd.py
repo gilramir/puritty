@@ -23,6 +23,7 @@ import getpass
 import os
 import shutil
 import socket
+import threading
 import subprocess
 import sys
 import time
@@ -144,6 +145,9 @@ SESSION_DRIVER_CASES = [
     ("driver-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "hunter2"]),
     ("driver-wrong-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "wrong"]),
     ("driver-unknown-key-then-agentless", "known", ["--identity", "{other}", "--identity", "{rsa}"]),
+    # the agent's key, through the session: a connection to the agent a
+    # request, each closed before the next opens (the code review's ST12)
+    ("driver-agent", "known", ["--agent", "{agent}"]),
     # first contact with a server that takes an RSA key as rsa-sha2-256
     # alone: its server-sig-algs comes while the host key is asked about,
     # and is kept for the login (the code review's SC14)
@@ -203,24 +207,95 @@ JUMP_CASES = [
 
 
 class Agent:
+    """An ssh-agent of the case's own, which the client reaches through a
+    proxy that counts each connection's requests and sees when it closes:
+    a connection a request, each closed before the next opens (the code
+    review's ST12), where the client held one for the session."""
+
     def __init__(self, keys, adds):
         self.path = WORK / f"agent.{os.getpid()}.{free_port()}"
-        self.proc = subprocess.Popen(["ssh-agent", "-D", "-a", str(self.path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.real = Path(str(self.path) + ".real")
+        self.proc = subprocess.Popen(["ssh-agent", "-D", "-a", str(self.real)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
-            if self.path.exists():
+            if self.real.exists():
                 break
             time.sleep(0.05)
-        env = dict(os.environ, SSH_AUTH_SOCK=str(self.path))
+        # each connection: its requests, and how many connections had been
+        # opened when it closed
+        self.conns = []
+        self.lock = threading.Lock()
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(self.path))
+        self.listener.listen(8)
+        threading.Thread(target=self.accept, daemon=True).start()
+        env = dict(os.environ, SSH_AUTH_SOCK=str(self.real))
         env.pop("SSH_ASKPASS", None)
         env.pop("DISPLAY", None)
         for name, flags in adds:
             subprocess.run(["ssh-add", "-q", *flags, keys[name]], env=env, check=True, stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def accept(self):
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            with self.lock:
+                conn = {"requests": 0, "closed_at": None}
+                self.conns.append(conn)
+            agent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            agent.connect(str(self.real))
+            threading.Thread(target=self.ask, args=(client, agent, conn), daemon=True).start()
+            threading.Thread(target=self.answer, args=(agent, client), daemon=True).start()
+
+    def ask(self, client, agent, conn):
+        """The client's requests to the agent, counted by their lengths."""
+        pending = b""
+        while True:
+            data = client.recv(65536)
+            if not data:
+                with self.lock:
+                    conn["closed_at"] = len(self.conns)
+                agent.close()
+                return
+            pending += data
+            while len(pending) >= 4 and len(pending) >= 4 + int.from_bytes(pending[:4], "big"):
+                conn["requests"] += 1
+                pending = pending[4 + int.from_bytes(pending[:4], "big"):]
+            agent.sendall(data)
+
+    def answer(self, agent, client):
+        while True:
+            try:
+                data = agent.recv(65536)
+            except OSError:
+                return
+            if not data:
+                return
+            try:
+                client.sendall(data)
+            except OSError:
+                return
+
+    def report(self):
+        """Each connection's requests, and whether it was closed before the
+        next opened; the last's close is not told, as the client's exit
+        would close it too."""
+        with self.lock:
+            lines = []
+            for i, c in enumerate(self.conns):
+                last = i == len(self.conns) - 1
+                closed = "" if last else (", closed before the next" if c["closed_at"] == i + 1 else ", OPEN when the next opened")
+                lines.append(f"agent connection {i + 1}: {c['requests']} requests{closed}\n")
+            return "".join(lines)
+
     def stop(self):
+        self.listener.close()
         self.proc.terminate()
         self.proc.wait(5)
         self.path.unlink(missing_ok=True)
+        self.real.unlink(missing_ok=True)
 
 
 def user_keys():
@@ -376,9 +451,12 @@ def main():
         if replacing:
             kh.write_bytes(euc + kh.read_bytes())
             os.chmod(kh, 0o600)
+        agent = Agent(keys, [("ed", [])]) if "{agent}" in options else None
         try:
             got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
-                              "--exec", "echo hi; exit 4", *(o.format(**keys) for o in options)])
+                              "--exec", "echo hi; exit 4", *(o.format(**keys, agent=agent.path if agent else "") for o in options)])
+            if agent:
+                got += agent.report()
             if start == "unreadable":
                 os.chmod(kh, 0o600)
             got += "known_hosts holds the key: " + ("yes" if " ".join(server_pub) in kh.read_text(errors="replace") else "no") + "\n"
@@ -391,6 +469,8 @@ def main():
                 got += "again under yes:\n" + run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
                                                           "--exec", "echo hi; exit 4", "--identity", keys["ed"], "--strict", "yes"])
         finally:
+            if agent:
+                agent.stop()
             server.stop()
         got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS").replace(str(server.port), "PORT"))
         got = got.replace(f"as {getpass.getuser()}", "as USER").replace(str(WORK), "WORK")

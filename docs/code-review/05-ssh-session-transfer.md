@@ -132,6 +132,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: a failed `link.read` or `link.write` (ECONNRESET, EPIPE, ETIMEDOUT) fails the task; `run`'s `onError` tells `Failed` and `Ended`, and nothing calls `link.close`. The agent's `AgentLink` has only `call`: the socket or pipe opened by `linkTo` is kept in `st.agent` and never closed at the end of a session, nor when `agentOf` moves on to the next candidate after a bad answer. `carry` also swallows a hop's error (`Task.onError (\_ -> Task.succeed st)`), so the inner session only says "the server closed the connection".
 - Scenario: a laptop that sleeps and reconnects many tabs over a day: each reset session leaves a TCP socket and each session an agent connection open in a process meant to run for weeks.
 - Fix: close the link in a `Task` finalizer around `session … |> loop` (success or failure), give `AgentLink` a `close` and call it when authentication is over and at the end, and keep a hop's failure to tell as `Failed` with its label.
+- Fixed: 2026-11-26, `docs/ssh-client.md` SC43. `closedOnError` closes a host's or jump host's link when the session fails; `carry` tells a hop's error with its name; the agent asked a connection a request, closed after it (`linkTo`). `sshd.py` `driver-agent` through a counting proxy. The error-path close is not tested.
 
 ### ST13 · The keepalive timer starts again on every turn of the loop, so a dead link is not noticed while anything else happens
 - Where: packages/ssh/src/Ssh/Session.geng:617-646 (`timer` rebuilt in each `loop`), 669-675

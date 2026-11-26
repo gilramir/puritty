@@ -2100,3 +2100,29 @@ and the new file is a copy of the old one first, which keeps its mode,
 then written and moved into place. `sshd.py`'s changed-key cases start
 the file with an EUC-KR comment at mode 600: `driver-changed-replace`
 gave mode 0o664 before, and keeps both now.
+
+## SC43 · The link closed when a session fails, and the agent asked a connection at a time (2026-11-26)
+
+The code review's ST12. A session that ended by an error (a reset, a
+broken pipe, a timeout on the link) told `Failed` and `Ended`, and
+nothing closed its socket: only the session that ended well did. Now
+`through` closes a host's or a jump host's link when its session fails
+(`closedOnError`), then fails as before. `carry`, the jump host's side
+of a forwarded connection, passed over its link's error, and the inner
+session said only that the server closed the connection; it now tells
+the error with the jump host's name first, then closes as before.
+
+The agent's connection was opened for the session and never closed, nor
+when `agentOf` moved past an agent that answered badly. An `AgentLink`'s
+`call` now connects, asks, reads the answer and closes, the socket closed
+whether the request fails or not (`File.withHandle` for a Windows pipe):
+a session's requests are a few, a list and a signature. OpenSSH's `ssh`
+holds one connection; nothing in the protocol asks for it.
+
+**Tested.** `sshd.py`'s agent is reached through a proxy that counts
+each connection's requests and sees it close; the new `driver-agent`
+logs in with the agent's key through the session: two connections, one
+request each, the first closed before the second opened. The client
+before this change: one connection, both requests. Not tested: the link
+closed after a failed read or write, and the jump host's error told;
+the harness has no link that fails other than by closing.

@@ -380,6 +380,7 @@ through permissions jumps target notices inputs given =
                         (\link ->
                             session permissions target Terminal "" link notices
                                 |> Task.andThen (loop (Source.next inputs |> Task.map FromWindow))
+                                |> closedOnError link
                                 |> Task.andThen (\st -> st.link.close)
                         )
 
@@ -399,6 +400,7 @@ through permissions jumps target notices inputs given =
                                 (\link ->
                                     session permissions hop.first (Forward { host = next.host, port = next.port, toInner = pipes.toInner }) label link notices
                                         |> Task.andThen (loop (Source.next inputs |> Task.map FromWindow))
+                                        |> closedOnError link
                                 )
                             |> Task.andThen
                                 (\st ->
@@ -429,14 +431,30 @@ through permissions jumps target notices inputs given =
                     )
 
 
+{-| `task`, and `link` closed when it fails: a reset or a broken pipe
+ends the session without leaving its socket open in a window that runs
+for weeks (the code review's ST12). -}
+closedOnError : Link -> Task Os.Error.Error a -> Task Os.Error.Error a
+closedOnError link task =
+    task
+        |> Task.onError
+            (\e ->
+                link.close
+                    |> Task.onError (\_ -> Task.succeed {})
+                    |> Task.andThen (\_ -> Task.fail e)
+            )
+
+
 {-| A hop's channel kept running: what the next connection writes goes to
 it, what comes from it goes to the next connection, until either ends;
 then the hop's connection closes, and the next connection reads its end.
+A hop's link that fails is said, with the hop's name, before the next
+connection reads its end, not passed over (ST12).
 -}
 carry : Source Bytes -> State -> Task x {}
 carry fromInner st =
     loop (Source.next fromInner |> Task.map FromInner) { st | forwarding = False }
-        |> Task.onError (\_ -> Task.succeed st)
+        |> Task.onError (\e -> tell (Failed (Os.Error.toString e)) st)
         |> Task.andThen (\s -> s.link.close |> Task.onError (\_ -> Task.succeed {}))
         |> Task.andThen (\_ -> closeInner st)
 
@@ -613,7 +631,11 @@ identitiesOf permissions options =
         |> Task.map Array.flatten
 
 
-{-| A connection to an agent: a request sent, and its whole answer. -}
+{-| An agent: `call` connects, asks, reads the answer and closes, each
+time, so that no connection to it is held for the session's length,
+none left open when the session fails, and none when `agentOf` moves on
+past an agent that answered badly (the code review's ST12). An agent's
+requests are a few a login. -}
 type alias AgentLink =
     { call : Bytes -> Task Os.Error.Error Bytes }
 
@@ -628,27 +650,27 @@ agentOf permissions options files =
             meant Reason.NoMore Task.succeed { link = Nothing, identities = [] }
 
         Just candidate ->
-            linkTo permissions candidate.first
+            let
+                link =
+                    linkTo permissions candidate.first
+            in
+            link.call Agent.requestIdentities
                 |> Task.andThen
-                    (\link ->
-                        link.call Agent.requestIdentities
-                            |> Task.andThen
-                                (\message ->
-                                    when Agent.identities message is
-                                        Ok keys ->
-                                            -- every key the agent holds; `withAgent` puts
-                                            -- them with the files'
-                                            Task.succeed
-                                                { link = Just link
-                                                , identities =
-                                                    Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) keys
-                                                        -- not a type nothing can sign for (SC22)
-                                                        |> Array.keepIf (\k -> Auth.offerable k.identity.keyType)
-                                                }
+                    (\message ->
+                        when Agent.identities message is
+                            Ok keys ->
+                                -- every key the agent holds; `withAgent` puts
+                                -- them with the files'
+                                Task.succeed
+                                    { link = Just link
+                                    , identities =
+                                        Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) keys
+                                            -- not a type nothing can sign for (SC22)
+                                            |> Array.keepIf (\k -> Auth.offerable k.identity.keyType)
+                                    }
 
-                                        Err why ->
-                                            meant Reason.FromOutside Task.fail { kind = Os.Error.Other, operation = "agent", path = Nothing, detail = why }
-                                )
+                            Err why ->
+                                meant Reason.FromOutside Task.fail { kind = Os.Error.Other, operation = "agent", path = Nothing, detail = why }
                     )
                 |> Task.onError (\_ -> agentOf permissions { options | agents = candidate.rest } files)
 
@@ -690,16 +712,30 @@ withAgent identitiesOnly files agent =
     own ++ others
 
 
-linkTo : Permissions -> AgentPath -> Task Os.Error.Error AgentLink
+linkTo : Permissions -> AgentPath -> AgentLink
 linkTo permissions path =
     when path is
         LocalSocket socketPath ->
-            Net.connectLocal permissions.net (Path.fromString socketPath)
-                |> Task.map (\socket -> { call = \request -> Net.write request socket |> Task.andThen (\_ -> agentRead (Net.read socket) Bytes.empty) })
+            { call =
+                \request ->
+                    Net.connectLocal permissions.net (Path.fromString socketPath)
+                        |> Task.andThen
+                            (\socket ->
+                                Net.write request socket
+                                    |> Task.andThen (\_ -> agentRead (Net.read socket) Bytes.empty)
+                                    |> Task.andThen (\answer -> Net.close socket |> Task.onError (\_ -> Task.succeed {}) |> Task.map (\_ -> answer))
+                                    |> Task.onError (\e -> Net.close socket |> Task.onError (\_ -> Task.succeed {}) |> Task.andThen (\_ -> Task.fail e))
+                            )
+            }
 
         Pipe pipePath ->
-            File.open permissions.fs (File.ForReadAndWrite File.ExpectExisting) (Path.fromString pipePath)
-                |> Task.map (\handle -> { call = \request -> File.write request handle |> Task.andThen (\_ -> agentRead (File.read handle) Bytes.empty) })
+            { call =
+                \request ->
+                    File.withHandle permissions.fs
+                        (File.ForReadAndWrite File.ExpectExisting)
+                        (Path.fromString pipePath)
+                        (\handle -> File.write request handle |> Task.andThen (\_ -> agentRead (File.read handle) Bytes.empty))
+            }
 
 
 agentRead : Task Os.Error.Error Bytes -> Bytes -> Task Os.Error.Error Bytes
