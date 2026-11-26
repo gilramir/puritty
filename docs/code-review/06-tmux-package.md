@@ -166,6 +166,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: `acc ++ …` once per byte makes a piece of 1024 bytes cost about half a megabyte of copying if `++` copies; `sequence = Bytes.slice i (i + length) bytes` is made for every byte, ASCII too (length 0), since `let` is strict; `Array.range`/`Array.all` run for each multi-byte lead.
 - Scenario: a 1 MB paste is about a thousand pieces, so some 500 MB of copying and a million empty slices before the first command is written.
 - Fix: collect runs (index of the run's start, emit a slice when an escape is needed) into an array and join once; only slice when `length > 0`.
+- Checked, left: 2026-11-26, `docs/tmux.md` TM137. Measured: a 1 MiB paste quoted in 19-23 ms native, 106-127 ms on node; left as it is.
 
 ### TP17 · An ESC that is not doubled inside a passthrough envelope is kept; tmux drops it
 - Where: packages/tmux/src/Tmux/Passthrough.geng:127-129 ("an ESC not doubled: kept as it is, as tmux passes it")
@@ -175,6 +176,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - What: the comment claims tmux's behaviour; by the state tables tmux passes `X` without the ESC.
 - Scenario: a program that forgets to double an ESC inside `ESC P tmux; … ESC \` works in puritty's `-CC` panes and breaks in real tmux, or the reverse for a payload that relied on the drop. Small, but the comment states a measurement that was not made.
 - Fix: check against tmux and either drop the ESC or correct the comment.
+- Fixed: 2026-11-26, `docs/tmux.md` TM134. Measured on tmux 3.4 and 3.8: an undoubled ESC is dropped and the byte after it kept (`dcs_escape`); `Passthrough.split` now does the same. Tmux suite test.
 
 ### TP18 · `Customize.table` is rebuilt from its text on every call, and `Borders.cells` parses the two border styles once per border cell
 - Where: packages/tmux/src/Tmux/Customize.geng:95-133 (called at app/src/TmuxMode.geng:6396 inside `completions`, itself called up to three times per Tab at :6271-6274, and at :12067); packages/tmux/src/Tmux/Borders.geng:317-335 (`styleAt`)
@@ -191,6 +193,7 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - Confidence: confirmed
 - What: the app takes `prefixes` and `repeatMs` from `prefixesOf` (TmuxMode.geng:2830) and sets `byTable` only from `Caps.has "send-keys" "K"` (:3088); the version-number test for `-K` is computed and dropped, and it is a second, different answer to a question `Caps` exists to answer (a `next-3.4` or patched build would differ). `indexOf` and `byteAt` are the same twenty lines in two modules.
 - Fix: remove `byTable` from `prefixesOf` with `hasSendKeysK` and `leadingDigits`; move the byte search to one internal module.
+- Fixed: 2026-11-26, `docs/tmux.md` TM135. `prefixesOf` no longer answers `byTable`; `hasSendKeysK` and `leadingDigits` gone (`Caps` answers it); `indexOf`/`byteAt` kept once in the unexposed `Tmux.ByteSearch`.
 
 ### TP20 · Test gaps
 - Where: packages/tmux/tests/src/TmuxSuites.geng
@@ -220,3 +223,4 @@ that source. Findings that rest on it are marked `plausible` and say which tmux 
 - `CustomizeTables.geng`'s and `ColorNames.geng`'s rows were not checked against tmux's tables.
 - `docs/tmux.md` (4,152 lines) was searched for each finding's topic, not read through; a decision that covers one of the findings under a wording I did not search for is possible.
 - Nothing was built or run: every finding is from reading, and the costs under "speed"/"efficiency" are not measured (whether `Array.pushLast` and `++` copy here depends on the compiler's uniqueness handling).
+- Fixed: 2026-11-26, `docs/tmux.md` TM136. The cases added by TP2, TP3, TP5-TP8 and TP10, and three more: a long reply line over many reads, a later paste piece beginning with `~`, a prompt command's name in a quoted argument. Tmux suite 160.

@@ -441,11 +441,11 @@ covered" sections. The larger gaps:
 | [TP13](06-tmux-package.md) | efficiency | confirmed | Outside tmux, every ESC in the terminal's output costs a 7-byte slice and compare; under tmux every `%output` is scanned once more, and an entry split across two is missed |
 | [TP14](06-tmux-package.md) | bug | confirmed | **fixed** `Style.themed` rewrites `theme…` words in expanded text, not only inside `#[…]` |
 | [TP15](06-tmux-package.md) | inaccuracy | confirmed | **fixed** `Style.color` takes `colourN` for any N and does not know tmux's digit names |
-| [TP16](06-tmux-package.md) | efficiency | confirmed | `quoteFrom` builds each paste piece by appending to a String per byte, and slices per byte |
-| [TP17](06-tmux-package.md) | inaccuracy | plausible | An ESC that is not doubled inside a passthrough envelope is kept; tmux drops it |
+| [TP16](06-tmux-package.md) | efficiency | confirmed | **checked, left** `quoteFrom` builds each paste piece by appending to a String per byte, and slices per byte |
+| [TP17](06-tmux-package.md) | inaccuracy | plausible | **fixed** An ESC that is not doubled inside a passthrough envelope is kept; tmux drops it |
 | [TP18](06-tmux-package.md) | efficiency | confirmed | `Customize.table` is rebuilt from its text on every call, and `Borders.cells` parses the two border styles once per border cell |
-| [TP19](06-tmux-package.md) | dead-code | confirmed | Dead or duplicated: `prefixesOf`'s `byTable` and `hasSendKeysK`; `indexOf`/`byteAt` twice |
-| [TP20](06-tmux-package.md) | test-gap | confirmed | Test gaps |
+| [TP19](06-tmux-package.md) | dead-code | confirmed | **fixed** Dead or duplicated: `prefixesOf`'s `byTable` and `hasSendKeysK`; `indexOf`/`byteAt` twice |
+| [TP20](06-tmux-package.md) | test-gap | confirmed | **fixed** Test gaps |
 | [X11](07-x11-text.md) | bug | confirmed | After the sound server goes away, every sound is lost and still reported as played |
 | [X12](07-x11-text.md) | bug | confirmed | The paste's 10 s rule measures from the start, not from the last progress, and the abandoned paste shares the property and leaks its reply |
 | [X13](07-x11-text.md) | bug | plausible | Font names go to `FcNameParse` unescaped, and its NULL is not checked |

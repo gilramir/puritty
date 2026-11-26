@@ -134,8 +134,11 @@ SUITES = [
     # layout's depth bounded; 152 since TP7: a paste's ; on 2.x; 153 since
     # TP12: a word with a line end kept on its line; 154 since TP15: colourN
     # held to 0..255, the digit names; 155 since TP14: theme names in
-    # expanded text only inside #[…]; 157 since TP11: tmux's escapes decoded, two
-    Suite("tmux", 157, runs_of("packages/tmux/tests")),
+    # expanded text only inside #[…]; 157 since TP11: tmux's escapes decoded, two;
+    # 158 since TP17: an undoubled ESC in passthrough dropped; 157 since
+    # TP19: the version's send-keys -K answer, never used, gone; 160 since
+    # TP20: a long line over many reads, a later piece's ~, quoted names
+    Suite("tmux", 160, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since

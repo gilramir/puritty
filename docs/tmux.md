@@ -4940,3 +4940,57 @@ quotes, on both. **Tested** (tmux suite, 157): that line reads as
 it is in single quotes; `\\ \" \$`; and `\9`, a short `\u00zz` and
 `\400`, which are not escapes, taken as their characters. The old `word`
 read the double-quoted one as `atbens101u00e9U0001F600` (155 of 156).
+
+## TM134 · An undoubled ESC in a passthrough envelope is dropped (2026-11-26)
+
+The code review's TP17. Inside tmux's passthrough envelope (`ESC P
+tmux; … ESC \`) a program doubles each ESC. `Passthrough.split` kept an
+ESC that was not doubled, with a comment saying tmux passes it so; that
+had not been measured. tmux's `dcs_escape` state (3.6a's `input.c`)
+drops the ESC and keeps the byte after it, `ESC ESC` giving one ESC and
+`ESC \` ending the envelope. Now `split` does the same.
+
+**Measured**, tmux 3.4 and 3.8 with `allow-passthrough on`, a pane
+printing `ESC P tmux; QQ1 ESC X QQ2 ESC ESC QQ3 ESC \` under `script`:
+both write `QQ1 X QQ2 ESC QQ3` to the outer terminal. **Tested** (tmux
+suite, 158): those bytes give the one inside part `QQ1XQQ2 ESC QQ3`,
+whole and cut between two reads at every byte; the old `split` kept the
+ESC before `X` (157 of 158).
+
+## TM135 · One answer to whether `send-keys -K` is there (2026-11-26)
+
+The code review's TP19. `Bindings.prefixesOf` also worked out from the
+version number whether the server has `send-keys -K` (`hasSendKeysK`,
+with `leadingDigits`), and the app dropped that answer: it sets
+`byTable` from `Caps.has "send-keys" "K"`, read from the server's own
+usage (TM72). A second, different answer to a question `Caps` answers
+(a patched or `next-` build would differ) is gone, with its test.
+`indexOf` and `byteAt`, the same twenty lines in `Tmux.Control` and
+`Tmux.Passthrough`, are now one copy in `Tmux.ByteSearch`, which the
+package does not expose. Tmux suite 157; the checks hold as before.
+
+## TM136 · The tmux package's test gaps (2026-11-26)
+
+The code review's TP20 listed cases the tmux suite lacked. The fixes
+since have added most of them: text before a bare backslash in
+`unescape` (TP8), a reply line that starts with `ESC \` (TP2), a line
+that never ends (TP3), a layout nested past 512 (TP10), a 2.x paste
+piece ending in `;` (TP7), two spaces in a quoted argument of a binding
+(TP6), and a word not a command's name (TP5). Three more now: a reply
+line of 300,000 bytes fed in 300 reads of 1,000 is read as the one line;
+a paste piece after the first that begins with `~` has it escaped; and a
+prompt command's name inside a quoted argument (`display-message
+"command-prompt"`, a `send-keys` string, an option's value) is not held.
+Each passed when written; they hold what was already so. Tmux suite 160.
+
+## TM137 · A paste's quoting measured, left as it is (2026-11-26)
+
+The code review's TP16 reckoned that `quoteFrom`, which appends to a
+String a byte at a time and slices for every byte, would cost some
+500 MB of copying for a 1 MB paste. **Measured** (scratch bench, the
+core's passes, gmktec7): `Command.pasteBytes` over 1 MiB of shell-like
+text (quotes, `$`, `~`, a tab, a line end, Korean and accented UTF-8;
+1,132,122 characters of commands) takes 19 to 23 ms native (three
+runs) and 106 to 127 ms on node (two programs of three runs). A paste is
+one act of the user's, so the code is left as it is: a saving of a
+tenth of a second on node, for a rare act, does not buy a rewrite.

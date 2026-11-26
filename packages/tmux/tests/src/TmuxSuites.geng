@@ -282,6 +282,31 @@ control =
                         , outside = merged (events (Bytes.fromString "\u{001B}P1000p\u{001B}\\after"))
                         }
           }
+        , { name = "a reply line of 300,000 bytes fed in 300 reads of 1,000 is read as the one line (review TP20)"
+          , test =
+                \_ ->
+                    let
+                        all =
+                            Bytes.fromString ("\u{001B}P1000p%begin 1 1 0\n" ++ String.repeat 300000 "x" ++ "\n%end 1 1 0\n")
+
+                        reads =
+                            Array.range 0 ((Bytes.length all - 1) // 1000)
+                                |> Array.map (\k -> Bytes.slice (k * 1000) (min (Bytes.length all) (k * 1000 + 1000)) all)
+
+                        fed =
+                            Array.foldl
+                                (\piece acc ->
+                                    let
+                                        r =
+                                            Control.feed piece acc.reader
+                                    in
+                                    { reader = r.reader, events = acc.events ++ r.events }
+                                )
+                                { reader = Control.expect True Control.reader, events = [] }
+                                reads
+                    in
+                    Expect.equal [ [ 300000 ] ] (replies fed.events |> Array.map (Array.map String.count))
+          }
         , { name = "a line that does not end is held to 1 MiB, past which control mode is left and its bytes are the terminal's (review TP3)"
           , test =
                 \_ ->
@@ -656,6 +681,13 @@ command =
                         ]
                         (Command.pasteBytes False 2 { first = True, last = True } (Bytes.fromString "~/.bashrc a~b"))
           }
+        , { name = "a paste piece after the first that begins with ~ has it escaped too (review TP20)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "set-buffer -a -b puritty-paste \"\\~/x\"" ]
+                        (Command.pasteBytes False 2 { first = False, last = False } (Bytes.fromString "~/x"))
+          }
         , { name = "a paste's CR, LF, Tab and Escape as every tmux's parser takes them, a byte not UTF-8 in octal (TM94)"
           , test =
                 \_ ->
@@ -825,6 +857,18 @@ bindings =
                             ]
                         )
           }
+        , { name = "a prompt command's name inside a quoted argument is an argument, not a command, and is not held (review TP20)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ False, False, False ]
+                        (Array.map (\c -> Bindings.held c /= Nothing)
+                            [ "display-message \"command-prompt\""
+                            , "send-keys 'confirm-before -p x kill-pane' Enter"
+                            , "set-option -g @x \"display-menu ; display-popup\""
+                            ]
+                        )
+          }
         , { name = "suspend-client is held back: a suspended control client takes no keys again"
           , test =
                 \_ ->
@@ -875,13 +919,7 @@ bindings =
                         [ Dict.get "root X" read |> Maybe.map .command, Dict.get "prefix \"" read |> Maybe.map .command ]
           }
         , { name = "the prefixes and repeat time, None left out"
-          , test = \_ -> Expect.equal { prefixes = [ "C-a" ], repeatMs = 600, byTable = True } (Bindings.prefixesOf "C-a None 600 3.8")
-          }
-        , { name = "send-keys -K from 3.4: 3.4, 3.8, a next- build yes; 3.3a, 3.2a, 2.7, none no"
-          , test =
-                \_ ->
-                    Expect.equal [ True, True, True, False, False, False, False ]
-                        (Array.map (\v -> (Bindings.prefixesOf ("C-b None 500 " ++ v)).byTable) [ "3.4", "3.8", "next-3.9", "3.3a", "3.2a", "2.7", "" ])
+          , test = \_ -> Expect.equal { prefixes = [ "C-a" ], repeatMs = 600 } (Bindings.prefixesOf "C-a None 600 3.8")
           }
         ]
 
@@ -1964,6 +2002,20 @@ passthrough =
                     Expect.equal
                         (Array.repeat (Bytes.length all - 1) [ "out ab", "in " ++ query, "out cd" ])
                         (Array.map (\at -> fedIn [ Bytes.slice 0 at all, Bytes.slice at (Bytes.length all) all ]) (Array.range 1 (Bytes.length all - 1)))
+          }
+        , { name = "an ESC not doubled inside the envelope is dropped and the byte after it kept, as tmux 3.4 and 3.8 pass it, whole and cut at every byte (review TP17)"
+          , test =
+                \_ ->
+                    let
+                        all =
+                            Bytes.fromString (esc ++ "Ptmux;QQ1" ++ esc ++ "XQQ2" ++ esc ++ esc ++ "QQ3" ++ esc ++ "\\")
+
+                        want =
+                            [ "in QQ1XQQ2" ++ esc ++ "QQ3" ]
+                    in
+                    Expect.equal
+                        (Array.pushFirst want (Array.repeat (Bytes.length all - 1) want))
+                        (Array.pushFirst (shown (Passthrough.split all Passthrough.idle).parts) (Array.map (\at -> fedIn [ Bytes.slice 0 at all, Bytes.slice at (Bytes.length all) all ]) (Array.range 1 (Bytes.length all - 1))))
           }
         , { name = "a DCS that is not tmux's envelope stays outside"
           , test = \_ -> Expect.equal [ "out " ++ esc ++ "Pq#0~" ++ esc ++ "\\" ] (shown (Passthrough.split (Bytes.fromString (esc ++ "Pq#0~" ++ esc ++ "\\")) Passthrough.idle).parts)

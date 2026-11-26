@@ -29,6 +29,7 @@ the first bytes of `ESC P 1000 p`) is kept for the next read.
 -}
 
 import Bytes exposing (Bytes)
+import Tmux.ByteSearch exposing (byteAt, indexOf)
 import Tmux.Reason as Reason
 import UInt8
 
@@ -820,48 +821,3 @@ startsFrom bytes at =
 
     else
         startsFrom bytes (esc + 1)
-
-
-{-| The first index of byte `b` at or after `from`, or -1. -}
-indexOf : Int -> Int -> Bytes -> Int
-indexOf b from bytes =
-    let
-        n =
-            Bytes.length bytes
-
-        below =
-            if b > 0 then
-                Bytes.spanWithin 0 (b - 1) from n bytes
-
-            else
-                from
-
-        past =
-            if b < 255 then
-                Bytes.spanWithin (b + 1) 255 below n bytes
-
-            else
-                below
-    in
-    if past >= n then
-        -1
-
-    else if past == from then
-        if byteAt from bytes == b then
-            from
-
-        else
-            indexOf b (from + 1) bytes
-
-    else
-        indexOf b past bytes
-
-
-byteAt : Int -> Bytes -> Int
-byteAt i bytes =
-    when Bytes.get i bytes is
-        Just v ->
-            UInt8.toInt v
-
-        Nothing ->
-            meant Reason.OutOfRange -1

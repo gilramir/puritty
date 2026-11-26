@@ -49,9 +49,10 @@ follow =
 
 
 {-| `display-message -p '#{prefix} #{prefix2} #{repeat-time} #{version}'`'s
-line: the prefix keys (`None` is none), the repeat time in ms, and whether
-the version has `send-keys -K` (3.4 on; a `next-` build is newer). -}
-prefixesOf : String -> { prefixes : Array String, repeatMs : Int, byTable : Bool }
+line: the prefix keys (`None` is none) and the repeat time in ms. Whether
+the server has `send-keys -K` is `Caps`' answer, not the version's
+(the code review's TP19). -}
+prefixesOf : String -> { prefixes : Array String, repeatMs : Int }
 prefixesOf line =
     let
         words =
@@ -59,32 +60,7 @@ prefixesOf line =
     in
     { prefixes = Array.keepIf (\w -> w /= "" && w /= "None") (Array.slice 0 2 words)
     , repeatMs = Maybe.withDefault (meant Reason.FromOutside 500) (Maybe.andThen String.toInt (Array.get 2 words))
-    , byTable = hasSendKeysK (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 3 words))
     }
-
-
-{-| Whether a `#{version}` is 3.4 or later: `3.8`, `3.4`, `next-3.9` yes;
-`3.3a`, `2.7`, nothing no. -}
-hasSendKeysK : String -> Bool
-hasSendKeysK version =
-    if String.startsWith "next-" version then
-        True
-
-    else
-        let
-            parts =
-                String.split "." version
-
-            major =
-                Maybe.andThen String.toInt (Array.get 0 parts) |> Maybe.withDefault (meant Reason.FromOutside 0)
-
-            minor =
-                Array.get 1 parts
-                    |> Maybe.map leadingDigits
-                    |> Maybe.andThen String.toInt
-                    |> Maybe.withDefault (meant Reason.FromOutside 0)
-        in
-        major > 3 || (major == 3 && minor >= 4)
 
 
 {-| Where a key goes by tmux's key tables, as tmux will look it up
@@ -310,22 +286,6 @@ bindingOf line d =
 
         Nothing ->
             meant Reason.FromOutside d
-
-
-{-| The digits a text begins with: `4` of `4a`. -}
-leadingDigits : String -> String
-leadingDigits text =
-    String.toArray text
-        |> Array.foldl
-            (\c acc ->
-                if acc.done || not (Char.isDigit c) then
-                    { acc | done = True }
-
-                else
-                    { acc | digits = acc.digits ++ String.fromChar c }
-            )
-            { digits = "", done = False }
-        |> .digits
 
 
 {-| The loop's clock starts over every 2^30 ms and is never negative
