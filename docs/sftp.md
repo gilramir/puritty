@@ -2440,3 +2440,20 @@ empty: made on the host, and the summary said everything was sent.
 `Sending.jobsFor` now refuses it too, "a folder that can't be read here",
 with the system's words. The native app suite drops a folder of mode 0
 (Linux): the old code made one folder job and refused nothing (617).
+
+## FT42 · SFTP turned off is a refused subsystem, not any refusal (2026-11-25)
+
+The code review's ST19. FT18 says a host that has SFTP is never sent
+through the shell, but `Connection.Refused` was told for a channel not
+opened (`MaxSessions`, short of resources), for a session not yet
+connected and for the `subsystem` request refused alike, and `Sending`
+took each as SFTP turned off: "SFTP is turned off on this host (the
+session is not connected)", or with the setting on, `exec` channels on a
+host that has SFTP. `Connection` now tells a refused `subsystem` request
+as `SubsystemRefused`, and `Backend` tells an OpenSSH helper for a
+subsystem that ended having written nothing so too. `Sending` falls back
+to the shell, or says SFTP is off, on that alone; a `Refused` is "The
+host would not open a channel for the files (why)", and the folder
+chooser's "The host would not open a channel to read the folders". The
+native app suite refuses a transfer's channel as `MaxSessions` does: the
+old code went to the shell (618).

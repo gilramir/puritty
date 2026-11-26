@@ -116,8 +116,13 @@ sftpAnswer sources =
                     Just (Session.Side { ref = 1, event = Connection.Started }) ->
                         Source.emit sources.inputs (Session.SideClose 1) |> Task.map (\_ -> Nothing)
 
-                    Just (Session.Side { ref = 1, event = Connection.Refused why }) ->
+                    Just (Session.Side { ref = 1, event = Connection.SubsystemRefused why }) ->
+                        -- SFTP turned off: the shell instead (the code review's
+                        -- ST19)
                         Task.succeed (Just why)
+
+                    Just (Session.Side { ref = 1, event = Connection.Refused why }) ->
+                        Task.fail ("the sftp channel could not be opened: " ++ why)
 
                     Just Session.Ended ->
                         Task.fail "the session ended"

@@ -235,6 +235,13 @@ side e s =
                         stepped { sending = s, out = [] } (fromSftp (Transfer.received b t))
 
                     Connection.Refused why ->
+                        -- the channel not opened (`MaxSessions`, short of
+                        -- resources) or the session not connected: not SFTP
+                        -- turned off, so not the shell (the code review's
+                        -- ST19)
+                        finish ("The host would not open a channel for the files (" ++ why ++ "), and nothing was sent") { sending = s, out = [] }
+
+                    Connection.SubsystemRefused why ->
                         if s.allowShell then
                             -- SFTP off: the shell's commands, on channels
                             -- numbered after the SFTP one (FT18)

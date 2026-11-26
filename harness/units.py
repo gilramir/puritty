@@ -216,8 +216,9 @@ SUITES = [
         # 615 since PS12: config.toml written through a link, its mode and
         # a lock kept; 616 since ST9: a
         # shell upload's block of channels bounded; 617 since ST26: a dropped
-        # folder that can't be read
-        617,
+        # folder that can't be read; 618 since ST19: a channel not opened
+        # is not SFTP turned off
+        618,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

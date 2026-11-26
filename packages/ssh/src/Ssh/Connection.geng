@@ -73,6 +73,12 @@ type alias Session =
   - `Started`: the shell or command runs.
   - `Refused`: the server would not open the channel, give the terminal or
     run the command, and why; the channel is over.
+  - `SubsystemRefused`: the channel opened, but the server would not start
+    the subsystem asked for (SFTP turned off, as a host without its
+    `Subsystem` line answers), and why; the channel is over. Apart from
+    `Refused`, which a channel not opened (`MaxSessions`, short of
+    resources) or a session not connected also is (the code review's
+    ST19).
   - `Output`, `ErrorOutput`: the program's bytes, as they came, in no
     character set.
   - `Exited`: its exit status; `Killed`: the signal that ended it.
@@ -86,6 +92,7 @@ type alias Session =
 type Event
     = Started
     | Refused String
+    | SubsystemRefused String
     | Output Bytes
     | ErrorOutput Bytes
     | Exited Int
@@ -811,7 +818,15 @@ replied ok id ch st =
             when Array.popFirst awaiting is
                 Just a ->
                     if not ok then
-                        emitOn id (Refused ("the server refused " ++ a.first)) (closing id ch st)
+                        emitOn id
+                            (when ch.kind is
+                                Subsystem _ ->
+                                    SubsystemRefused ("the server refused " ++ a.first)
+
+                                _ ->
+                                    Refused ("the server refused " ++ a.first)
+                            )
+                            (closing id ch st)
 
                     else if Array.isEmpty a.rest then
                         running id { ch | phase = Running } (emitOn id Started st)

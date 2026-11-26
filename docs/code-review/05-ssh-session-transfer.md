@@ -199,6 +199,7 @@ error (`geng-lang/docs/jvm.md:56`).
 - What: `Connection.Refused` is told for a channel open failure (`MaxSessions`, "short of resources"), for a session not yet connected, and for the `subsystem` request refused. `Sending.side` treats all three alike. docs/sftp.md FT18 says "A host that has SFTP is never sent through the shell".
 - Scenario: files dropped while the tab is still at its password question: "SFTP is turned off on this host (the session is not connected), and nothing was sent; [files] upload_through_shell = true sends through its shell instead". Or the host is at `MaxSessions`: the same words, and with the setting on the engine starts opening `exec` channels on a host that does have SFTP.
 - Fix: give `Refused` a reason type (open failed / request refused / not connected), fall back to the shell only on the subsystem request's refusal, and word the others as they are.
+- Fixed: 2026-11-25, `docs/sftp.md` FT42. `Connection.SubsystemRefused` for a refused subsystem (and `Backend`'s helper); only it falls back to the shell or says SFTP is off; a `Refused` is worded as it is; native app test.
 
 ### ST20 · An upload opens, seeks and closes the local file for every 32 KiB, and reads 64 KiB to use 32
 - Where: app/src/Main.geng:4857-4897 (`sendingOut`'s `Read`, `readUpTo`); pieces asked by packages/ssh/src/Ssh/Transfer.geng:1090-1091 and ShellTransfer.geng:513-514

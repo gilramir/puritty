@@ -3378,6 +3378,9 @@ sideLine e =
         Connection.Refused why ->
             "refused: " ++ why
 
+        Connection.SubsystemRefused why ->
+            "subsystem refused: " ++ why
+
         Connection.Output b ->
             "output " ++ String.fromInt (Bytes.length b) ++ " bytes"
 
@@ -4694,6 +4697,10 @@ uploaded side m =
                     Connection.Refused why ->
                         { m | upload = Just { u | err = Bytes.flatten [ u.err, Bytes.fromString why ] } }
 
+                    Connection.SubsystemRefused why ->
+                        -- a command's channel asks for no subsystem
+                        { m | upload = Just { u | err = Bytes.flatten [ u.err, Bytes.fromString why ] } }
+
                     Connection.Exited status ->
                         { m | upload = Just { u | status = Just status } }
 
@@ -5439,8 +5446,14 @@ chooserEvent side m =
                         in
                         chooserStep { picker = applied.picker, requests = applied.requests, outcome = Picker.Stay } { c | source = r.source, toSend = Bytes.flatten [ c.toSend, r.send ] } m
 
-                    Connection.Refused why ->
+                    Connection.SubsystemRefused why ->
                         Task.succeed { m | choosing = Just { c | picker = Picker.trouble ("SFTP is turned off on this host, and the folders are read with it: " ++ why) c.picker }, urgent = True }
+
+                    Connection.Refused why ->
+                        -- the channel not opened or the session not
+                        -- connected: not SFTP turned off (the code review's
+                        -- ST19)
+                        Task.succeed { m | choosing = Just { c | picker = Picker.trouble ("The host would not open a channel to read the folders: " ++ why) c.picker }, urgent = True }
 
                     Connection.Ended ->
                         Task.succeed { m | choosing = Just { c | picker = Picker.trouble "The channel the folders are read on closed" c.picker }, urgent = True }

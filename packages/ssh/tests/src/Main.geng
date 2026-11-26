@@ -2872,6 +2872,9 @@ onConnectionEvent event session =
         Connection.Refused why ->
             say ("refused: " ++ why) |> Task.andThen (\_ -> onTransport (Transport.disconnect 11 "done" session.transport) { session | done = True })
 
+        Connection.SubsystemRefused why ->
+            say ("refused: " ++ why) |> Task.andThen (\_ -> onTransport (Transport.disconnect 11 "done" session.transport) { session | done = True })
+
         Connection.Output bytes ->
             -- kept is taken: the window given back for it (SC35)
             withConnectionDo (Connection.taken (Bytes.length bytes)) { session | output = Array.pushLast bytes session.output }
@@ -3076,6 +3079,9 @@ sftpOverSession args dir sources =
                                 Task.succeed Bytes.empty
 
                             Just (Session.Side { ref = 1, event = Connection.Refused why }) ->
+                                say ("the sftp channel was refused: " ++ why) |> Task.map (\_ -> Bytes.empty)
+
+                            Just (Session.Side { ref = 1, event = Connection.SubsystemRefused why }) ->
                                 say ("the sftp channel was refused: " ++ why) |> Task.map (\_ -> Bytes.empty)
 
                             Just Session.Ended ->
@@ -3292,6 +3298,9 @@ watchOn args sources w notice0 =
                                         line "started"
 
                                     Connection.Refused why ->
+                                        line ("refused: " ++ why)
+
+                                    Connection.SubsystemRefused why ->
                                         line ("refused: " ++ why)
 
                                     Connection.Exited status ->

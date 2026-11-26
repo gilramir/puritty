@@ -79,7 +79,7 @@ settingsFile =
                         -- the host refuses SFTP: the shell's commands, on
                         -- channels after the transfer's own
                         shell =
-                            (Sending.side { ref = 10, event = Connection.Refused "no sftp" } begun.sending).sending
+                            (Sending.side { ref = 10, event = Connection.SubsystemRefused "no sftp" } begun.sending).sending
                     in
                     Task.succeed
                         (Expect.equal { first = True, last = True, after = False }
@@ -121,6 +121,21 @@ settingsFile =
                                                     { jobs = Array.length got.jobs, refused = Array.map (String.contains "a folder that can't be read here") got.refused }
                                             )
                                 )
+                )
+            , U.test "a channel the host would not open is not SFTP turned off: no shell, and said as it is (review ST19)"
+                (\_ ->
+                    let
+                        begun =
+                            Sending.begin { ref = 10, tab = 1, folder = Bytes.fromString "/tmp", jobs = [], refused = [], allowShell = True, ms = 0 }
+
+                        -- MaxSessions: the channel not opened
+                        refused =
+                            (Sending.side { ref = 10, event = Connection.Refused "administratively prohibited" } begun.sending).sending
+                    in
+                    Task.succeed
+                        (Expect.equal { shell = False, over = True }
+                            { shell = Sending.owns 11 refused, over = Sending.isOver refused }
+                        )
                 )
             , U.test "a setting written to config.toml of mode 600: the mode kept, no temporary left (review PS12)"
                 (\_ ->
