@@ -145,6 +145,13 @@ CASES = [
     # writing to a Korean name; each must reach it as EUC-KR, the folder
     # made under its EUC-KR bytes and the path pasted back as the host has it
     ("paste-picture-euc-kr", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
+    # a host whose paste command answers without end (the code review's
+    # MA25: `yes` in its place, by sshd's ForceCommand): what puritty keeps
+    # of the answer is held to a few kilobytes, the channel closed and the
+    # paste said to have failed, so that a second picture can be pasted,
+    # and failed too
+    ("paste-picture-endless", "ed", "", "known",
+     ["clip-picture", "ctrl+shift+v", "sleep:3", "clip-picture", "ctrl+shift+v", "sleep:3"], "sleep 20"),
 ]
 
 # settings a case's config.toml adds, and its host's
@@ -153,7 +160,13 @@ EXTRA = {"paste-picture": "\n[clipboard]\npaste_images = \"allow\"\n",
          "paste-text": "\n[clipboard]\npaste_images = \"allow\"\n",
          "paste-picture-off": "\n[clipboard]\npaste_images = \"deny\"\n",
          "paste-picture-folder": "\n[clipboard]\npaste_images = \"allow\"\npaste_folder = \"/nowhere/not-this-one\"\n",
-         "paste-picture-euc-kr": "\n[clipboard]\npaste_images = \"allow\"\n"}
+         "paste-picture-euc-kr": "\n[clipboard]\npaste_images = \"allow\"\n",
+         "paste-picture-endless": "\n[clipboard]\npaste_images = \"allow\"\n"}
+
+# the host's side for a case, by sshd's ForceCommand: every command run as
+# asked, but the paste's, which is answered with `yes`, without end
+ENDLESS = WORK / "endless.sh"
+SERVER_EXTRA = {"paste-picture-endless": [f"ForceCommand /bin/sh {ENDLESS}"]}
 
 KOREAN_FOLDER = "붙여넣기 폴더"
 KOREAN_OUT = "결과.txt"
@@ -199,7 +212,11 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
     korean = name == "paste-picture-euc-kr"
     # the result's name, in EUC-KR on the EUC-KR host
     size = home / (os.fsdecode(KOREAN_OUT.encode("euc-kr")) if korean else "size.txt")
-    server = sshd.Server(euc_kr_locale() if korean else [])
+    if name in SERVER_EXTRA:
+        WORK.mkdir(parents=True, exist_ok=True)
+        ENDLESS.write_text('case "$SSH_ORIGINAL_COMMAND" in\n  *puritty-paste*) exec yes ;;\n'
+                           '  "") exec "$SHELL" -l ;;\n  *) exec /bin/sh -c "$SSH_ORIGINAL_COMMAND" ;;\nesac\n')
+    server = sshd.Server(euc_kr_locale() if korean else SERVER_EXTRA.get(name, []))
     bastion = sshd.Server([]) if name == "jump" else None
     try:
         server_pub = (sshd.WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
@@ -297,6 +314,11 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
     asked = [line.split("asked: write ", 1)[1].rsplit(" on ", 1)[0]
              for log in sorted((home / ".local" / "state" / "puritty" / "logs").glob("*.log"))
              for line in log.read_text(errors="replace").splitlines() if "asked: write " in line]
+    if name == "paste-picture-endless":
+        notes = [line.split("paste", 1)[1].strip(" :") for log in sorted((home / ".local" / "state" / "puritty" / "logs").glob("*.log"))
+                 for line in log.read_text(errors="replace").splitlines()
+                 if "still being sent" in line or "answered more than" in line]
+        seen += f"; the paste's notes: {notes}"
     if asked:
         got = (size.parent / (size.name + ".path"))
         received = got.read_text() if got.exists() else None

@@ -349,7 +349,7 @@ way to the host over a channel beside the session: the channel's number,
 the picture's size, and what the command on the host wrote and how it
 ended. -}
 type alias Upload =
-    { ref : Int, size : Int, out : Bytes, err : Bytes, status : Maybe Int, asking : Maybe { png : Bytes, name : String } }
+    { ref : Int, size : Int, out : Bytes, err : Bytes, status : Maybe Int, asking : Maybe { png : Bytes, name : String }, cut : Bool }
 
 
 {-| A pasted picture to be written once the user says yes
@@ -1901,16 +1901,54 @@ restoreInto restoring m =
                 named =
                     { m | tab = { info | name = first.name, color = first.color }, saving = { dir = restoring.dir, window = Just c.window, written = "", at = m.last }, quietUntil = Clock.after m.last 3000 }
 
-                shownId =
-                    -- ids are given in order from 0, so the saved order's
-                    -- place is the id
-                    clamp 0 (Array.length c.state.tabs - 1) c.state.shown
+                firstId =
+                    info.id
             in
+            -- each saved tab's id as it opened, none for one that did not
+            -- start: the saved place shown is looked up there, not taken
+            -- for an id, which a tab that failed before it moved (the code
+            -- review's MA19)
             Array.foldl
-                (\t acc -> acc |> Task.andThen (openTabWith { directory = Just (Maybe.map Path.fromString t.directory), name = t.name, color = t.color, kept = Nothing }))
-                (Task.succeed named)
+                (\t acc ->
+                    acc
+                        |> Task.andThen
+                            (\sofar ->
+                                let
+                                    nextId =
+                                        sofar.model.nextTabId
+
+                                    ids =
+                                        sofar.ids
+                                in
+                                openTabWith { directory = Just (Maybe.map Path.fromString t.directory), name = t.name, color = t.color, kept = Nothing } sofar.model
+                                    |> Task.map
+                                        (\opened ->
+                                            { ids =
+                                                Array.pushLast
+                                                    (if opened.nextTabId > nextId then
+                                                        Just nextId
+
+                                                     else
+                                                        Nothing
+                                                    )
+                                                    ids
+                                            , model = opened
+                                            }
+                                        )
+                            )
+                )
+                (Task.succeed { model = named, ids = [ Just firstId ] })
                 (Array.dropFirst 1 c.state.tabs)
-                |> Task.map (\opened -> showTab shownId opened)
+                |> Task.map
+                    (\opened ->
+                        let
+                            shownId =
+                                Array.get c.state.shown opened.ids
+                                    |> Maybe.andThen (\id -> id)
+                                    |> Maybe.withDefault (meant Reason.Gone firstId)
+                        in
+                        showTab shownId opened.model
+                    )
                 |> Task.andThen
                     (\shown ->
                         when restoring.dir is
@@ -3635,7 +3673,20 @@ refontOr new old language applied =
                         Err why ->
                             meant Reason.Refused
                                 Console.writeErr ("puritty: " ++ why ++ "; the font in use is kept\n")
-                                    |> Task.map (\_ -> { applied | config = { new | font = old.font, language = old.language, glyphCacheMb = old.glyphCacheMb } })
+                                    |> Task.andThen
+                                        (\_ ->
+                                            let
+                                                stayed =
+                                                    { applied | config = { new | font = old.font, language = old.language, glyphCacheMb = old.glyphCacheMb } }
+                                            in
+                                            -- a size changed with it is still taken (the code
+                                            -- review's MA20)
+                                            if new.points /= old.points then
+                                                Window.zoom new.points |> Task.map (\cell -> cellSized cell { stayed | points = new.points })
+
+                                            else
+                                                Task.succeed stayed
+                                        )
                 )
 
     else if new.points /= old.points then
@@ -4635,7 +4686,7 @@ uploadImage side png m =
                                         (\_ ->
                                             logLine "paste"
                                                 "the host asked where its paste folder is"
-                                                { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Just { png = png, name = name } }, uploads = ref }
+                                                { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Just { png = png, name = name }, cut = False }, uploads = ref }
                                         )
                 )
 
@@ -4664,7 +4715,7 @@ sendCommand side ref command png m =
         |> Task.map
             (\_ ->
                 noteUp { text = "Sending the picture (" ++ sizeText (Bytes.length png) ++ ") to the host", failed = False, kept = True }
-                    { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Nothing }, uploads = ref }
+                    { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Nothing, cut = False }, uploads = ref }
             )
 
 
@@ -4677,22 +4728,90 @@ pasteFolderOf m =
         |> Maybe.withDefault (meant Reason.NotSet m.config.pasteFolder)
 
 
+{-| The most of a paste command's answer kept, its output and its errors
+together: a path and an error line are far less. -}
+mostAnswer : Int
+mostAnswer =
+    4096
+
+
+{-| What the channel carrying a picture told, and the channel closed when
+its answer went past `mostAnswer` (`uploaded`'s `cut`): the paste said to
+have failed then, so that the tab can paste again (the code review's
+MA25). -}
+uploadedThen : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Task Error Model
+uploadedThen side m =
+    let
+        next =
+            uploaded side m
+    in
+    when next.upload is
+        Just u ->
+            if u.cut then
+                let
+                    note =
+                        "The host answered more than " ++ sizeText mostAnswer ++ " to the paste command, not a path: the picture was not pasted"
+
+                    ended =
+                        noteUp { text = note, failed = True, kept = False } { next | upload = Nothing }
+                in
+                when ended.remote.side is
+                    Just toSide ->
+                        toSide (Session.SideClose u.ref) |> Task.map (\_ -> ended)
+
+                    Nothing ->
+                        meant Reason.NotOpen (Task.succeed ended)
+
+            else
+                Task.succeed next
+
+        Nothing ->
+            meant Reason.NotOpen (Task.succeed next)
+
+
 {-| What the channel carrying a picture told: its output kept, and at its
-end the file's path pasted, or why it could not be. -}
+end the file's path pasted, or why it could not be. Past `mostAnswer`
+nothing more is kept and the upload is marked `cut`. -}
 uploaded : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Model
 uploaded side m =
+    let
+        within u more =
+            let
+                sizes =
+                    { out = Bytes.length u.out, err = Bytes.length u.err, more = Bytes.length more }
+            in
+            -- each held to the most first, so that their sum is small
+            if sizes.out > mostAnswer || sizes.err > mostAnswer || sizes.more > mostAnswer then
+                Nothing
+
+            else if sizes.out + sizes.err + sizes.more > mostAnswer then
+                Nothing
+
+            else
+                Just more
+    in
     when m.upload is
         Just u ->
-            if u.ref /= side.ref then
+            if u.ref /= side.ref || u.cut then
                 m
 
             else
                 when side.event is
                     Connection.Output b ->
-                        { m | upload = Just { u | out = Bytes.flatten [ u.out, b ] } }
+                        when within u b is
+                            Just more ->
+                                { m | upload = Just { u | out = Bytes.flatten [ u.out, more ] } }
+
+                            Nothing ->
+                                meant Reason.FromOutside { m | upload = Just { u | cut = True } }
 
                     Connection.ErrorOutput b ->
-                        { m | upload = Just { u | err = Bytes.flatten [ u.err, b ] } }
+                        when within u b is
+                            Just more ->
+                                { m | upload = Just { u | err = Bytes.flatten [ u.err, more ] } }
+
+                            Nothing ->
+                                meant Reason.FromOutside { m | upload = Just { u | cut = True } }
 
                     Connection.Refused why ->
                         { m | upload = Just { u | err = Bytes.flatten [ u.err, Bytes.fromString why ] } }
@@ -5441,7 +5560,7 @@ chooserEvent side m =
     when m.choosing is
         Just c ->
             if c.ref /= side.ref then
-                Task.succeed (uploaded side m)
+                uploadedThen side m
 
             else
                 when side.event is
@@ -5485,7 +5604,7 @@ chooserEvent side m =
                         Task.succeed m
 
         Nothing ->
-            meant Reason.NotOpen (Task.succeed (uploaded side m))
+            meant Reason.NotOpen (uploadedThen side m)
 
 
 {-| What a key, the pointer or the host's answers came to: the picker's

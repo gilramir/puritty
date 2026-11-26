@@ -188,6 +188,7 @@ not by a run.
 - What: "It never waits on a reply from the server while drawing" holds for the frame's own requests, but `puritty_x11_draw` also drains events, and three event handlers there block on replies; the first picture upload blocks once.
 - Scenario: a drag entering the window, or a keymap change, during output over `ssh -X` stalls a frame by one to several round trips.
 - Fix: call `xcb_prefetch_maximum_request_length` at open; read the XDND type list and the window's origin with polled replies (the mechanism `paste_poll` already has), or track the origin from ConfigureNotify; keymap as in the finding above. Or narrow the README's sentence to what is measured.
+- Fixed: In part, 2026-11-26, `docs/renderer.md` R32. The longest request is asked at open; the README says a drag entering and a layout change each wait once. The two waits themselves are left.
 
 ### X19 · `setenv("XCURSOR_PATH", ...)` changes the environment the terminal's programs may inherit
 - Where: packages/x11/src/Ext/puritty_x11.c:1136

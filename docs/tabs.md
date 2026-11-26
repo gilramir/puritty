@@ -904,3 +904,23 @@ while `yes` runs: the window's title followed in 1 to 5 s before as now,
 so the settings were not starved in this test. The shown tab's own speed
 is the same: 50 MB of `yes` text took 1.12 to 1.14 s with the build
 before and with this one, two runs each.
+
+## TB23 · A restored window shows the tab that was shown (2026-11-26)
+
+The code review's MA19. A restored window (TB10) opens its saved tabs in
+order and then shows the one that was shown, which the state keeps as a
+place in the saved order. The place was taken for the tab's id, "ids are
+given in order from 0", but a tab that does not start takes no id, and
+every tab after it then had an id one below its place: the window showed
+the tab after the one that was shown, or stayed on the last opened. Now
+the fold keeps, for each saved tab, the id it opened with or none, and
+the place is looked up there; when the shown tab is the one that did not
+start, the first is shown.
+
+**Tested**: nothing fails on the code before. A restored tab whose folder
+is gone opens in the program's own (TB4) rather than failing, and a
+local start fails outright only when the program itself cannot start,
+the same for every tab; no gate makes one tab of several fail.
+`bench/tabs/restore.py` gives what TB10 records: the shown tab's shell in
+the second directory, the others in theirs, and a host window's two tabs
+logged in.

@@ -35,8 +35,10 @@ frame** for an ordinary window.
 puritty has a renderer of its own for X11. It sends the X server text and
 small instructions, not pictures. It keeps its own copy of the screen, sends
 only what changed, and moves scrolled text with one copy on the server
-instead of redrawing it. It never waits on a reply from the server while
-drawing. Measured over `ssh -X`:
+instead of redrawing it. It does not wait on a reply from the server for
+what it draws; a drag from another program entering the window, and a
+change of keyboard layout, each wait on one when they come. Measured over
+`ssh -X`:
 
 | what you're doing | what crosses the network |
 |---|---|

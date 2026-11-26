@@ -1301,6 +1301,10 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
         return (geng_cancel) {0};
     }
     screen = screen_of(conn, screen_number);
+    /* the longest request asked now, so that the first image's upload
+     * does not wait a round trip for it while drawing (the code review's
+     * X18) */
+    xcb_prefetch_maximum_request_length(conn);
     dpi0 = screen_dpi();
     if (getenv("X11_STATS")) fprintf(stderr, "dpi %d\n", dpi0);
     pt_verbose = getenv("X11_STATS") != NULL;

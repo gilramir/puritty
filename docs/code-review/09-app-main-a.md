@@ -200,6 +200,7 @@ Line numbers are `app/src/Main.geng` unless a file is named.
 - What: the saved `shown` is a place in the saved order, used as a tab id. A tab that fails to start (`startFailed`) gets no id, so every later tab's id is one lower than its place.
 - Scenario: five saved tabs, the third's directory is on a disk not mounted and its start fails outright, the fourth was shown: the window shows what was the fifth, or with the last one failing, stays on the last opened. Only the last failure's reason is kept in `startFailed`.
 - Fix: collect the id each restored tab got (or `Nothing`) and show by that list.
+- Fixed: 2026-11-26, `docs/tabs.md` TB23. Each restored tab's id is kept as it opens (none for one that did not start), and the shown place is looked up there. No test fails on the old code (no gate makes one restored tab of several fail); `bench/tabs/restore.py` as TB10 records.
 
 ### MA20 · A font that cannot be opened on reload also drops a size change made with it
 - Where: app/src/Main.geng:3507-3531 (`refontOr`)
@@ -209,6 +210,7 @@ Line numbers are `app/src/Main.geng` unless a file is named.
 - What: on `Err`, `config` becomes `{ new | font = old.font, language = old.language, glyphCacheMb = old.glyphCacheMb }`: `config.points` is the new size, `m.points` and the window's font are the old, and `Window.zoom` is not called. The next reload sees `new.points == old.points` and does nothing.
 - Scenario: the settings file is edited to a font name with a typo and a new size together: the size is never applied until it is changed again.
 - Fix: on `Err`, fall through to the `points` branch (zoom when the size changed).
+- Fixed: 2026-11-26, `docs/settings.md` ST41. A font the window refuses on reload, with a new size, still zooms to the size. No test fails on the old code: no gate reaches the refusal (Linux's fontconfig answers every family; Windows answers with the stand-in).
 
 ### MA21 · A synchronized update holds back puritty's own frames too
 - Where: app/src/Main.geng:1697-1701 (`frameAt`: the mode 2026 test comes before `urgent`)
@@ -279,3 +281,4 @@ Line numbers are `app/src/Main.geng` unless a file is named.
 - Whether `Task.race` prefers its first ready task natively was taken from docs/sftp.md FT25, not from the runtime; whether `Process.kill`, `Process.resize` and `File.writeSome` can fail on a pty whose program has gone was not established (core library).
 - The Windows side of anything here (`app/windows/src/Platform.geng`, `Open.geng`) beyond the one `ShellExecuteW` call.
 - Nothing was built, run or timed; the search cost and the hidden-tab frame cost are from reading.
+- Fixed: 2026-11-26, `docs/sftp.md` FT47. At most 4 KB of the paste command's answer is kept; past that the channel is closed and the paste fails. Test: sshwindow `paste-picture-endless` (a host answering with `yes`): before, the second paste was refused as still being sent; now each fails and is closed.

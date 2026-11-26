@@ -1252,3 +1252,20 @@ fonts and a line of Han, Hangul, Arabic, Thai, Devanagari and symbols,
 9 faces open, VmRSS before and after eight Ctrl+= steps. Before, 26 MB
 then 129 MB (+103); now 26 then 40 (+14). The gate holds the growth
 under 40 MB.
+
+## R32. What the window waits on, said as it is (2026-11-26, the code review's X18)
+
+The README said the renderer "never waits on a reply from the server
+while drawing". That holds for a frame's own requests, but the draw call
+also takes the window's events, and three of their handlers wait on a
+reply: a drag from another program entering the window (its type list
+and the window's origin), a keyboard layout change (the keymap, fetched
+when the next key needs it, phase3-input.md §17), and the first image or
+color glyph uploaded, which asked the server's longest request
+(BIG-REQUESTS) then. That last is now asked at open
+(`xcb_prefetch_maximum_request_length`), so its answer is there when the
+first upload wants it; the README says the other two wait once when they
+come. Reading them without waiting is left.
+
+**Checked**: the app builds and the pixel gate (56) passes; no gate
+counts the round trips.

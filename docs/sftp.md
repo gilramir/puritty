@@ -2558,3 +2558,22 @@ ST27 named three gaps. Where they stand:
   under fish. Its `nix_shell` took the first path `nix build` printed,
   which for bash is its manual, with no `bin/bash`: the session ended
   with nothing sent. It now takes the output that holds the shell.
+
+## FT47 · A paste command's answer held to 4 KB (2026-11-26)
+
+The code review's MA25. A picture pasted to a host (FT13) is written by
+a command on a channel beside the session, which answers the file's
+path. Whatever came on that channel was kept, each piece appended by
+copying all before it, until the channel ended: a host whose shell
+answered the command without end (or a hostile one) made memory grow
+without limit, and the upload never ended, so no other picture could be
+pasted in that tab. Now at most 4 KB of the answer, output and errors
+together, is kept (`mostAnswer`); past that the channel is closed and
+the paste said to have failed, "The host answered more than 4 KB to the
+paste command, not a path".
+
+**Tested**: sshwindow's `paste-picture-endless` runs the host's sshd
+with a ForceCommand that answers the paste's command with `yes` and runs
+every other as asked, and pastes a picture twice. Before, the second
+paste was refused, "A picture is still being sent to the host"; now each
+is closed and said to have failed.

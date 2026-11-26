@@ -1281,3 +1281,23 @@ the log has `release left`, and the mark says `buttons held 0`.
 The events gate (WS19, built again in WS33) passes 13 of 13 on beelink1
 with the change; on Linux the pointer gate 56 of 56, the menu still on the
 press.
+
+## ST41 · A size changed with a font that will not open is still taken (2026-11-26)
+
+The code review's MA20. When the settings are read again with a new
+font, `refontOr` asks the window for it with the new size. When the
+window cannot open it, the font in use is kept, and so were the old
+language and glyph cache; but the settings went on with the new size
+while the window and the model kept the old one, and no zoom was asked,
+so the next read, seeing the size unchanged, did nothing: the size was
+lost until it was changed again. Now a refused font that came with a new
+size zooms to it.
+
+**Tested**: nothing fails on the code before. No gate reaches the
+refusal: on Linux fontconfig answers every family with some font, and
+this build's FreeType reads even Courier 10 Pitch's Type 1 file (a
+reload case with it passed before and after); on Windows a missing
+family is answered with the stand-in (Cascadia Mono). A Windows reload
+case with a missing family and size 15 kept the size before as after,
+and differed from a fresh start by a one-pixel shift of the text, 7,418
+pixels, before and after alike: not this, and not followed here.

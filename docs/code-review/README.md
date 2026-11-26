@@ -453,7 +453,7 @@ covered" sections. The larger gaps:
 | [X15](07-x11-text.md) | bug | confirmed | **fixed** `ui_glyph`'s key loses the face's top bit, and reads a 1-bit bitmap past its end |
 | [X16](07-x11-text.md) | bug | confirmed | **fixed** `WM_CLASS` is sent with a length one past the string |
 | [X17](07-x11-text.md) | bug | confirmed | **fixed** The X screen is always the first, whatever `DISPLAY` names |
-| [X18](07-x11-text.md) | inaccuracy | confirmed | Draw-path round trips the README's sentence does not allow for |
+| [X18](07-x11-text.md) | inaccuracy | confirmed | **in part** Draw-path round trips the README's sentence does not allow for |
 | [X19](07-x11-text.md) | bug | plausible | **fixed** `setenv("XCURSOR_PATH", ...)` changes the environment the terminal's programs may inherit |
 | [X20](07-x11-text.md) | design | confirmed | **fixed** The event buffer drops records silently when it is full |
 | [X21](07-x11-text.md) | dead-code | confirmed | **fixed** `kstate` and the XKB StateNotify subscription are dead |
@@ -483,13 +483,13 @@ covered" sections. The larger gaps:
 | [MA16](09-app-main-a.md) | efficiency | confirmed | The cursor's blink keeps waking the loop, and repainting every cell, while no cursor is on the screen |
 | [MA17](09-app-main-a.md) | bug | plausible | A search match after an emoji sequence, or in a row where lowering a letter changes its length, is highlighted in the wrong columns |
 | [MA18](09-app-main-a.md) | design | confirmed | The `Backend` passed beside the model can be a tab's that is no longer shown (the menu's paths) |
-| [MA19](09-app-main-a.md) | bug | confirmed | A restored window shows the wrong tab when one of its tabs does not start |
-| [MA20](09-app-main-a.md) | bug | confirmed | A font that cannot be opened on reload also drops a size change made with it |
+| [MA19](09-app-main-a.md) | bug | confirmed | **fixed** A restored window shows the wrong tab when one of its tabs does not start |
+| [MA20](09-app-main-a.md) | bug | confirmed | **fixed** A font that cannot be opened on reload also drops a size change made with it |
 | [MA21](09-app-main-a.md) | bug | confirmed | A synchronized update holds back puritty's own frames too |
 | [MA22](09-app-main-a.md) | bug | plausible | The helper processes of an OpenSSH tab: a pipe left open, entries never removed, and two ways to stall |
 | [MA23](09-app-main-a.md) | bug | plausible | A program that closes its terminal but keeps running freezes the window |
 | [MA24](09-app-main-a.md) | bug | plausible | A binding that names a shifted character or a non-Latin layout's letter never matches |
-| [MA25](09-app-main-a.md) | security | confirmed | What a host's paste command prints is kept without bound |
+| [MA25](09-app-main-a.md) | security | confirmed | **fixed** What a host's paste command prints is kept without bound |
 | [MB7](10-app-main-b.md) | bug | confirmed | **fixed** An unbracketed paste of CRLF text sends two CRs a line, and a CRLF cut between two pieces does too |
 | [MB8](10-app-main-b.md) | bug | confirmed | Tabs past the window's right edge cannot be seen or clicked |
 | [MB9](10-app-main-b.md) | efficiency | plausible | **fixed** `lineEnds` builds each pasted piece as an `Array UInt8`, a `pushLast` a byte |
