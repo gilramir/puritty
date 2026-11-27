@@ -943,3 +943,20 @@ ends with.
 and sleeps a minute. Two tabs, the second's: the first shown 0.4 s after
 the second opened; before, not within 20 s. One tab: puritty ended after
 1.4 s; before, not within 20 s.
+
+## TB25 · A closed tab that does not open again is still kept (2026-11-26)
+
+The code review's MB14. Ctrl+Alt+Shift+T takes the newest closed tab out
+of the ones kept (TB11, ten minutes) and opens it again with its
+terminal and scrollback. When its program did not start, the window said
+so, but the tab was already out of the kept ones and was dropped with
+it: the scrollback the user wanted back was gone on the first try.
+`openTabWith` now takes the whole closed record, and on a failed start
+puts it back among the kept, with the bells counted for it taken back.
+
+**Tested**: `harness/reopenfail.py` opens a second tab and closes it,
+lowers puritty's soft limit of processes to 1 (`prlimit`) so that no
+program can start, reopens (refused: "spawn sh: Resource temporarily
+unavailable"), puts the limit back, closes the box and reopens again.
+Before, the second try had nothing to reopen; now the window shows two
+tabs again.

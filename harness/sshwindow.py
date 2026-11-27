@@ -49,6 +49,9 @@ CASES = [
     ("known", "ed", "", "known", [], "stty size > {size}; exit 0"),
     ("passphrase", "ecdsa521", "hunter2", "known", ["type:hunter2", "Return"], "exit 0"),
     ("wrong-passphrase-then-right", "ecdsa521", "hunter2", "known", ["type:nope", "Return", "type:hunter2", "Return"], "exit 0"),
+    # the passphrase pasted into the question (the code review's MB18):
+    # it goes into the field, not to the session
+    ("passphrase-pasted", "ecdsa521", "hunter2", "known", ["clip-text:hunter2", "ctrl+shift+v", "Return"], "exit 0"),
     ("decline", "ed", "", "empty", ["Escape", "Return"], "exit 0"),
     # a changed key (docs/ssh-client.md SC28): Enter does nothing, Esc
     # refuses and Enter closes; O trusts it once; A puts it in place

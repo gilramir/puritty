@@ -137,6 +137,7 @@ finding is from reading the code and its callers.
 - What: `reopenTab` takes the closed tab out of its slot (`Builder.swap slot Nothing`) and passes it as `kept`; when `starting` fails, `openTabWith` answers `{ m | startFailed = Just why }`, where `m` already has the slot empty, and `with.kept` is dropped. (`bellsHeard`, raised for the lost tab's bells, is put right by `bellRung` on the next turn, which takes a lower total as it is.)
 - Scenario: Ctrl+Alt+Shift+T while the shell's program cannot start (its directory's file system gone, `fork` refused, the program in the settings removed): the box says the tab did not start, and the scrollback the user wanted back, kept for ten minutes by TB11, is gone on the first try.
 - Fix: on `Err`, put the `Closed` back in its slot (and take the bells back) before answering.
+- Fixed: 2026-11-26, `docs/tabs.md` TB25. A closed tab whose reopening does not start is put back among the kept. Test: `harness/reopenfail.py` (the start refused by a lowered process limit): before, the second try had nothing to reopen; now it opens.
 
 ### MB15 · `handleOne` carries a `remote` beside `m.remote`, and four paths go on with the stale one
 - Where: app/src/Main.geng:6691 (`menuKey`), 6843 (`menuChosen`), 7043 (`menuPress`), 7047 (`openMenu`), against 6594-6711 (`handle next.remote`)
@@ -173,6 +174,7 @@ finding is from reading the code and its callers.
 - What: with puritty's own screen up, keys go to `sshKey` and IME text to `sshTyped`, but pasted text goes to `pasteIn` → `send` → the session's `Keys`. The paste keys are swallowed by `sshKey` (6677-6685), while the middle button still asks for a paste.
 - Scenario: a user with a password manager middle-clicks to paste the password into "password for gilbert@build:": nothing shows in the field, and the text is handed to the session instead. If any path delivers `Keys` queued before the shell starts, the password is typed at the shell's prompt.
 - Fix: in `Window.Pasted`, when `ownScreenUp m` and a field is asked, give the text to `sshTyped` (control characters dropped, as it does); let the paste keys through `sshKey` too.
+- Fixed: 2026-11-26, `docs/ssh-client.md` SC44. On puritty's own ssh screen a paste key asks for a paste and the text goes into the question's field. Test: sshwindow `passphrase-pasted`: before, still asking; now logged in.
 
 ### MB19 · The dialogs are listed in six places, and four groups of this half are modules in waiting
 - Where: app/src/Main.geng:6585-6696 (keys), 6947-7074 (pointer), 6855-6887 (IME), 8426-8476 (`draw`), 2389 (`pointerShape`), 2420 (`hoverShapes`); and 5348-5810, 10264-10615

@@ -7049,7 +7049,13 @@ handleOne remote ms rest ev m =
                         |> Task.andThen (\next -> handle next.remote ms rest next)
 
                 NoDialog ->
-                    if ownScreenUp m then
+                    if ownScreenUp m && k.action /= 0 && isPasteKey m.config k /= Nothing then
+                        -- a paste key on puritty's own screen asks for a paste,
+                        -- which goes into its question's field (the code
+                        -- review's MB18)
+                        owned remote ms rest { m | toPaste = Maybe.map (pasteFrom m.config) (isPasteKey m.config k) }
+
+                    else if ownScreenUp m then
                         -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
                         (if k.action /= 0 then
                             sshKey remote k m
@@ -7808,7 +7814,14 @@ had mode 2004 set when its first text came, and queued as typed text is, in
 the pane's character set. The view comes to the bottom, as for a key. -}
 pasteIn : Bool -> Bytes -> (taken m : Model) -> Model
 pasteIn more text m =
-    if TmuxMode.isAsking m.tmux then
+    if ownScreenUp m && Maybe.andThen .asking m.ssh /= Nothing then
+        -- into the question's field on puritty's own screen, not to the
+        -- session, where a password pasted for the question would wait to
+        -- be typed at the shell (the code review's MB18); its control
+        -- characters dropped, as typed text's are
+        logLine "paste" (String.fromInt (Bytes.length text) ++ " bytes into the question's field") (sshTyped (Bytes.toStringLossy text) { m | urgent = True })
+
+    else if TmuxMode.isAsking m.tmux then
         -- into tmux's prompt that puritty asks, its line ends as spaces
         -- (docs/tmux.md TM25)
         logLine "paste" (String.fromInt (Bytes.length text) ++ " bytes into tmux's prompt") { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
@@ -9719,7 +9732,7 @@ openTab m =
 one in `directory` when given (a restored tab, TB10), else in the shown
 tab's; and a closed tab's screen and scrollback over its new program, when
 one is `kept` (TB11). -}
-openTabWith : (taken with : { directory : Maybe (Maybe Path.Path), name : String, color : TabColor, kept : Maybe Tab }) -> (taken m : Model) -> Task Error Model
+openTabWith : (taken with : { directory : Maybe (Maybe Path.Path), name : String, color : TabColor, kept : Maybe Closed }) -> (taken m : Model) -> Task Error Model
 openTabWith with m =
     let
         cols =
@@ -9781,7 +9794,25 @@ openTabWith with m =
                     -- said in the window, which a desktop shows, and on
                     -- standard error for a log (docs/tabs.md TB16)
                     Err why ->
-                        meant Reason.Refused Console.writeErr ("puritty: a new tab did not start: " ++ why ++ "\n") |> Task.map (\_ -> { m | startFailed = Just why, urgent = True })
+                        meant Reason.Refused
+                            Console.writeErr ("puritty: a new tab did not start: " ++ why ++ "\n")
+                                |> Task.map
+                                    (\_ ->
+                                        let
+                                            failed =
+                                                { m | startFailed = Just why, urgent = True }
+                                        in
+                                        -- a closed tab that did not open again is kept
+                                        -- closed, its scrollback with it, and its bells
+                                        -- no longer counted as heard (the code review's
+                                        -- MB14)
+                                        when with.kept is
+                                            Just c ->
+                                                keepClosed c { failed | bellsHeard = failed.bellsHeard - c.tab.term.bells }
+
+                                            Nothing ->
+                                                meant Reason.NotSet failed
+                                    )
 
                     Ok begun ->
                         let
@@ -9801,7 +9832,7 @@ openTabWith with m =
                                     begun.problems
                                     (when with.kept is
                                         Just k ->
-                                            reopened k id remote host m
+                                            reopened k.tab id remote host m
 
                                         Nothing ->
                                             meant Reason.NotSet freshTab id remote host with.name with.color cols rows m
@@ -10090,7 +10121,7 @@ reopenTab m =
                     in
                     -- its bells were rung when it was open: counted as heard,
                     -- so that it does not ring them again (TB17)
-                    openTabWith { directory = directory, name = name, color = color, kept = Just c.tab } { m | closedTabs = out.builder, bellsHeard = m.bellsHeard + c.tab.term.bells }
+                    openTabWith { directory = directory, name = name, color = color, kept = Just c } { m | closedTabs = out.builder, bellsHeard = m.bellsHeard + c.tab.term.bells }
 
                 Nothing ->
                     meant Reason.NoMore (Task.succeed { m | closedTabs = out.builder })

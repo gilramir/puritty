@@ -2126,3 +2126,21 @@ request each, the first closed before the second opened. The client
 before this change: one connection, both requests. Not tested: the link
 closed after a failed read or write, and the jump host's error told;
 the harness has no link that fails other than by closing.
+
+## SC44 · A paste goes into the question's field (2026-11-26)
+
+The code review's MB18. While puritty's own ssh screen asks a question
+(a passphrase, a password, a host's key), keys go to its field (SC18)
+and an input method's text too, but a paste went to `pasteIn`, which
+hands it to the session, and the paste keys (Ctrl+Shift+V, Shift+Insert)
+were swallowed by the screen. A password manager's middle click on
+"password for gilbert@build:" put nothing in the field and gave the
+password to the session, to be typed at the shell if anything there
+took it. Now a paste key on the screen asks for a paste, and pasted text
+goes into the question's field, its control characters dropped as typed
+text's are.
+
+**Tested**: sshwindow's `passphrase-pasted` puts the key's passphrase
+on the clipboard, presses Ctrl+Shift+V at the question and then Enter:
+the login goes on and the command ends with 0. Before, the field stayed
+empty and the window was still asking when the case ended.
