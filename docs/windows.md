@@ -1238,3 +1238,41 @@ pointer position is one pixel up and left of the pin, all 27 lines and
 nothing else, since R21 (2026-11-19) shares the pixels past the last cell
 between the two sides (the 354 by 211 window has 3 and 2 spare); they are
 pinned again. 13 of 13 cases pass on beelink1.
+
+## WS34 · The clipboard's failures said, a pasted PNG its own length, a font path ended, the secret wiped (2026-11-27)
+
+The code review's W11 (in part), W12, W13 and W16, in
+`packages/win32/src/Ext/puritty_win32.c`.
+
+- **W11.** Copying, `own_clipboard` said nothing when another program
+  held the clipboard open for 100 ms (a clipboard manager, RDP's
+  `rdpclip`) or memory ran out, and used its allocations (`malloc`,
+  `GlobalLock`) unchecked; pasting, `read_clipboard` wrote through an
+  unchecked `malloc`, and both narrowed a `size_t` to `int` for Windows'
+  conversions. Now every allocation is checked (a failure is an empty
+  paste, or no copy), the lengths are bounded before the casts, and
+  `select` answers 0, or 1 when the clipboard was busy and 2 when memory
+  or the length failed. Left: the Geng side does not yet say that answer
+  anywhere, and `GetClipboardData` still runs on the Geng thread, so an
+  owner that hangs while rendering hangs every tab for Windows' timeout.
+- **W12.** A PNG pasted from the clipboard was taken as its block's size
+  (`GlobalSize`), which the allocator may round up, so bytes past `IEND`
+  went with the file. Now `png_length` (`puritty_png.h`, plain C) walks
+  the chunks to `IEND`, and the whole block is taken only when it is not
+  a PNG or is cut short. A bitmap paste's `CoInitializeEx` is paired with
+  `CoUninitialize`, as the jump list's is.
+- **W13.** A font's file in the registry was ended only at the buffer's
+  last place, so a value stored without its NUL ran on into the last
+  value's tail; now it ends where `RegEnumValueW` says it does. A failed
+  `GetWindowsDirectoryW` falls back to `C:\Windows`.
+- **W16.** A secret read from the Credential Manager had its copy wiped,
+  and Windows' own buffer freed as it was; that is wiped too now, before
+  `CredFree`. A failed allocation there answers ERROR_NOT_ENOUGH_MEMORY.
+
+**Tested**: `packages/win32/tests/cases.sh` runs `png_length` under
+AddressSanitizer on Linux: a 97-byte PNG in a 129-byte block is 97 (before,
+129), a PNG that fills its block, a block that is not a PNG, one cut
+short, and a chunk longer than the block are the whole block. W11, W13
+and W16 are not tested: nothing here drives the clipboard, the registry
+or the Credential Manager on Windows; the Windows build and its suites
+pass on beelink1.

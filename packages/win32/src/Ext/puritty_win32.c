@@ -78,6 +78,7 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +87,7 @@
 #include "geng.h"
 #include "../../../../assets/sounds/puritty_sounds.h"
 #include "puritty_text.h"
+#include "puritty_png.h"
 #include "win32_keycodes.h"
 
 static char *copy(const char *s) {
@@ -210,14 +212,18 @@ static void read_registry(HKEY root) {
     HKEY key;
     if (RegOpenKeyExW(root, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts", 0, KEY_READ, &key) != ERROR_SUCCESS) return;
     wchar_t windir[MAX_PATH];
-    GetWindowsDirectoryW(windir, MAX_PATH);
+    UINT wl = GetWindowsDirectoryW(windir, MAX_PATH);
+    if (wl == 0 || wl >= MAX_PATH) wcscpy(windir, L"C:\\Windows");
     for (DWORD i = 0;; i++) {
         wchar_t name[512], data[MAX_PATH];
         DWORD nn = 512, dn = sizeof data, type;
         LONG r = RegEnumValueW(key, i, name, &nn, NULL, &type, (BYTE *) data, &dn);
         if (r == ERROR_NO_MORE_ITEMS) break;
         if (r != ERROR_SUCCESS || type != REG_SZ) continue;
-        data[MAX_PATH - 1] = 0;
+        /* ended where the value ends: REG_SZ need not hold its NUL, and the
+         * buffer holds the last value's tail (the code review's W13) */
+        DWORD wn = dn / sizeof(wchar_t);
+        data[wn < MAX_PATH ? wn : MAX_PATH - 1] = 0;
         wchar_t full[MAX_PATH * 2];
         if (wcschr(data, L'\\')) _snwprintf(full, MAX_PATH * 2, L"%ls", data);
         else _snwprintf(full, MAX_PATH * 2, L"%ls\\Fonts\\%ls", windir, data);
@@ -2357,9 +2363,15 @@ static int open_clipboard(void) {
     return 0;
 }
 
-static void own_clipboard(const uint8_t *text, size_t n) {
-    /* LF as CRLF, then UTF-16 */
+/* The clipboard owned with this text: 0, or 1 when another program held
+ * it open for 100 ms, 2 when memory ran out or the text is past what
+ * Windows' conversions take; before, nothing said either, and a failed
+ * allocation was written through (the code review's W11). */
+static int own_clipboard(const uint8_t *text, size_t n) {
+    /* LF as CRLF, then UTF-16; its length an int for the conversion */
+    if (n > (size_t) (INT_MAX - 1) / 2) return 2;
     char *crlf = malloc(n * 2 + 1);
+    if (!crlf) return 2;
     size_t k = 0;
     for (size_t i = 0; i < n; i++) {
         if (text[i] == '\n' && (i == 0 || text[i - 1] != '\r')) crlf[k++] = '\r';
@@ -2370,19 +2382,29 @@ static void own_clipboard(const uint8_t *text, size_t n) {
     HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (size_t) (units > 0 ? units : 1) * sizeof(WCHAR));
     if (g) {
         WCHAR *w = GlobalLock(g);
-        if (units <= 0 || !MultiByteToWideChar(CP_UTF8, 0, crlf, (int) k + 1, w, units)) w[0] = 0;
-        GlobalUnlock(g);
+        if (!w) {
+            GlobalFree(g);
+            g = NULL;
+        } else {
+            if (units <= 0 || !MultiByteToWideChar(CP_UTF8, 0, crlf, (int) k + 1, w, units)) w[0] = 0;
+            GlobalUnlock(g);
+        }
     }
     free(crlf);
-    if (!g) return;
+    if (!g) return 2;
     if (!open_clipboard()) {
         GlobalFree(g);
-        return;
+        return 1;
     }
     InterlockedExchange(&clip_owned, 1);
     EmptyClipboard();
-    if (!SetClipboardData(CF_UNICODETEXT, g)) GlobalFree(g);
+    int failed = 0;
+    if (!SetClipboardData(CF_UNICODETEXT, g)) {
+        GlobalFree(g);
+        failed = 2;
+    }
     CloseClipboard();
+    return failed;
 }
 
 /* The clipboard's text as UTF-8, CRLF made LF, into the paste's buffer. */
@@ -2394,9 +2416,12 @@ static void read_clipboard(void) {
     if (w) {
         size_t units = GlobalSize(h) / sizeof(WCHAR), n = 0;
         while (n < units && w[n]) n++;
-        int bytes = n ? WideCharToMultiByte(CP_UTF8, 0, w, (int) n, NULL, 0, NULL, NULL) : 0;
+        /* past an int of UTF-16 (4 GB) the conversion cannot take it: an
+         * empty paste, as is one that memory cannot hold (W11) */
+        int bytes = n && n <= (size_t) INT_MAX ? WideCharToMultiByte(CP_UTF8, 0, w, (int) n, NULL, 0, NULL, NULL) : 0;
         free(pbuf);
-        pbuf = malloc((size_t) bytes + 1);
+        pbuf = malloc((size_t) (bytes > 0 ? bytes : 0) + 1);
+        if (!pbuf) bytes = 0;
         if (bytes > 0) WideCharToMultiByte(CP_UTF8, 0, w, (int) n, (char *) pbuf, bytes, NULL, NULL);
         for (int i = 0; i < bytes; i++)
             if (!(pbuf[i] == '\r' && i + 1 < bytes && pbuf[i + 1] == '\n')) pbuf[plen++] = pbuf[i];
@@ -2408,15 +2433,22 @@ static void read_clipboard(void) {
 /* The window owns PRIMARY (0) or the clipboard (1) with this text. */
 geng_cancel puritty_win32_select(int32_t which, void *text, geng_wait *wait) {
     geng_bytes *t = text;
+    int said = 0;
     if (which == 0) {
         free(primary);
         primary = malloc((size_t) t->length + 1);
-        memcpy(primary, t->data, (size_t) t->length);
-        primary_len = (size_t) t->length;
+        if (primary) {
+            memcpy(primary, t->data, (size_t) t->length);
+            primary_len = (size_t) t->length;
+        } else {
+            primary_len = 0;
+            said = 2;
+        }
     } else if (which == 1 && win) {
-        own_clipboard(t->data, (size_t) t->length);
+        said = own_clipboard(t->data, (size_t) t->length);
     }
-    geng_succeed(wait, geng_slot_I4(0));
+    /* 0, or why not (own_clipboard's) */
+    geng_succeed(wait, geng_slot_I4(said));
     return (geng_cancel) {0};
 }
 
@@ -2426,8 +2458,8 @@ geng_cancel puritty_win32_paste(int32_t which, geng_wait *wait) {
     if (which == 0) {
         free(pbuf);
         pbuf = malloc(primary_len + 1);
-        if (primary_len) memcpy(pbuf, primary, primary_len);
-        plen = primary_len;
+        if (pbuf && primary_len) memcpy(pbuf, primary, primary_len);
+        plen = pbuf ? primary_len : 0;
     } else {
         read_clipboard();
     }
@@ -2886,11 +2918,18 @@ geng_cancel puritty_win32_credRead(void *target_bytes, geng_wait *wait) {
     if (CredReadW(wtarget, CRED_TYPE_GENERIC, 0, &cred)) {
         size_t n = cred->CredentialBlobSize;
         uint8_t *out = malloc(n + 1);
-        out[0] = 1;
-        if (n) memcpy(out + 1, cred->CredentialBlob, n);
-        b = bytes_from(out, n + 1);
-        SecureZeroMemory(out, n + 1);
-        free(out);
+        if (out) {
+            out[0] = 1;
+            if (n) memcpy(out + 1, cred->CredentialBlob, n);
+            b = bytes_from(out, n + 1);
+            SecureZeroMemory(out, n + 1);
+            free(out);
+        } else {
+            char why[] = {0, '8'};  /* ERROR_NOT_ENOUGH_MEMORY */
+            b = bytes_from(why, sizeof why);
+        }
+        /* Windows' copy wiped too before it is freed (W16) */
+        if (n) SecureZeroMemory(cred->CredentialBlob, n);
         CredFree(cred);
     } else {
         char why[16];
@@ -3095,12 +3134,14 @@ static void read_clipboard_image(void) {
     if (has_png) {
         HANDLE h = GetClipboardData(png);
         const void *d = h ? GlobalLock(h) : NULL;
-        if (d) take_bytes(d, GlobalSize(h));
+        if (d) take_bytes(d, png_length(d, GlobalSize(h)));
         if (d) GlobalUnlock(h);
     } else {
-        CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        /* paired, as the jump list's is (W12) */
+        HRESULT init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
         HBITMAP b = GetClipboardData(CF_BITMAP);
         if (b) encode_png(b);
+        if (SUCCEEDED(init)) CoUninitialize();
     }
     CloseClipboard();
 }
