@@ -174,6 +174,7 @@ read as the answer to the question before it, until the next attach.
 - What: each second about twenty questions are appended to `expecting` and written, with no check that the previous batch has been read. Appending copies the queue, and each reply's `Array.dropFirst 1` copies it again.
 - Scenario: a stalled link, or tmux blocked behind `wait-for`: the queue and the unsent output grow by twenty a second, and when the link returns each reply costs a copy of the whole queue.
 - Fix: skip a poll while a `ForPoll`/`ForRawOptions` is still in `expecting`.
+- Fixed: 2026-11-27, `docs/tmux.md` TM147. A poll due while the last one's answers are awaited is put off. App suite test: before, a second unanswered tick sent 20 more commands.
 
 ### TA17 · `ForCopy` does not look at `ok`: before 3.2 a pane killed in copy mode is never forgotten
 - Where: app/src/TmuxMode.geng:3727-3767, 16332-16385 (`copyLine`), 16254-16267 (`askCopy`)

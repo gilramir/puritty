@@ -11790,7 +11790,13 @@ tick ms s0 =
             else
                 s2
     in
-    if s.on && s.pollAt >= 0 && Clock.reached s.pollAt ms then
+    if s.on && s.pollAt >= 0 && Clock.reached s.pollAt ms && pollWaited s then
+        -- the last poll not all answered (a stalled link, tmux blocked
+        -- behind wait-for): none asked again until it is, where twenty a
+        -- second piled up (the code review's TA16, TB9)
+        { state = { s | pollAt = Clock.after ms pollMs }, commands = [] }
+
+    else if s.on && s.pollAt >= 0 && Clock.reached s.pollAt ms then
         let
             asked =
                 pollsFor s
@@ -11799,6 +11805,24 @@ tick ms s0 =
 
     else
         { state = s, commands = [] }
+
+
+{-| Whether an answer to the status line's last poll is still awaited. -}
+pollWaited : State -> Bool
+pollWaited s =
+    Array.any
+        (\a ->
+            when a.expect is
+                ForPoll _ ->
+                    True
+
+                ForRawOptions _ ->
+                    True
+
+                _ ->
+                    False
+        )
+        s.expecting
 
 
 {-| How long tmux is given to answer after a line that was not its own

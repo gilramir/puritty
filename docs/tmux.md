@@ -5153,3 +5153,20 @@ that is gone until the list is moved in.
 **Tested** (the app suite, 661: the test on each of the six tmux
 versions): the tree opened with `prefix s`, then the other window shown
 by another client: the tree is gone. Before, it was still drawn.
+
+## TM147 · No new status poll while the last is unanswered (2026-11-27)
+
+The code review's TA16 and TB9, in part. Before 3.2 puritty asks the
+status line's parts every second (TM29), about twenty commands, and it
+sent each second's whether or not the last second's had been answered:
+over a stalled link, or with tmux blocked behind `wait-for`, twenty a
+second piled up, each reply then copying the queue. Now a poll that is
+due while one of the last poll's answers (`ForPoll`, `ForRawOptions`) is
+still awaited is put off a second.
+
+Left of TB9: the poll is still twenty lines, not one, and the session's
+formats are not merged into one `display-message`.
+
+**Tested** (the app suite, 667): on tmux 3.0, two ticks a minute apart
+with nothing answered between: the first sends the poll, the second
+nothing. Before, the second sent 20 commands more.
