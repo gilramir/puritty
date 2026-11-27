@@ -147,6 +147,7 @@ finding rests on it.
 - What: the tree, the lists, customize-mode and menus are puritty's own state; tmux does not know of them and puritty closes them only on a key. Without `-Z` they are drawn in `pane`; when that pane is no longer in the layout `modePlace` is `Nothing` and nothing is drawn, but `typedHere` still gives every key to `treeKey`/`listKey`/`customizeKey`.
 - Scenario: `:choose-tree` (no `-Z`), `x` on the row of the pane the tree is in, `y`: the pane is killed, `reloadTree` keeps the tree with `pane` gone, and typing does nothing visible until `q` or Escape happens to be pressed. With `-Z`, a click on another tab or another client's `select-window` leaves the tree drawn over the other window. The lists are also not asked again on `%sessions-changed`, `%window-add` or `%paste-buffer-changed`, so Enter can name a target that is gone.
 - Fix: in `applyLayout`, close a mode whose pane has left; on `SessionWindowChanged`/`SessionChanged` close or re-anchor it; on the notices that change a list, `reloadTree`/`listRun []`.
+- Fixed: In part, 2026-11-26, `docs/tmux.md` TM146. `applyLayout` closes the tree, a list, customize, a menu or the numbers whose pane left the layout. Left: lists not asked again on the notices that change them. App suite test on six versions.
 
 ### TB15 · The mouse's word and line are left on the pane as user options
 - Where: app/src/TmuxMode.geng:10050-10068 (`runHeld`), 10073-10079 (`mouseNames`)

@@ -5135,3 +5135,21 @@ time before a read, a pointer's event and a drag
 **Tested**: nothing fails on the code before; the tmux tests feed reads
 without the loop's time, and setting it in them would move every timed
 test. The app builds and its suites pass.
+
+## TM146 · A mode puritty draws closes with its pane (2026-11-26)
+
+The code review's TB14, in part. The tree, a list, customize mode, a
+menu and the panes' numbers are puritty's own, which tmux does not know
+of, and were closed only by a key. When their pane left the layout
+shown (killed from the tree itself, or another window shown by another
+client) nothing was drawn but every key still went to them; zoomed, the
+tree stayed over the other window. `applyLayout` now closes any of them
+whose pane is not in the new layout.
+
+Left: the lists are not asked again on `%sessions-changed`,
+`%window-add` or `%paste-buffer-changed`, so a row can name a target
+that is gone until the list is moved in.
+
+**Tested** (the app suite, 661: the test on each of the six tmux
+versions): the tree opened with `prefix s`, then the other window shown
+by another client: the tree is gone. Before, it was still drawn.

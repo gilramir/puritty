@@ -343,6 +343,37 @@ onVersion version =
                         { unknown = [], first = "line 177", last = "line 200" }
                         { unknown = seen.run.world.unknown, first = row 0 seen, last = row 23 seen }
           }
+        , { name = "the tree is closed when its pane leaves the layout shown: another window shown by another client (review TB14)"
+          , test =
+                \_ ->
+                    let
+                        two =
+                            let
+                                w =
+                                    start version
+                            in
+                            { w | others = [ { id = 1, index = 1, name = "two", panes = [ { id = 5, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 } ], active = 5 } ], number = 6 }
+
+                        shownElsewhere run =
+                            let
+                                e =
+                                    FakeTmux.switchWindow 1 run.world
+                            in
+                            settle (deliver (Bytes.fromString (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") e.notices))) { run | world = e.world })
+
+                        -- a run of its own for each: a run is used up as it goes on
+                        opened {} =
+                            prefixThen "s" (attached two)
+
+                        before =
+                            look (opened {})
+
+                        after =
+                            look (shownElsewhere (opened {}))
+                    in
+                    Expect.equal { before = True, after = False }
+                        { before = String.contains "choose a session" (row 0 before), after = String.contains "choose a session" (row 0 after) }
+          }
         , { name = "a read that ends control mode writes nothing that an event before %exit in it asked (review TA14)"
           , test =
                 \_ ->

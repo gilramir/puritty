@@ -4869,6 +4869,79 @@ feedAnswering id bytes s =
 {-| A layout: its panes' terminals made or sized to their boxes. -}
 applyLayout : String -> (taken s : State) -> State
 applyLayout text s =
+    withoutOrphans (laidOut text s)
+
+
+{-| The modes puritty draws for a pane that is no longer in the layout
+shown closed: the tree, a list, customize mode, a menu, the panes'
+numbers. Not drawn, they still took every key, so typing did nothing
+seen until q or Escape happened to be pressed; zoomed, one stayed over
+another window shown (the code review's TB14). -}
+withoutOrphans : (taken s : State) -> State
+withoutOrphans s =
+    let
+        here =
+            layoutIds s.layout
+
+        inLayout pane =
+            Array.member pane here
+    in
+    { s
+        | tree =
+            Maybe.andThen
+                (\t ->
+                    if inLayout t.pane then
+                        Just t
+
+                    else
+                        Nothing
+                )
+                s.tree
+        , listing =
+            Maybe.andThen
+                (\l ->
+                    if inLayout l.pane then
+                        Just l
+
+                    else
+                        Nothing
+                )
+                s.listing
+        , customizing =
+            Maybe.andThen
+                (\c ->
+                    if inLayout c.pane then
+                        Just c
+
+                    else
+                        Nothing
+                )
+                s.customizing
+        , menu =
+            Maybe.andThen
+                (\m ->
+                    if inLayout m.pane then
+                        Just m
+
+                    else
+                        Nothing
+                )
+                s.menu
+        , numbers =
+            Maybe.andThen
+                (\n ->
+                    if inLayout n.pane then
+                        Just n
+
+                    else
+                        Nothing
+                )
+                s.numbers
+    }
+
+
+laidOut : String -> (taken s : State) -> State
+laidOut text s =
     when Layout.parse text is
         Ok cell ->
             let
