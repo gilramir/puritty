@@ -37,7 +37,8 @@ maxBytes =
 
 
 {-| The file's bytes from `offset`, `size` of them (0: to its end), or why
-not. A temporary file is removed once its checks pass, read or not. -}
+not. A temporary file is removed once its checks of name and folder pass,
+read or not, a failed open or read too (the code review's MB16). -}
 read : File.Permission -> Want -> Task x (Result String Bytes)
 read fs want =
     let
@@ -121,27 +122,42 @@ checked fs want real temps =
                             File.ForRead
                             real
                             (\h ->
-                                File.seek (File.FromStart (Int64.fromInt want.offset)) h
-                                    |> Task.andThen (\_ -> readUpTo count h [] 0)
+                                -- what was opened checked again: a file put in
+                                -- the checked one's place between is not read
+                                File.handleMetadata h
+                                    |> Task.andThen
+                                        (\opened ->
+                                            if opened.kind /= File.File || Int64.toInt opened.size < want.offset + count then
+                                                Task.succeed (Err "EINVAL: the file changed as it was opened")
+
+                                            else
+                                                File.seek (File.FromStart (Int64.fromInt want.offset)) h
+                                                    |> Task.andThen (\_ -> readUpTo count h [] 0)
+                                                    |> Task.map Ok
+                                        )
                             )
-                            |> Task.andThen
-                                (\bytes ->
-                                    if want.temporary then
-                                        File.remove fs real
-                                            |> Task.map (\_ -> Ok bytes)
-                                            |> Task.onError (\_ -> Task.succeed (Ok bytes))
-
-                                    else
-                                        Task.succeed (Ok bytes)
-                                )
                 )
+            |> Task.andThen (\result -> removed fs want real |> Task.map (\_ -> result))
+            |> Task.onError (\e -> removed fs want real |> Task.andThen (\_ -> Task.fail e))
 
 
-{-| `count` bytes, or what there is before the end. -}
+{-| A temporary file removed, whatever came of its read; a removal that
+fails is let go. -}
+removed : File.Permission -> Want -> Path -> Task x {}
+removed fs want real =
+    if want.temporary then
+        File.remove fs real |> Task.onError (\_ -> Task.succeed {})
+
+    else
+        Task.succeed {}
+
+
+{-| `count` bytes, or what there is before the end: the last piece cut to
+fit, so that the pieces are put together once (MB16). -}
 readUpTo : Int -> File.Handle -> Array Bytes -> Int -> Task Error Bytes
 readUpTo count h pieces got =
     if got >= count then
-        Task.succeed (Bytes.slice 0 count (Bytes.flatten pieces))
+        Task.succeed (Bytes.flatten pieces)
 
     else
         File.read h
@@ -151,7 +167,15 @@ readUpTo count h pieces got =
                         Task.succeed (Bytes.flatten pieces)
 
                     else
-                        readUpTo count h (Array.pushLast piece pieces) (got + Bytes.length piece)
+                        let
+                            fits =
+                                if got + Bytes.length piece > count then
+                                    Bytes.slice 0 (count - got) piece
+
+                                else
+                                    piece
+                        in
+                        readUpTo count h (Array.pushLast fits pieces) (got + Bytes.length fits)
                 )
 
 

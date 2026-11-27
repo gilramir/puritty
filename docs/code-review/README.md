@@ -496,10 +496,10 @@ covered" sections. The larger gaps:
 | [MB10](10-app-main-b.md) | efficiency | confirmed | **fixed** `Diag.lines` decodes and rewrites each pasted piece although the log is off |
 | [MB11](10-app-main-b.md) | bug | plausible | `Restore.fresh` ignores whether its lock was taken, and another window's `others` can remove a new window's lock file under it |
 | [MB12](10-app-main-b.md) | bug | confirmed | The recent and folder files are read, changed and written with no lock, through one shared `.new` name |
-| [MB13](10-app-main-b.md) | inaccuracy | confirmed | The log writes tab titles and a program's name, which the log's contract says are never written; `Diag.command` shows some typed words |
+| [MB13](10-app-main-b.md) | inaccuracy | confirmed | **fixed** The log writes tab titles and a program's name, which the log's contract says are never written; `Diag.command` shows some typed words |
 | [MB14](10-app-main-b.md) | bug | confirmed | **fixed** A closed tab is lost, with its scrollback, when opening it again does not start |
 | [MB15](10-app-main-b.md) | design | confirmed | `handleOne` carries a `remote` beside `m.remote`, and four paths go on with the stale one |
-| [MB16](10-app-main-b.md) | inaccuracy | confirmed | `ImageFile.read`: a temporary file is not removed when its read fails, and a load is read whole inside the loop with three copies |
+| [MB16](10-app-main-b.md) | inaccuracy | confirmed | **in part** `ImageFile.read`: a temporary file is not removed when its read fails, and a load is read whole inside the loop with three copies |
 | [MB17](10-app-main-b.md) | dead-code | plausible | `ownTerm`'s question text is never drawn: the same questions are written twice and have drifted |
 | [MB18](10-app-main-b.md) | bug | confirmed | **fixed** A paste while the ssh question is up does not reach the question's field |
 | [TA14](11-tmuxmode-a.md) | bug | plausible | Commands queued earlier in the read that ends control mode are still written |

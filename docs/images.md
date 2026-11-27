@@ -1546,3 +1546,26 @@ traced. Left as it is, with the case pinned. Xvfb was also asked for a
 pixmap of 1 by 32,768 and refused it (BadAlloc), as it gives 32,767: a
 picture past that could not be made at all, which the core's limit keeps
 from arising.
+
+## IM44 · A temporary file always removed, and an image file read once (2026-11-26)
+
+The code review's MB16, in part. `ImageFile.read` loads a file a program
+names (Kitty's `t=f` and `t=t`). Its comment said a temporary file is
+removed once its checks pass, read or not; the removal came only after a
+read that worked, so a failed open, seek or read, "not a regular file"
+and "too large" all left it. Now it is removed in every way the read
+ends once its name and folder have passed. The file's kind and size,
+taken from its path before it is opened, are checked again on the handle
+opened, so another file put in its place between is not read; and the
+read cuts its last piece to fit and puts the pieces together once,
+where it put them together and then cut a copy, two copies of a load of
+up to 400 MB.
+
+Left: a FIFO put in the file's place between the check and the open
+still holds the loop at the open, which no check before it can prevent
+without an open that does not wait; and a load is still held to
+Ghostty's 400 MB, not to the images' limit (320 MB).
+
+**Tested** (the app's native suite, 631): a temporary file named for the
+protocol in /tmp, mode 000 so that its open fails. Before, the read
+failed and the file was there; now it fails and the file is gone.

@@ -7,6 +7,7 @@ count the same. -}
 import Bytes
 import Config
 import Expect
+import ImageFile
 import Int64
 import Os.Directory as Directory
 import Os.Error
@@ -39,7 +40,46 @@ settingsFile =
         , setUp = \_ -> Task.succeed {}
         , tearDown = U.noTearDown
         , tests =
-            [ U.test "a setting written through config.toml as a symlink: the link kept, its file changed with its mode (review PS12)"
+            [ U.test "a temporary image file whose read fails is removed all the same (review MB16)"
+                (\_ ->
+                    if Platform.pathSeparator == "\\" then
+                        Task.succeed Expect.pass
+
+                    else
+                        Task.map3 (\fs proc pid -> { fs = fs, proc = proc, pid = pid }) File.initialize Process.initialize Process.currentId
+                            |> Task.andThen
+                                (\go ->
+                                    let
+                                        path =
+                                            "/tmp/puritty-mb16-" ++ String.fromInt go.pid ++ "-tty-graphics-protocol"
+
+                                        sh script =
+                                            Process.run go.proc "sh" [ "-c", script ] Process.defaultRunOptions
+                                                |> Task.map (\r -> Bytes.toStringLossy r.stdout)
+                                                |> Task.onError (\_ -> Task.succeed "sh failed")
+                                    in
+                                    sh ("printf abc > " ++ path ++ " && chmod 000 " ++ path)
+                                        |> Task.andThen (\_ -> ImageFile.read go.fs { path = path, temporary = True, offset = 0, size = 0 })
+                                        |> Task.andThen
+                                            (\got ->
+                                                sh ("test -e " ++ path ++ " && echo there || echo gone; rm -f " ++ path)
+                                                    |> Task.map
+                                                        (\left ->
+                                                            Expect.equal { failed = True, file = "gone" }
+                                                                { failed =
+                                                                    when got is
+                                                                        Ok _ ->
+                                                                            False
+
+                                                                        Err _ ->
+                                                                            True
+                                                                , file = String.trim left
+                                                                }
+                                                        )
+                                            )
+                                )
+                )
+            , U.test "a setting written through config.toml as a symlink: the link kept, its file changed with its mode (review PS12)"
                 (\_ ->
                     if Platform.pathSeparator == "\\" then
                         Task.succeed Expect.pass

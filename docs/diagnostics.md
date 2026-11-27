@@ -269,3 +269,27 @@ otherwise, `<21 characters>`; an XTGETTCAP name that is hex but not
 printable is written as its hex (64 characters at most), one that is not
 hex by its size. vt's Heard suite holds the three (240); the old code
 fails it with the CR LF in the line.
+
+## DG10 · No title and no typed word in the log (2026-11-26)
+
+The code review's MB13. DG2 says that what is typed, pasted or shown is
+never written, so that the log can be read at work and its lines passed
+on, and DG6 that no title is. Two places wrote them:
+
+- The window's close question logged each busy tab's label, which is the
+  program's title (OSC 0 and 2) when the tab has no name, and the
+  foreground program's name: `user@host: ~/clients/acme`, `vim
+  passwords.txt`. It now logs how many tabs are busy.
+- `Diag.command` shows a tmux command's quoted words by their length but
+  for a format, a tmux id or a key's name; a word typed at tmux's prompt
+  that looked like one (a window renamed `S-ecret plan`, a search for
+  `M-x foo`, a name holding `#{`) was shown whole. A key's name is now
+  shown only where the command's argument is a key (`send-keys` but not
+  with `-X` or `-l`, `bind-key`, `unbind-key`), and a format only in the
+  commands puritty asks tmux with its formats.
+
+**Tested** (the app suite, 630): `rename-window 'S-ecret plan'`,
+`send-keys -X search-forward 'M-x foo'` and `rename-session
+'#{secret}'` are shown by their lengths, and `send-keys -t '%1' 'C-a'`
+keeps its key. Before, all three words were shown. The close question's
+line has no test.

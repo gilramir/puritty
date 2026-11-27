@@ -234,8 +234,9 @@ SUITES = [
         # broken SFTP stream ends the batch once; 628 since TP13: tmux -CC
         # found though tmux cut its entry between two %output lines, once
         # for each of six tmux versions; 629 since X28: a notification's
-        # body as plain text
-        629,
+        # body as plain text; 630 since MB13: typed text in the log by length;
+        # 631 since MB16: a temporary image file removed when its read fails
+        631,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

@@ -374,6 +374,17 @@ command c =
                 Nothing ->
                     meant Reason.NoMore Nothing
 
+        -- the command's name, which says what its quoted words are: keys
+        -- (not `send-keys -X`, a copy mode command's text, or `-l`'s), or
+        -- puritty's own formats
+        name =
+            String.split " " c |> Array.first |> Maybe.withDefault ""
+
+        takes =
+            { keys = Array.member name [ "send-keys", "bind-key", "unbind-key" ] && not (String.contains " -X " c || String.contains " -l " c)
+            , formats = Array.member name [ "display-message", "list-windows", "list-panes", "list-sessions", "list-clients", "if-shell", "set-option", "refresh-client" ]
+            }
+
         redacted =
             when String.split " -H " c is
                 [ before, after ] ->
@@ -384,7 +395,7 @@ command c =
                         |> String.split "'"
                         |> Array.indexedMap
                             (\i part ->
-                                if modBy 2 i == 1 && not (shownWord part) then
+                                if modBy 2 i == 1 && not (shownWord takes part) then
                                     "<" ++ String.fromInt (String.count (String.replace "\u{0001}" "'" part)) ++ " chars>"
 
                                 else
@@ -406,10 +417,14 @@ command c =
                     redacted
 
 
-{-| A quoted word the log may show: a format, a tmux id, or a key's name. -}
-shownWord : String -> Bool
-shownWord w =
-    String.contains "#{" w || isId w || isKeyName w
+{-| A quoted word the log may show: a tmux id; a key's name, only where
+the command's argument is a key; a format, only in the commands puritty
+asks tmux with its own formats. A window renamed `S-ecret plan` or a
+search for `M-x foo` is typed text, shown by its length as any other
+(the code review's MB13). -}
+shownWord : { keys : Bool, formats : Bool } -> String -> Bool
+shownWord takes w =
+    isId w || (takes.keys && isKeyName w) || (takes.formats && String.contains "#{" w)
 
 
 isId : String -> Bool
