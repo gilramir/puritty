@@ -754,7 +754,9 @@ scrollbarHit size v p =
     else
         -- the thumb's top at the pointer less half the thumb, as a share of
         -- the track: 0 at the top is all the way back
-        Just (clamp 0 v.most (v.most - (v.most * (p.y - g.top - g.thumbH // 2)) // room))
+        -- in Float: rows times pixels passes 2^31 past a million rows of
+        -- scrollback (the code review's PS23)
+        Just (clamp 0 v.most (v.most - Math.floor (toFloat v.most * toFloat (p.y - g.top - g.thumbH // 2) / toFloat room)))
 
 
 barGeometry : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> { back : Int, most : Int } -> { x : Int, width : Int, top : Int, track : Int, thumbY : Int, thumbH : Int }
@@ -791,7 +793,8 @@ barGeometry size v =
             max 0 (track - thumbH)
 
         thumbY =
-            top + room - (room * clamp 0 v.most v.back) // max 1 v.most
+            -- in Float, as `backAt` (PS23)
+            top + room - Math.floor (toFloat room * toFloat (clamp 0 v.most v.back) / toFloat (max 1 v.most))
     in
     { x = w - width - px 3, width = width, top = top, track = track, thumbY = thumbY, thumbH = thumbH }
 

@@ -1,4 +1,4 @@
-module TextEdit exposing (Done(..), Edit, key, oneLine, replaceSelection, selected, selection)
+module TextEdit exposing (Done(..), Edit, key, oneLine, printableText, replaceSelection, selected, selection)
 
 {-| One line of text being edited, as the host list's and the settings
 window's boxes edit it (`docs/settings-gui.md` SG20): its characters, the
@@ -200,6 +200,25 @@ oneLine text =
         |> Array.map (\l -> String.replace "\t" " " (String.replace "\u{000D}" "" l))
         |> dropLastEmpty
         |> String.join " "
+
+
+{-| Text pasted or an input method's commit as a field may hold it: C0,
+DEL and C1 controls dropped, and the bidirectional embeddings, overrides
+and isolates (U+202A to U+202E, U+2066 to U+2069), which a typed key
+cannot give either; they went into a title, a host's name, a command,
+`config.toml`, and quick connect's argument (the code review's PS21). -}
+printableText : String -> String
+printableText text =
+    String.toArray text
+        |> Array.keepIf
+            (\c ->
+                let
+                    cp =
+                        Char.toCode c
+                in
+                not (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069))
+            )
+        |> String.fromArray
 
 
 dropLastEmpty : Array String -> Array String

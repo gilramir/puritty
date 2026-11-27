@@ -107,11 +107,46 @@ framed b =
         ]
 
 
+{-| A text record's bytes: at most 65,535, cut at a character, since its
+length is written in two bytes; past that the length was taken modulo
+65,536 and the rest of the text read as records, which drew garbage and
+dropped what came after (the code review's PS14). Nothing that long can
+be seen. -}
+recordText : String -> Bytes
+recordText s =
+    let
+        b =
+            Bytes.fromString s
+    in
+    if Bytes.length b <= 65535 then
+        b
+
+    else
+        let
+            fits =
+                String.foldl
+                    (\c acc ->
+                        let
+                            n =
+                                Bytes.length (Bytes.fromString (String.fromChar c))
+                        in
+                        if acc.full || acc.used + n > 65535 then
+                            { acc | full = True }
+
+                        else
+                            { acc | used = acc.used + n, chars = acc.chars + 1 }
+                    )
+                    { used = 0, chars = 0, full = False }
+                    s
+        in
+        Bytes.fromString (String.takeFirst fits.chars s)
+
+
 text : { x : Int, y : Int, size : Int, color : Int, text : String } -> Bytes
 text t =
     let
         b =
-            Bytes.fromString t.text
+            recordText t.text
     in
     if Bytes.isEmpty b then
         Bytes.empty
@@ -127,7 +162,7 @@ textIn : String -> { x : Int, y : Int, size : Int, color : Int, text : String } 
 textIn font t =
     let
         b =
-            Bytes.fromString t.text
+            recordText t.text
 
         name =
             Bytes.fromString font

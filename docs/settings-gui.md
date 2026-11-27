@@ -856,3 +856,66 @@ name of its own.
 
 **Tested** (the app's native suite, 632): twenty connections remembered
 at once (`Task.concurrent`) are all in the file after. Before, one was.
+
+## SG26 · A paste or a commit gives a field its printable characters (2026-11-27)
+
+The code review's PS21. A key's text goes into a field only when it is
+printable, but a paste (joined into one line by `oneLine`) or an input
+method's commit was inserted as it came: ESC, NUL, BEL, C1 controls and
+the bidirectional overrides went into a title, a host's name, a command
+or the quick connect line, were written to `config.toml`, shown in the
+lists, and given to the puritty quick connect starts. `Typed`, which
+both arrive as, now keeps only what `TextEdit.printableText` keeps: no C0,
+DEL or C1, and no bidirectional embedding, override or isolate.
+
+**Tested** (the app suite, 674): `a ESC [2J b BEL c U+202E d` committed
+into the title writes `a[2Jbcd`. Before, the controls went in.
+
+## SG27 · A command's words with quotes in them come back whole (2026-11-27)
+
+The code review's PS15. The settings window shows a command
+(`[program] command`, a host's) as its words with spaces between, a word
+holding a space in quotes, and reads the text back the same way. A
+quote inside a word was written as it was and read as quoting:
+`["sh", "-c", "echo \"a b\""]` came back as `sh`, `-c`, `echo a`, `b`
+after any edit, and a word such as `a"b` made every edit fail ("quote
+not closed"). Now `wordText` writes a `"` as `\"`, and a `\` as `\\`
+where a quote or a backslash follows it or the word ends, and quotes a
+word holding a space, a tab, a quote or a backslash; `words` reads `\"`
+and `\\`, and a backslash before anything else as itself, so a Windows
+path such as `C:\Users\me\x.exe` reads as it is typed.
+
+**Tested** (the app suite, 675): five commands go to the window's text
+and back unchanged: a quoted argument, a lone quote, a Windows path, a
+word ending in a backslash, an empty word and a tab. Before, the first
+came back as four words and the second did not come back at all.
+
+## SG28 · A text record's text held to 65,535 bytes (2026-11-27)
+
+The code review's PS14. The settings window's and the picker's drawing
+is a list of records for the renderer (`SettingsGui`); a text record
+writes its text's length in two bytes. A text past 65,535 bytes (a
+setting's value of 70 KB in `config.toml`, a large paste into quick
+connect) had its length written modulo 65,536: the renderer took that
+many bytes as the text and read the rest as records, drawing garbage and
+dropping what came after. `recordText` now cuts the text at the last
+character within 65,535 bytes, for both kinds of text record; nothing
+that long can be seen.
+
+**Tested** (the app suite, 676): 70,000 `a` and 30,000 `한` (90,000
+bytes) each make a record of 11 bytes and 65,535 of text. Before, 70,011
+and 90,011.
+
+## SG29 · The terminal's scrollbar over millions of rows (2026-11-27)
+
+The code review's PS23. The scrollbar's thumb and a press on it come of
+products of a pixel count (up to some two thousand) and a row count, and
+`scrollback.lines` goes to ten million: past about a million rows of
+history the product passed 2^31, so the thumb was drawn in the wrong
+place and a press jumped to a wrong row. Both are now worked in `Float`
+(`Dialog.scrollbar`, `scrollbarHit`).
+
+**Tested** (the app suite, 677): five million rows; a press at the
+track's top is all the way back, at its middle about halfway, at its
+bottom none. Before, the press at the bottom gave 4,271,222 rows back,
+on node and natively.

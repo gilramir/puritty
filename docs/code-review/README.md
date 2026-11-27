@@ -511,7 +511,7 @@ covered" sections. The larger gaps:
 | [TA20](11-tmuxmode-a.md) | bug | plausible | **fixed** A config reload that changes the look does not tell tmux the new size |
 | [TB8](12-tmuxmode-b.md) | bug | confirmed | **fixed** choose-buffer's and choose-client's rows are asked with 3.2's format on every tmux |
 | [TB9](12-tmuxmode-b.md) | efficiency | confirmed | **in part** Before tmux 3.2 the status line is asked with 21 commands a second, whether or not the last second's were answered |
-| [TB11](12-tmuxmode-b.md) | bug | confirmed | Clipping and padding by characters where the neighbours go by cells |
+| [TB11](12-tmuxmode-b.md) | bug | confirmed | **in part** Clipping and padding by characters where the neighbours go by cells |
 | [TB12](12-tmuxmode-b.md) | bug | plausible | **fixed** The loop's time in the state is stale on every path but a key and a tick |
 | [TB13](12-tmuxmode-b.md) | bug | confirmed | **fixed** A pane that closes leaves its mode behind, and a clock left behind keeps the timer and the repaint going |
 | [TB14](12-tmuxmode-b.md) | bug | confirmed | **in part** A mode puritty draws outlives its pane and its window, unseen but still taking the keys |
@@ -520,16 +520,16 @@ covered" sections. The larger gaps:
 | [TB18](12-tmuxmode-b.md) | design | confirmed | The mode tree's keys are written three times and have drifted from each other and from tmux |
 | [TB20](12-tmuxmode-b.md) | inaccuracy | confirmed | **fixed** Comments that no longer say what the function does |
 | [TB21](12-tmuxmode-b.md) | test-gap | plausible | No test drives the pointer over a pane in a mode, or holds lines written to replies expected |
-| [PS14](13-app-picker-settings.md) | bug | confirmed | A text record longer than 65,535 bytes breaks the frame's record stream |
-| [PS15](13-app-picker-settings.md) | bug | confirmed | A command with a quote in a word does not survive the settings window |
+| [PS14](13-app-picker-settings.md) | bug | confirmed | **fixed** A text record longer than 65,535 bytes breaks the frame's record stream |
+| [PS15](13-app-picker-settings.md) | bug | confirmed | **fixed** A command with a quote in a word does not survive the settings window |
 | [PS16](13-app-picker-settings.md) | speed | confirmed | Every pointer event builds the picker's whole frame to find what is under it, and `rows` is rebuilt several times a frame |
 | [PS17](13-app-picker-settings.md) | efficiency | confirmed | The settings window measures and draws more than it needs per event, and row positions are quadratic |
 | [PS18](13-app-picker-settings.md) | bug | plausible | Path completion asks the host again on every keystroke under a link or `~`, and Tab completes from the first eight only |
 | [PS19](13-app-picker-settings.md) | bug | confirmed | The places column does not scroll, and its hidden rows still take clicks |
 | [PS20](13-app-picker-settings.md) | bug | confirmed | The settings window does not settle before reading, keeps a stale error, and never shows a later read's reports |
-| [PS21](13-app-picker-settings.md) | bug | confirmed | Pasted and committed text is not filtered for control characters |
+| [PS21](13-app-picker-settings.md) | bug | confirmed | **fixed** Pasted and committed text is not filtered for control characters |
 | [PS22](13-app-picker-settings.md) | design | plausible | A dialog cuts its lines instead of wrapping them, and a tall one puts its buttons off the window |
-| [PS23](13-app-picker-settings.md) | bug | plausible | The terminal scrollbar's arithmetic overflows `Int` with a very long scrollback |
+| [PS23](13-app-picker-settings.md) | bug | plausible | **fixed** The terminal scrollbar's arithmetic overflows `Int` with a very long scrollback |
 | [PS24](13-app-picker-settings.md) | design | confirmed | Strings outside the translation table: the whole picker, the search bar's placeholder, the settings' units |
 | [PS25](13-app-picker-settings.md) | bug | confirmed | Renaming a host leaves what names it pointing at the old name |
 | [PS26](13-app-picker-settings.md) | inaccuracy | confirmed | `docs/user/settings.md` shows a file that leaves out settings no other user page names |

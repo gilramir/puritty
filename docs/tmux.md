@@ -5191,3 +5191,21 @@ first.
 versions): the pane menu opened with `prefix >` and closed with Escape,
 then a tick: it unsets both, from 3.0; 2.7 has no pane menu and sets
 none. Before, nothing unset them.
+
+## TM149 · Rows cut and padded by cells (2026-11-27)
+
+The code review's TB11, in part. 3.8's tree rows, the preview and
+customize mode cut their text by cells (`clipCells`), but the older
+tree rows, choose-buffer's and choose-client's rows, the prompt's line,
+a message on the bar, a view's lines and the list's filter line cut and
+padded by characters: a Korean window name or buffer sample made a row
+up to twice its place, drawn over the pane to its right, since autowrap
+is off. Those now go through `clipCells`, which cuts to the cells there
+are and pads to them.
+
+Left: a menu's width and its items, and the tab bar's and the status
+line's layout and the bar's click targets (`hits`), are still measured
+by characters; TM29 lists the status line's.
+
+**Tested**: nothing fails on the code before; no test draws wide text in
+a mode beside another pane. The app builds and its suites pass.

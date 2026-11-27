@@ -2016,17 +2016,7 @@ toText v =
             String.join ", " (Array.map hex p)
 
         Words w ->
-            String.join " "
-                (Array.map
-                    (\word ->
-                        if String.contains " " word || word == "" then
-                            "\"" ++ word ++ "\""
-
-                        else
-                            word
-                    )
-                    w
-                )
+            String.join " " (Array.map wordText w)
 
         Unset ->
             ""
@@ -2146,12 +2136,65 @@ launch text =
         Err (Words.message "problem.notLaunch" |> Words.with "text" text)
 
 
-{-| A command's words: split at spaces, a quoted word kept whole. -}
+{-| A word as `words` reads it back: quoted when it holds a space, a
+tab, a quote or a backslash, or is empty; a `"` written `\"`, and a `\`
+written `\\` where a quote or a backslash follows it or the word ends,
+so that a Windows path's backslashes are left as they are. A word with a
+quote did not come back: every `"` was taken for quoting (the code
+review's PS15). -}
+wordText : String -> String
+wordText word =
+    let
+        chars =
+            String.toArray word
+
+        escaped =
+            Array.indexedMap
+                (\i c ->
+                    if c == '"' then
+                        "\\\""
+
+                    else if c == '\\' then
+                        -- doubled before a quote, a backslash or the word's end
+                        if i + 1 >= Array.length chars || Array.get (i + 1) chars == Just '"' || Array.get (i + 1) chars == Just '\\' then
+                            "\\\\"
+
+                        else
+                            "\\"
+
+                    else
+                        String.fromChar c
+                )
+                chars
+                |> String.join ""
+    in
+    if word == "" || String.any (\c -> c == ' ' || c == '\t' || c == '"' || c == '\\') word then
+        "\"" ++ escaped ++ "\""
+
+    else
+        escaped
+
+
+{-| A command's words as the settings window's text gives them: spaces
+between, a word with a space quoted, `\"` a quote and `\\` a backslash
+(`wordText`); any other backslash is itself. -}
 words : String -> Result Message (Array String)
 words text =
     let
         step c acc =
-            if acc.quoted then
+            if acc.escape then
+                -- after a backslash: a quote or a backslash is itself, and
+                -- anything else keeps the backslash before it
+                if c == '"' || c == '\\' then
+                    { acc | escape = False, word = acc.word ++ String.fromChar c }
+
+                else
+                    { acc | escape = False, word = acc.word ++ "\\" ++ String.fromChar c }
+
+            else if c == '\\' then
+                { acc | escape = True, any = acc.any || acc.quoted }
+
+            else if acc.quoted then
                 if c == '"' then
                     { acc | quoted = False, any = True }
 
@@ -2172,16 +2215,24 @@ words text =
                 { acc | word = acc.word ++ String.fromChar c }
 
         end =
-            String.foldl step { done = [], word = "", quoted = False, any = False } text
+            String.foldl step { done = [], word = "", quoted = False, any = False, escape = False } text
+
+        -- a backslash last of all is itself
+        last =
+            if end.escape then
+                { end | word = end.word ++ "\\" }
+
+            else
+                end
     in
-    if end.quoted then
+    if last.quoted then
         Err (Words.message "problem.quoteNotClosed")
 
-    else if end.any || end.word /= "" then
-        Ok (Array.pushLast end.word end.done)
+    else if last.any || last.word /= "" then
+        Ok (Array.pushLast last.word last.done)
 
     else
-        Ok end.done
+        Ok last.done
 
 
 -- WRITING

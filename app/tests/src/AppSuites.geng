@@ -15,6 +15,7 @@ import ClipQueue
 import Clock
 import Config
 import Diag
+import Dialog
 import Dict
 import Drop
 import Expect exposing (Expectation)
@@ -1498,6 +1499,66 @@ window =
                         { said = Array.member "window.title = 한글" r.said
                         , shown = Array.member "window.title = 한글" (rowsShown r.model) && changedRow "window.title" r.model
                         }
+          }
+        , { name = "a commit or a paste holding control characters gives the field only its printable ones (review PS21)"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after [ ctrl 'f', SettingsWindow.Typed "title", k.down, k.enter, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, SettingsWindow.Typed "a\u{001B}[2Jb\u{0007}c\u{202E}d", k.enter ]
+                    in
+                    Expect.equal True (Array.member "window.title = a[2Jbcd" r.said)
+          }
+        , { name = "a command's words come back from the settings window's text as they were: quotes, backslashes, a Windows path, an empty word (review PS15)"
+          , test =
+                \_ ->
+                    let
+                        cases =
+                            [ [ "sh", "-c", "echo \"a b\"" ]
+                            , [ "a\"b" ]
+                            , [ "C:\\Users\\me\\x.exe", "/d" ]
+                            , [ "a b\\" ]
+                            , [ "", "tab\there" ]
+                            ]
+
+                        back w =
+                            when Schema.find [ "program", "command" ] is
+                                Just setting ->
+                                    Schema.fromText setting (Schema.toText (Schema.Words w)) |> Result.toMaybe
+
+                                Nothing ->
+                                    Nothing
+                    in
+                    Expect.equal (Array.map (\w -> Just (Schema.Words w)) cases) (Array.map back cases)
+          }
+        , { name = "a text record holds at most 65,535 bytes of its text, cut at a character (review PS14)"
+          , test =
+                \_ ->
+                    let
+                        size t =
+                            Bytes.length (SettingsGui.text { x = 0, y = 0, size = 12, color = 0, text = t })
+                    in
+                    -- 11 bytes of the record's head, then the text
+                    Expect.equal [ 11 + 65535, 11 + 65535, 11 + 5 ] [ size (String.repeat 70000 "a"), size (String.repeat 30000 "\u{D55C}"), size "short" ]
+          }
+        , { name = "the scrollbar over five million rows of scrollback: a press at the middle is about halfway back, at the ends all and none (review PS23)"
+          , test =
+                \_ ->
+                    let
+                        size =
+                            { cols = 200, rows = 60, cellWidth = 9, cellHeight = 17 }
+
+                        most =
+                            5000000
+
+                        at y =
+                            Dialog.scrollbarHit size { back = 0, most = most } { x = 200 * 9 - 2, y = y } |> Maybe.withDefault -1
+
+                        middle =
+                            at (60 * 17 // 2)
+                    in
+                    Expect.equal { top = most, middle = True, bottom = 0 }
+                        { top = at 0, middle = middle > most * 2 // 5 && middle < most * 3 // 5, bottom = at (60 * 17 - 1) }
           }
         , { name = "a click on a page shows it"
           , test = \_ -> Expect.equal { page = 1, first = "window.columns = 80" } ((after [ click (SettingsWindow.OnPage 1) 1 ]).model |> (\m -> { page = m.page, first = Maybe.withDefault "" (Array.get 0 (rowsShown m)) }))

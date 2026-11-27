@@ -246,8 +246,11 @@ SUITES = [
         # 655 since TA14: nothing written after %exit, six versions; 661
         # since TB14: a mode closed with its pane, six versions; 667 since
         # TA16: no poll while the last is unanswered (run in each version's
-        # suite); 673 since TB15: the mouse's options unset, six versions
-        673,
+        # suite); 673 since TB15: the mouse's options unset, six versions;
+        # 674 since PS21: a paste's controls dropped; 675 since PS15: a
+        # command's words round-trip; 676 since PS14: a text record held to
+        # 65,535 bytes; 677 since PS23: the scrollbar over millions of rows
+        677,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

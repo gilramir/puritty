@@ -158,6 +158,7 @@ Two facts used throughout, both checked:
 - What: the length is written modulo 65,536, so the renderer takes the first `n mod 65536` bytes as the text and parses the remaining text bytes as records: a byte 6/7/8/9 starts a box, text or clip record made of the string's bytes; anything else ends the list there (`return NULL`), dropping everything drawn after it. The parser is bounds-checked, so this is garbage on screen, not memory.
 - Scenario: values drawn uncut: a setting's value (`fieldWith t`, 1013-1029: a 70 KB `title`, command or word-boundaries string in `config.toml`), the text before the caret in `typingField` (1577) after a large paste into quick connect, Picker's typed path (2459). `Typed` text is not filtered for control bytes (below), so a paste can carry 0x06-0x09.
 - Fix: in `text`/`textIn`, cut the bytes at a character boundary below 65,536 (nothing that long can be seen); cut values with `fit` in `fieldWith`.
+- Fixed: 2026-11-27, `docs/settings-gui.md` SG28. `recordText` cuts a text record's text at the last character within 65,535 bytes. App suite test: 70,011 and 90,011 bytes before, 65,546 now.
 
 ### PS15 · A command with a quote in a word does not survive the settings window
 - Where: app/src/Schema.geng:1961-1972 (`toText` for `Words`), 2092-2127 (`words`)
@@ -167,6 +168,7 @@ Two facts used throughout, both checked:
 - What: `toText` wraps a word holding a space in `"` and writes a `"` inside a word as it is; `words` has no escape, so every `"` toggles quoting and is dropped.
 - Scenario: `[program] command = ["sh", "-c", "echo \"a b\""]`. The row shows `sh -c "echo "a b""`; add one argument and the whole value is parsed and written back as `["sh", "-c", "echo a", "b", …]`. A word with a `"` and no space (`a"b`) makes every edit fail with "quote not closed" until the user removes it.
 - Fix: escape `"` and `\` in `toText` and read the escapes in `words` (and quote a word holding a tab); a test that `fromText (toText v) == v` over words with spaces, quotes and backslashes.
+- Fixed: 2026-11-27, `docs/settings-gui.md` SG27. `wordText` escapes `"` and `\\` (a backslash only before a quote, a backslash or the end) and quotes a word with a space, tab, quote or backslash; `words` reads the escapes. App suite round-trip test.
 
 ### PS16 · Every pointer event builds the picker's whole frame to find what is under it, and `rows` is rebuilt several times a frame
 - Where: app/src/Picker.geng:1636-1640 (`hits = (scene size with p).hits`, for motion too), 1804-1806 (`dropTarget`), 2110-2112 (`scene` formats times with `utcText` only to discard them), 638-665 (`rows`), 670-676 (`rowAt` calls `rows`), used at 900-901, 3038, 1655
@@ -217,6 +219,7 @@ Two facts used throughout, both checked:
 - Confidence: confirmed
 - What: a key's text must be `printable`; a paste or an input method's commit is inserted as it is, so ESC, NUL, BEL, C1 and bidirectional controls go into the title, a host's name, a command or the quick connect line, are written to `config.toml`, shown in the list, and (for quick connect) passed as an argument to the spawned puritty.
 - Fix: drop characters below 0x20 and 0x7F-0x9F in `oneLine` (or in `insert`).
+- Fixed: 2026-11-27, `docs/settings-gui.md` SG26. `Typed` (paste and commit) keeps only `TextEdit.printableText`: no C0, DEL, C1 or bidirectional controls. App suite test.
 
 ### PS22 · A dialog cuts its lines instead of wrapping them, and a tall one puts its buttons off the window
 - Where: app/src/Dialog.geng:486-490 (`fit body inner line` for the title and every line), 172-193 (`bh` grows with the lines; `by = max 0 …`), 233 (`buttonY = by + bh - pad - buttonH`)
@@ -234,6 +237,7 @@ Two facts used throughout, both checked:
 - What: both are products of a pixel count (up to ~2,000 on a tall window) and a row count. `scrollback.lines` goes to 10,000,000 (Schema.geng:503); past roughly 1,000,000 rows of history the product passes 2³¹.
 - Scenario: a user with a multi-million-line scrollback, scrolled far back: the thumb is drawn at a wrong place, and a click on the bar jumps to a wrong row.
 - Fix: divide first or compute in `Int64`/`Float` (the `little`/`bounded` treatment Picker has).
+- Fixed: 2026-11-27, `docs/settings-gui.md` SG29. The scrollbar's products are worked in Float. App suite test, five million rows: a press at the bottom gave 4,271,222 rows back before, 0 now.
 
 ### PS24 · Strings outside the translation table: the whole picker, the search bar's placeholder, the settings' units
 - Where: app/src/Picker.geng:889-907, 1156, 1168, 1315, 1597-1622, 2159-2175, 2349-2355, 2616-2617, 2649-2651, 2701-2704, 2823-2829, 2849-2852, 2943, 2964, 3002-3005, 3163-3169; app/src/Dialog.geng:628 (`"Search"`); app/src/SettingsGui.geng:997-1011 with app/src/Schema.geng:176-593 (`unit = "cells"`, `"lines"`, `"pt"`, `"ms"`, `"MB"`)
