@@ -242,8 +242,9 @@ SUITES = [
         # since TB16: a nested host's OSC 7 not taken under ssh; 637 since
         # TB8: list rows in each tmux's words; 643 since TA17: a pane gone
         # in copy mode forgotten on an %error, on each of six versions; 649
-        # since TB13: a hidden clock does not wake the loop, six versions
-        649,
+        # since TB13: a hidden clock does not wake the loop, six versions;
+        # 655 since TA14: nothing written after %exit, six versions
+        655,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

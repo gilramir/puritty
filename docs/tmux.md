@@ -5088,3 +5088,34 @@ at the panes of the window shown.
 versions): pane 0 in clock mode, its time of day answered as tmux
 answers it; shown, the clock is due; the other window shown, none is.
 Before, the hidden clock was due in 60,000 ms.
+
+## TM143 · Nothing written after tmux ends control mode (2026-11-26)
+
+The code review's TA14. TM92 stops writing once the user's own detach
+has gone, since tmux reads nothing more and what was written would be
+typed into the shell control mode leaves. When tmux ended the client
+otherwise ("too far behind", a detach or a kill from elsewhere), what an
+earlier event of the same read had asked (copy mode's question for
+output in copy mode, a window's query, a status poll) was still
+written. Now `%exit` marks the client as ending and drops what the read
+had asked so far, so nothing goes between it and tmux's `ESC \`, in the
+same read or the next; and the end of control mode drops it too.
+
+**Tested** (the app suite, 655: the test on each of the six tmux
+versions): copy mode in pane 0, then one read holding output for that
+pane and `%exit too far behind`: nothing is held to write, and the
+client is ending. Before, copy mode's question was held to be written.
+
+## TM144 · A changed look tells tmux its size again (2026-11-26)
+
+The code review's TA20. The rows of the window that are not tmux's
+panes are tmux's status lines in tmux's look (`status` off, or 2 to 5)
+and the tab bar's one in puritty's (TM54). A settings reload that
+switched the look placed the bar again but told tmux nothing, so tmux's
+window stayed a row or more taller or shorter than the room puritty drew
+it in until the next resize. Now the reload, when the look changed,
+sends the size as a resize does (`Main.relooked`, `TmuxMode.resized`).
+
+**Tested**: nothing fails on the code before; the reload is `Main`'s,
+which the unit suites do not reach, and the reload gate has no tmux case.
+The app builds and its suites pass.

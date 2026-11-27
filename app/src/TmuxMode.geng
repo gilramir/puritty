@@ -2690,6 +2690,7 @@ event size e acc =
                             , paneEmbedder = st.paneEmbedder
                         }
                 , outside = acc.outside ++ said
+                , commands = []
             }
 
         Asked ->
@@ -4490,12 +4491,20 @@ notice n acc =
             askLine ([ { command = Command.continuePane pane, expect = ForNothing } ] ++ recapture pane) { acc | state = st }
 
         Exit reason ->
+            -- control mode ends here, however it was ended: nothing asked
+            -- earlier in the read, or after it before tmux's `ESC \`, is
+            -- written, which would be typed into the shell it leaves (the
+            -- code review's TA14; TM92 for the user's own detach)
+            let
+                ended =
+                    { st | ending = 2 }
+            in
             -- why the panes go: said on the terminal they leave behind
             if reason == "" then
-                { acc | state = st }
+                { acc | state = ended, commands = [] }
 
             else
-                { acc | state = st, outside = Array.pushLast (Bytes.fromString ("\r\npuritty: tmux control mode ended: " ++ reason ++ "\r\n")) acc.outside }
+                { acc | state = ended, commands = [], outside = Array.pushLast (Bytes.fromString ("\r\npuritty: tmux control mode ended: " ++ reason ++ "\r\n")) acc.outside }
 
         WindowAdd _ ->
             ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }

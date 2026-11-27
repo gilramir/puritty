@@ -3660,6 +3660,24 @@ lookTab old new m =
                 m.decoder
     }
         |> (\a -> Array.foldl sendRaw a told.replies)
+        |> relooked old new
+
+
+{-| tmux told the window's size again when the look changed: in tmux's
+look its status lines take rows the panes had, in puritty's the tab bar
+one, so tmux's window was a row or more too tall or short for the room
+it is drawn in until the next resize (the code review's TA20). -}
+relooked : Config -> Config -> (taken m : Model) -> Model
+relooked old new m =
+    if old.tmuxLook == new.tmuxLook then
+        m
+
+    else
+        let
+            told =
+                TmuxMode.resized { cols = m.term.cols, rows = m.term.rows } m.tmux
+        in
+        sendCommands told.commands { m | tmux = told.state }
 
 
 {-| The charset the settings give a local tab. -}

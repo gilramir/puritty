@@ -154,6 +154,7 @@ read as the answer to the question before it, until the next attach.
 - Confidence: plausible (which tmux sequences put a question in the same read as `%exit` was not measured)
 - What: TM92 stops sending after the user's own detach. When tmux ends the client otherwise ("too far behind", a detach or kill from elsewhere), anything an earlier event of the same read asked (a `windowQuery` after a flags-0 block, `askCopy` for output in copy mode, a status poll) is in `done.commands`, and `Exited` has reset `ending`, so `sendCommands` writes it to the shell control mode left.
 - Fix: on `Exited` empty `acc.commands`; on the `%exit` notice set `ending = 2` so nothing goes between `%exit` and the `ESC \` when they come in different reads.
+- Fixed: 2026-11-26, `docs/tmux.md` TM143. `%exit` sets the client ending and drops the read's commands; `Exited` drops them too. App suite test on six versions: before, copy mode's question was held to be written.
 
 ### TA15 · A pane's output holding the entry sequence types a newline into that pane and hides its output
 - Where: app/src/TmuxMode.geng:4059-4100, packages/tmux/src/Tmux/Control.geng:654-674, docs/tmux.md TM19
@@ -209,6 +210,7 @@ read as the answer to the question before it, until the next attach.
 - What: `statusRows` is 1 in puritty's look and tmux's `status` count in tmux's look. `setLook` changes which applies and calls `barPlaced` only.
 - Scenario: attached to a tmux with `status off` or `status 2`, the config's look is switched and reloaded: tmux's window stays a row taller or shorter than the room puritty now draws it in, until the next window resize.
 - Fix: have `setLook` return commands as `resized` does, and `refit`.
+- Fixed: 2026-11-26, `docs/tmux.md` TM144. A reload that changes the look sends tmux the size as a resize does. No test fails on the old code (Main's reload is not reached by the suites).
 
 ### TA21 · A 17,377-line module: where it would split
 - Where: app/src/TmuxMode.geng (whole)
