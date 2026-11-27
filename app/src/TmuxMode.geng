@@ -9671,9 +9671,11 @@ extended boundaries at sel s =
             { sel | anchor = sel.first, head = w.end }
 
 
-{-| The tab bar: a tab for each window, ` 1:name `, between `│`s, the
-active one inverse, then ` + `, cut at the window's width; and which
-columns each tab and the `+` cover, `-1` for the `+`. -}
+{-| The tab bar's text and where its tabs are: in puritty's look a tab
+for each window, ` 1:name `, between `│`s, the active one inverse, then
+` + `, cut at the window's width, and which columns each tab and the `+`
+cover, `-1` for the `+`; in tmux's look no text, which `tmuxBar` draws,
+and its hits alone. -}
 tabsOf : Int -> Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, alerted : Array { row : Int, col : Int, text : String }, busy : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
 tabsOf cols row s =
     if s.lookTmux then
@@ -9997,8 +9999,9 @@ bytesTo caps pane bytes =
 
 
 {-| What puritty subscribes to (`refresh-client -B`, tmux 3.2 on): tmux
-sends each when it changes, at most once a second, the time in it
-expanded (`T:`). -}
+sends each when it changes, at most once a second; the formats that hold
+the time (the status line's, the windows' and the panes' titles) are
+asked with `T:`, so that it is expanded. -}
 statusSubscriptions : Array String
 statusSubscriptions =
     [ "puritty-left::#{T:status-left}"
@@ -11583,8 +11586,9 @@ menuPointer p col row m s =
 
 {-| A key while the panes' numbers are shown, as tmux's `display-panes`
 takes it: a digit that is a pane's index runs the command with it and
-closes them, and from 3.2 a letter `a` to `z` for panes 10 to 35
-(`cmd-display-panes.c`, TM79; before 3.2 they cannot be chosen); any other
+closes them, and from 3.2 a letter `a` to `z` for panes 10 to 35, as
+tmux's key handler takes them (`cmd-display-panes.c`, TM79; before 3.2
+they cannot be chosen), though its labels letter only 10 to 34; any other
 key closes them and goes no further. -}
 numberKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Numbering -> (taken s : State) -> { state : State, commands : Array String }
 numberKey k n s =
@@ -11627,8 +11631,9 @@ numberKey k n s =
             meant Reason.NotKnown { state = { s | numbers = Nothing }, commands = [] }
 
 
-{-| The time puritty's loop should wake to close the panes' numbers, -1
-for none (TM28). -}
+{-| When puritty's loop should next wake for tmux, -1 for none: the
+soonest of the panes' numbers closing (TM28), the status line's poll
+before 3.2 (TM29), a stray wait, and a clock shown (`clockAt`). -}
 dueAt : State -> Int
 dueAt s =
     let
@@ -11753,8 +11758,9 @@ paneNumber version colors tmuxLook isActive n p =
                 len =
                     String.count digits
 
-                -- panes 10 to 34 are also chosen by a letter, shown by
-                -- the number, from 3.2 (TM79)
+                -- panes 10 to 34 are labelled by a letter too, from 3.2,
+                -- as tmux draws them (`pane < 35`); its keys take a to z,
+                -- 10 to 35 (TM79)
                 letter =
                     if index > 9 && index < 35 && (version == 0 || version >= 32) then
                         String.fromChar (Char.fromCodeProven (0x61 + index - 10))

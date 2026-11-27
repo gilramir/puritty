@@ -518,7 +518,7 @@ covered" sections. The larger gaps:
 | [TB15](12-tmuxmode-b.md) | bug | confirmed | The mouse's word and line are left on the pane as user options |
 | [TB16](12-tmuxmode-b.md) | security | confirmed | **fixed** FT11's first rule lets a nested host's OSC 7 name a folder on tmux's host |
 | [TB18](12-tmuxmode-b.md) | design | confirmed | The mode tree's keys are written three times and have drifted from each other and from tmux |
-| [TB20](12-tmuxmode-b.md) | inaccuracy | confirmed | Comments that no longer say what the function does |
+| [TB20](12-tmuxmode-b.md) | inaccuracy | confirmed | **fixed** Comments that no longer say what the function does |
 | [TB21](12-tmuxmode-b.md) | test-gap | plausible | No test drives the pointer over a pane in a mode, or holds lines written to replies expected |
 | [PS14](13-app-picker-settings.md) | bug | confirmed | A text record longer than 65,535 bytes breaks the frame's record stream |
 | [PS15](13-app-picker-settings.md) | bug | confirmed | A command with a quote in a word does not survive the settings window |

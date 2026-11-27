@@ -209,6 +209,7 @@ finding rests on it.
 - Severity: low
 - Confidence: confirmed
 - Fix: reword each to what it returns now.
+- Fixed: 2026-11-26. Comments reworded: `dueAt` names all it wakes for (the numbers, the poll, a stray wait, a clock); `tabsOf` says what it answers in tmux's look; `statusSubscriptions` says which formats hold `T:`; the panes' letters say the keys take 10 to 35 and the labels 10 to 34, as tmux's `cmd-display-panes.c` does. `scrollKey`'s already said what it returns.
 
 ### TB21 · No test drives the pointer over a pane in a mode, or holds lines written to replies expected
 - Where: app/tests/src/TmuxTests.geng, app/tests/src/FakeTmux.geng (looked at by name and by grep only)
