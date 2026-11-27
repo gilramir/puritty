@@ -79,6 +79,8 @@ type alias Layout =
     , buttonH : Int
     , buttonY : Int
     , buttonXs : Array { x : Int, w : Int }
+    -- the lines as drawn: wrapped to the box, held to the window (PS22)
+    , lines : Array String
     }
 
 
@@ -169,10 +171,46 @@ layout size d =
         buttonsW =
             Array.foldl (+) 0 buttonWs + max 0 (Array.length buttonWs - 1) * buttonGap
 
+        -- the box but for its lines
+        rest =
+            pad
+                + lineH
+                + swatchRow
+                + (when d.field is
+                    Just _ ->
+                        px 8 + fieldH
+
+                    Nothing ->
+                        meant Reason.NotSet 0
+                  )
+                + checkRow
+                + px 12
+                + rowH
+                + pad
+
+        -- each line wrapped to the box, where it was cut at its edge, so
+        -- that a path's end, where paths differ, is seen; its controls
+        -- dropped (a name a host or a dropped file gave); and as many as
+        -- the window has room for, the last of them "…" when some are
+        -- left out, so that the buttons stay on the window (the code
+        -- review's PS22)
+        wrapped =
+            d.lines |> Array.mapAndFlatten (\line -> SettingsGui.wrapAll (px 14) inner (shownText line))
+
+        room =
+            max 1 ((h - rest) // max 1 lineH)
+
+        lines =
+            if Array.length wrapped <= room then
+                wrapped
+
+            else
+                Array.pushLast "…" (Array.takeFirst (room - 1) wrapped)
+
         bh =
             pad
                 + lineH
-                + Array.length d.lines * lineH
+                + Array.length lines * lineH
                 + swatchRow
                 + (when d.field is
                     Just _ ->
@@ -193,7 +231,7 @@ layout size d =
             max 0 ((h - bh) // 2)
 
         swatchY =
-            by + pad + (1 + Array.length d.lines) * lineH + px 8
+            by + pad + (1 + Array.length lines) * lineH + px 8
 
         -- a place for each button, so that the draw reads one for each
         buttonXs =
@@ -232,7 +270,25 @@ layout size d =
     , buttonH = buttonH
     , buttonY = by + bh - pad - buttonH
     , buttonXs = buttonXs
+    , lines = lines
     }
+
+
+{-| Text as a box shows it: control characters and bidirectional
+overrides, embeddings and isolates dropped, which a name a host or a
+dropped file supplies may hold (PS22). -}
+shownText : String -> String
+shownText text =
+    String.toArray text
+        |> Array.keepIf
+            (\c ->
+                let
+                    cp =
+                        Char.toCode c
+                in
+                not (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069))
+            )
+        |> String.fromArray
 
 
 {-| The button under a point, by its place in the row. -}
@@ -485,9 +541,9 @@ draw size d =
 
         records =
             [ framed { x = bx, y = by, w = bw, h = bh, r = px 10, color = look.bg, border = look.fieldLine }
-            , text { x = bx + pad, y = baseline 0, size = body, color = look.strong, text = fit body inner d.title }
+            , text { x = bx + pad, y = baseline 0, size = body, color = look.strong, text = fit body inner (shownText d.title) }
             ]
-                ++ Array.indexedMap (\i line -> text { x = bx + pad, y = baseline (i + 1), size = body, color = look.text, text = fit body inner line }) d.lines
+                ++ Array.indexedMap (\i line -> text { x = bx + pad, y = baseline (i + 1), size = body, color = look.text, text = line }) l.lines
                 ++ swatchRecords
                 ++ (when d.field is
                         Just _ ->

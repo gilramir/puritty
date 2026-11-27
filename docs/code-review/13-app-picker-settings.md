@@ -231,6 +231,7 @@ Two facts used throughout, both checked:
 - Confidence: plausible (depends on what callers pass; the callers are in `Main`, not in this slice)
 - What: each line is cut at the box's inner width with `…` at its end, so the end of a long path, file name or fingerprint in a question is not shown, and the end is where paths differ. The box's height is not held to the window's: enough lines put the hint and the buttons below the bottom edge, answerable by key only. Text is drawn as given: nothing here strips control or bidirectional characters from names a host or a dropped file supplies.
 - Fix: wrap lines (SettingsGui's `wrapAll` is there) and cut a path in its middle; cap the lines to the window with "and N more"; sanitize in one place before `text`.
+- Fixed: 2026-11-27, `docs/settings-gui.md` SG32. Lines wrapped (`wrapAll`), held to the window with a last `…`, controls dropped from title and lines (`shownText`). App suite test, all three failing before. Left: a piece without space or slash is still cut at its end, not its middle.
 
 ### PS23 · The terminal scrollbar's arithmetic overflows `Int` with a very long scrollback
 - Where: app/src/Dialog.geng:793-794 (`room * clamp 0 v.most v.back`), 757 (`v.most * (p.y - g.top - g.thumbH // 2)`)

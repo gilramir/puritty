@@ -1577,6 +1577,40 @@ window =
                         , kept = foot (clean (SettingsWindow.told (Words.plain "write failed") opened))
                         }
           }
+        , { name = "a dialog wraps a long path to show its end, keeps its buttons on a short window, and drops a name's controls (review PS22)"
+          , test =
+                \_ ->
+                    let
+                        size =
+                            { cols = 80, rows = 20, cellWidth = 9, cellHeight = 17 }
+
+                        path =
+                            "/srv/www/releases/2026-11-27/build-artifacts/linux-x86_64/puritty-final-ending.tar.gz"
+
+                        dialog lines =
+                            { title = "Upload"
+                            , lines = lines
+                            , field = Nothing
+                            , swatches = []
+                            , check = Nothing
+                            , hint = ""
+                            , buttons = [ { label = "OK", primary = True } ]
+                            }
+
+                        drawn d =
+                            Bytes.toStringLossy (Dialog.draw size d).list
+
+                        -- some row of the window answers the button
+                        buttonOnWindow d =
+                            Array.range 0 (20 * 17 - 1)
+                                |> Array.any (\y -> Array.any (\x -> Dialog.buttonAt size d { x = x, y = y } == Just 0) (Array.range 0 (80 * 9 - 1) |> Array.keepIf (\x -> modBy 8 x == 0)))
+                    in
+                    Expect.equal { end = True, buttons = True, control = False }
+                        { end = String.contains "ending.tar.gz" (drawn (dialog [ "Send to " ++ path ++ "?" ]))
+                        , buttons = buttonOnWindow (dialog (Array.repeat 200 "a line"))
+                        , control = String.contains "\u{001B}" (drawn (dialog [ "name \u{001B}[31mred" ]))
+                        }
+          }
         , { name = "a click on a page shows it"
           , test = \_ -> Expect.equal { page = 1, first = "window.columns = 80" } ((after [ click (SettingsWindow.OnPage 1) 1 ]).model |> (\m -> { page = m.page, first = Maybe.withDefault "" (Array.get 0 (rowsShown m)) }))
           }

@@ -959,3 +959,23 @@ jumps through it, `start` is `host:build-box` and `build-box` is a
 recent: the rename writes `web` and `start`, and all three follow; Ctrl+Z
 brings all three back. Before, only the table was renamed. The recents
 file's rename is not tested.
+
+## SG32 · A dialog's lines wrapped, held to the window, and cleaned (2026-11-27)
+
+The code review's PS22. A dialog (`Dialog`: a question, a confirmation,
+an upload's) cut each line at its box's width with `…`, so the end of a
+long path or file name, where paths differ, was not shown; its height
+grew with its lines without bound, so enough of them put the hint and the
+buttons below the window, answerable by key only; and its text was drawn
+as given, the controls in a name a host or a dropped file supplied with
+it. Now `layout` wraps each line to the box as the settings window wraps
+its descriptions (`SettingsGui.wrapAll`, after a path's slashes too),
+keeps as many lines as the window has room for, the last of them `…` when
+some are left out, and drops C0, DEL, C1 and bidirectional controls from
+the title and the lines (`shownText`). A piece with no space or slash
+wider than the box (a fingerprint) is still cut at its end.
+
+**Tested** (the app suite, 683): a dialog naming an 86-character path
+shows its `ending.tar.gz`; one of 200 lines in a window 20 rows high has
+its button somewhere on the window; ESC in a line is not drawn. Before,
+none of the three.

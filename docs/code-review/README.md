@@ -528,7 +528,7 @@ covered" sections. The larger gaps:
 | [PS19](13-app-picker-settings.md) | bug | confirmed | **fixed** The places column does not scroll, and its hidden rows still take clicks |
 | [PS20](13-app-picker-settings.md) | bug | confirmed | **fixed** The settings window does not settle before reading, keeps a stale error, and never shows a later read's reports |
 | [PS21](13-app-picker-settings.md) | bug | confirmed | **fixed** Pasted and committed text is not filtered for control characters |
-| [PS22](13-app-picker-settings.md) | design | plausible | A dialog cuts its lines instead of wrapping them, and a tall one puts its buttons off the window |
+| [PS22](13-app-picker-settings.md) | design | plausible | **fixed** A dialog cuts its lines instead of wrapping them, and a tall one puts its buttons off the window |
 | [PS23](13-app-picker-settings.md) | bug | plausible | **fixed** The terminal scrollbar's arithmetic overflows `Int` with a very long scrollback |
 | [PS24](13-app-picker-settings.md) | design | confirmed | Strings outside the translation table: the whole picker, the search bar's placeholder, the settings' units |
 | [PS25](13-app-picker-settings.md) | bug | confirmed | **fixed** Renaming a host leaves what names it pointing at the old name |
