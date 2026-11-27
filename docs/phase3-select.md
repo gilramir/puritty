@@ -1361,3 +1361,27 @@ as each is deleted; paste is pressed, and again at 11 s. Before, the
 program received 18,000 bytes: pieces 0 to 9, then 0 to 7 again, the
 second paste begun over the first. Now 15,000, pieces 0 to 14 once. The
 pointer (56), tab paste and CR LF paste gates pass.
+
+## 32. A search match in its own columns (2026-11-26)
+
+The code review's MA17. Scrollback search (§23) finds a lowercase query
+in each row's text lowered, then measures the row's text before the
+match, code point by code point, for its columns. Two things were said
+to move a match: the measure, for a cell holding a whole emoji cluster,
+and the lowering, which can change a text's length.
+
+- **The emoji, checked**: this terminal starts a cell for every code
+  point that has a width and joins one of none to the cell before, so a
+  ZWJ family, a flag and a skin tone take the sum of their code points'
+  widths, as the measure adds them. A test holds a match after all three
+  to the column the terminal's cursor stood at after them; it passed
+  before.
+- **The lowering, fixed**: `İ` (U+0130) lowers to two characters, `i` and
+  a combining dot, so a match found in the lowered text was applied a
+  character further on in the text, a column to the right. `lowered`
+  takes a row's lower case whole when it is as long as the row, and
+  otherwise lowers it a character at a time, keeping as it is a
+  character whose lower case is longer: `İ` is found only as itself.
+
+**Tested** (the app suite, 635): `ab` in `İx ab` at columns 3 and 4;
+before, at 4.

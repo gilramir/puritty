@@ -237,8 +237,9 @@ SUITES = [
         # body as plain text; 630 since MB13: typed text in the log by length;
         # 631 since MB16: a temporary image file removed when its read fails;
         # 632 since MB12: connections remembered at once all kept; 633 since
-        # MB11: a starting window's lock file kept
-        633,
+        # MB11: a starting window's lock file kept; 635 since MA17: a match's
+        # columns after emoji and after a letter that lowers to two
+        635,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

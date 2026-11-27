@@ -43,7 +43,7 @@ findTyped : String -> Int -> Maybe Missed -> Vt.Term -> { match : Maybe { start 
 findTyped query bottom missed t =
     let
         q =
-            String.toLower query
+            lowered query
 
         oldest =
             Vt.rowsPushed t - Vt.scrollbackRows t
@@ -57,7 +57,7 @@ findTyped query bottom missed t =
                 Just mq ->
                     -- the same width, and no fewer rows pushed: ED 3 can
                     -- lower the count, and rows' numbers with it (VP3)
-                    if mq.cols == t.cols && Vt.rowsPushed t >= mq.pushed && mq.query /= "" && String.startsWith (String.toLower mq.query) q then
+                    if mq.cols == t.cols && Vt.rowsPushed t >= mq.pushed && mq.query /= "" && String.startsWith (lowered mq.query) q then
                         min mq.bottom (mq.pushed - 1)
 
                     else
@@ -90,7 +90,7 @@ find : String -> Bool -> Int -> Vt.Term -> Maybe { start : Vt.Point, end : Vt.Po
 find query older from t =
     let
         q =
-            String.toLower query
+            lowered query
 
         oldest =
             Vt.rowsPushed t - Vt.scrollbackRows t
@@ -148,13 +148,13 @@ findFrom q older row oldest newest t =
                 else
                     Array.range 0 (n - 1)
         in
-        when Array.findFirst (\k -> String.contains q (String.toLower (Maybe.withDefault "" (Array.get k read.texts)))) order is
+        when Array.findFirst (\k -> String.contains q (lowered (Maybe.withDefault "" (Array.get k read.texts)))) order is
             Just found ->
                 let
                     text =
                         Maybe.withDefault "" (Array.get found.value read.texts)
                 in
-                when String.firstIndexOf q (String.toLower text) is
+                when String.firstIndexOf q (lowered text) is
                     Just i ->
                         let
                             before =
@@ -235,7 +235,7 @@ matchesIn query first last t =
     else
         let
             caseless =
-                String.toLower query == query
+                lowered query == query
 
             n =
                 String.count query
@@ -254,7 +254,7 @@ rowMatches query caseless n row text =
     let
         hay =
             if caseless then
-                String.toLower text
+                lowered text
 
             else
                 text
@@ -284,3 +284,44 @@ matchesFrom query n row text hay from found =
 
         Nothing ->
             meant Reason.NoMore found
+
+
+{-| Text in lower case a character at a time, each character's lower case
+kept only when it is one character: so that an index found in it is the
+index in the text, which the columns are measured on. `İ` lowers to two
+(`i` and a combining dot), which moved every match after it a column to
+the right (the code review's MA17); it is kept as it is, and found only
+as itself. -}
+lowered : String -> String
+lowered text =
+    let
+        whole =
+            String.toLower text
+    in
+    -- nearly every row lowers to as many characters: taken whole
+    if String.count whole == String.count text then
+        whole
+
+    else
+        bySingle text
+
+
+bySingle : String -> String
+bySingle text =
+    String.toArray text
+        |> Array.map
+            (\c ->
+                let
+                    one =
+                        String.fromChar c
+
+                    lower =
+                        String.toLower one
+                in
+                if String.count lower == 1 then
+                    lower
+
+                else
+                    one
+            )
+        |> String.join ""

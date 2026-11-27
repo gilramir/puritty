@@ -184,6 +184,7 @@ Line numbers are `app/src/Main.geng` unless a file is named.
 - What: the match's columns are found by measuring the row's text before the match one code point at a time (`Width.width cp`). `selectionText` gives a cell's whole cluster, so a cell holding a ZWJ family, a flag or a skin-toned emoji contributes the sum of its code points' widths (6 or 4) where it takes 2 cells. The index `i` is found in `String.toLower text` and then applied to `text`.
 - Scenario: a row `👨‍👩‍👧 error: …`; searching `error` highlights four cells to the right of the word, and Ctrl+Shift+C copies those cells, not the match.
 - Fix: have the core answer each character's column with the row's text (or search over the cells), so the app does not measure again; compare case without changing the string that is indexed.
+- Fixed: 2026-11-26, `docs/phase3-select.md` §32. The lowering keeps indices: a row is lowered a character at a time when its lower case is longer. The emoji part checked: the terminal lays a cluster out as the sum of its code points' widths, as the search measures; a test holds it. App suite tests: `ab` in `İx ab` at 4 before, 3 now.
 
 ### MA18 · The `Backend` passed beside the model can be a tab's that is no longer shown (the menu's paths)
 - Where: app/src/Main.geng:2571 (`step remote ms m0`: `remote` is never used), 4132 (`handle remote …`), 6691, 6705, 6843 (`menuKey …`/`menuChosen …` then `handle remote ms rest next`), 6110, 6237, 6252 (`sshKey remote`: `remote.reconnect`, `remote.answer`)

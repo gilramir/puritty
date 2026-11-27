@@ -481,7 +481,7 @@ covered" sections. The larger gaps:
 | [MA14](09-app-main-a.md) | bug | confirmed | **fixed** Bells in a hidden `tmux -CC` tab are not heard, and switching to or reopening a tab can ring |
 | [MA15](09-app-main-a.md) | efficiency | confirmed | Every turn of the loop does several passes over all tabs, and every key parses every binding |
 | [MA16](09-app-main-a.md) | efficiency | confirmed | **fixed** The cursor's blink keeps waking the loop, and repainting every cell, while no cursor is on the screen |
-| [MA17](09-app-main-a.md) | bug | plausible | A search match after an emoji sequence, or in a row where lowering a letter changes its length, is highlighted in the wrong columns |
+| [MA17](09-app-main-a.md) | bug | plausible | **fixed** A search match after an emoji sequence, or in a row where lowering a letter changes its length, is highlighted in the wrong columns |
 | [MA18](09-app-main-a.md) | design | confirmed | The `Backend` passed beside the model can be a tab's that is no longer shown (the menu's paths) |
 | [MA19](09-app-main-a.md) | bug | confirmed | **fixed** A restored window shows the wrong tab when one of its tabs does not start |
 | [MA20](09-app-main-a.md) | bug | confirmed | **fixed** A font that cannot be opened on reload also drops a size change made with it |
