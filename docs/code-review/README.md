@@ -512,7 +512,7 @@ covered" sections. The larger gaps:
 | [TB8](12-tmuxmode-b.md) | bug | confirmed | **fixed** choose-buffer's and choose-client's rows are asked with 3.2's format on every tmux |
 | [TB9](12-tmuxmode-b.md) | efficiency | confirmed | Before tmux 3.2 the status line is asked with 21 commands a second, whether or not the last second's were answered |
 | [TB11](12-tmuxmode-b.md) | bug | confirmed | Clipping and padding by characters where the neighbours go by cells |
-| [TB12](12-tmuxmode-b.md) | bug | plausible | The loop's time in the state is stale on every path but a key and a tick |
+| [TB12](12-tmuxmode-b.md) | bug | plausible | **fixed** The loop's time in the state is stale on every path but a key and a tick |
 | [TB13](12-tmuxmode-b.md) | bug | confirmed | **fixed** A pane that closes leaves its mode behind, and a clock left behind keeps the timer and the repaint going |
 | [TB14](12-tmuxmode-b.md) | bug | confirmed | A mode puritty draws outlives its pane and its window, unseen but still taking the keys |
 | [TB15](12-tmuxmode-b.md) | bug | confirmed | The mouse's word and line are left on the pane as user options |

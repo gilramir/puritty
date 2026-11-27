@@ -5119,3 +5119,19 @@ sends the size as a resize does (`Main.relooked`, `TmuxMode.resized`).
 **Tested**: nothing fails on the code before; the reload is `Main`'s,
 which the unit suites do not reach, and the reload gate has no tmux case.
 The app builds and its suites pass.
+
+## TM145 · What a read or the pointer stamps is stamped with now (2026-11-26)
+
+The code review's TB12. TmuxMode keeps the loop's time (`clock`), and it
+was set only by a key and by a tick. On the other paths what was stamped
+took the last tick's time, 0 before the first: the time of day a clock
+asks for (TM32) was stamped so, and the clock showed a wrong time for the
+session; the panes' numbers chosen from a menu with the mouse minutes
+after the last key closed at the first tick; and before 3.2 the next
+status poll could be dated far in the clock's past. Now Main gives the
+time before a read, a pointer's event and a drag
+(`TmuxMode.clockedAt`), as it has it at each.
+
+**Tested**: nothing fails on the code before; the tmux tests feed reads
+without the loop's time, and setting it in them would move every timed
+test. The app builds and its suites pass.

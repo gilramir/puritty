@@ -127,6 +127,7 @@ finding rests on it.
 - What: `pointer`, `read` and `dragOver` do not set `s.clock`; `tick` runs only on a `Due` event. Code on those paths uses `s.clock` as now.
 - Scenario: (1) attach to a session one of whose panes shows `clock-mode`: the reply to `D %H %M %S` is stamped with the last tick's time, 0 in a fresh state, so `dayNow` adds the whole of `Clock.since 0 ms` and the clock shows an arbitrary time for the session (`tick` carries the error forward). (2) `display-panes` chosen from a menu with the mouse minutes after the last key: `until` is already past, and the numbers are closed at the first tick before they are answered. (3) On tmux before 3.2, `pollAt = after 0 1000` is "not reached" for up to 6.2 days when the loop's clock is in the far half of its period (`Clock.since`), so the status line is never polled.
 - Fix: give `read` and `pointer` the time (Main has `ms` at both call sites) and set `clock` there; or stamp such values with a "from the next tick" marker, as `strayUntil = -2` already does.
+- Fixed: 2026-11-26, `docs/tmux.md` TM145. Main gives TmuxMode the loop's time before a read, a pointer's event and a drag (`clockedAt`). No test fails on the old code (the tmux tests feed reads without the loop's time).
 
 ### TB13 · A pane that closes leaves its mode behind, and a clock left behind keeps the timer and the repaint going
 - Where: app/src/TmuxMode.geng:10925-10939 (`dueAt`), 16319-16327 (`forgetPane`, called only from `ForCopy` at 3737), 3984-3986 (`modeLine` sets, nothing removes)
