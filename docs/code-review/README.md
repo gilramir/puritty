@@ -478,16 +478,16 @@ covered" sections. The larger gaps:
 | [W17](08-win32.md) | design | confirmed | The signing script trusts the remote's word that the file is signed, and the exe carries no version resource |
 | [W18](08-win32.md) | inaccuracy | confirmed | Comments and names that no longer say what the code does; a little dead code |
 | [MA13](09-app-main-a.md) | bug | confirmed | **fixed** Three more times are compared after gaps the clock cannot hold |
-| [MA14](09-app-main-a.md) | bug | confirmed | Bells in a hidden `tmux -CC` tab are not heard, and switching to or reopening a tab can ring |
+| [MA14](09-app-main-a.md) | bug | confirmed | **fixed** Bells in a hidden `tmux -CC` tab are not heard, and switching to or reopening a tab can ring |
 | [MA15](09-app-main-a.md) | efficiency | confirmed | Every turn of the loop does several passes over all tabs, and every key parses every binding |
-| [MA16](09-app-main-a.md) | efficiency | confirmed | The cursor's blink keeps waking the loop, and repainting every cell, while no cursor is on the screen |
+| [MA16](09-app-main-a.md) | efficiency | confirmed | **fixed** The cursor's blink keeps waking the loop, and repainting every cell, while no cursor is on the screen |
 | [MA17](09-app-main-a.md) | bug | plausible | A search match after an emoji sequence, or in a row where lowering a letter changes its length, is highlighted in the wrong columns |
 | [MA18](09-app-main-a.md) | design | confirmed | The `Backend` passed beside the model can be a tab's that is no longer shown (the menu's paths) |
 | [MA19](09-app-main-a.md) | bug | confirmed | **fixed** A restored window shows the wrong tab when one of its tabs does not start |
 | [MA20](09-app-main-a.md) | bug | confirmed | **fixed** A font that cannot be opened on reload also drops a size change made with it |
 | [MA21](09-app-main-a.md) | bug | confirmed | A synchronized update holds back puritty's own frames too |
 | [MA22](09-app-main-a.md) | bug | plausible | The helper processes of an OpenSSH tab: a pipe left open, entries never removed, and two ways to stall |
-| [MA23](09-app-main-a.md) | bug | plausible | A program that closes its terminal but keeps running freezes the window |
+| [MA23](09-app-main-a.md) | bug | plausible | **fixed** A program that closes its terminal but keeps running freezes the window |
 | [MA24](09-app-main-a.md) | bug | plausible | A binding that names a shifted character or a non-Latin layout's letter never matches |
 | [MA25](09-app-main-a.md) | security | confirmed | **fixed** What a host's paste command prints is kept without bound |
 | [MB7](10-app-main-b.md) | bug | confirmed | **fixed** An unbracketed paste of CRLF text sends two CRs a line, and a CRLF cut between two pieces does too |

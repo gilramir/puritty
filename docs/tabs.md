@@ -924,3 +924,22 @@ the same for every tab; no gate makes one tab of several fail.
 `bench/tabs/restore.py` gives what TB10 records: the shown tab's shell in
 the second directory, the others in theirs, and a host window's two tabs
 logged in.
+
+## TB24 · A program that closes its terminal does not hold the window (2026-11-26)
+
+The code review's MA23. An empty read from the shown tab's terminal is
+taken as its program's end. With other tabs the loop then waited for the
+program's exit inside its turn before closing the tab, and with the last
+it waited before ending: a program that closed its terminal and carried
+on (`exec >/dev/null 2>&1 </dev/null; sleep 600`, a shell function that
+puts itself in the background) held the window, every tab and its events
+with it, until it ended. Now a tab not the last is hung up at once
+(`hangUp`: the terminal closed, the program killed if it still runs, its
+exit taken off the loop, as a closed tab's is), and the last waits a
+second for its program's exit, then kills it and ends with the status it
+ends with.
+
+**Tested**: `harness/closedterm.py`, a program that closes its terminal
+and sleeps a minute. Two tabs, the second's: the first shown 0.4 s after
+the second opened; before, not within 20 s. One tab: puritty ended after
+1.4 s; before, not within 20 s.

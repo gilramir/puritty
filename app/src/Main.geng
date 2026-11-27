@@ -1701,7 +1701,19 @@ finishShown remote m =
                 )
 
     else
-        remote.waitForExit
+        -- its exit waited for a second, and then the program killed: one
+        -- that closed its terminal and carried on held the window until it
+        -- ended (the code review's MA23)
+        Task.race (remote.waitForExit |> Task.map Just) [ Sleep.sleep 1000 |> Task.map (\_ -> Nothing) ]
+            |> Task.andThen
+                (\ended ->
+                    when ended is
+                        Just code ->
+                            Task.succeed code
+
+                        Nothing ->
+                            meant Reason.NotYet (remote.kill |> Task.andThen (\_ -> remote.waitForExit))
+                )
             |> Task.andThen
                 (\code ->
                     Os.Env.exitWithCode
@@ -1721,7 +1733,16 @@ syncHeld t =
 
 blinking : Model -> Bool
 blinking m =
-    m.config.blinkMs > 0 && m.focus.focused && m.term.showCursor && Dict.get 12 m.term.modes == Just True
+    m.config.blinkMs > 0
+        && m.focus.focused
+        && m.term.showCursor
+        && Dict.get 12 m.term.modes == Just True
+        -- and the cursor is on the screen: not scrolled back, not under a
+        -- box, not puritty's own ssh screen, where each blink would draw
+        -- every cell for a cursor no one sees (the code review's MA16)
+        && m.back == 0
+        && not m.overlaid
+        && not (ownScreenUp m)
 
 
 {-| When the next frame is due, or -1 for none waiting. -}
@@ -2187,7 +2208,11 @@ bellRung m =
                     (\i n ->
                         when Builder.get i m.tabs is
                             Just (Just t) ->
-                                n + t.term.bells
+                                -- a hidden tab's tmux panes too: counted only
+                                -- when shown, they rang on a switch to the tab
+                                -- and not at all while hidden (the code
+                                -- review's MA14)
+                                n + t.term.bells + TmuxMode.bells t.tmux
 
                             _ ->
                                 meant Reason.Gone n
@@ -2611,8 +2636,13 @@ race remote m0 =
                                                     -- the shown tab's program ended: the tab
                                                     -- closes, and the window with the last
                                                     if tabCount m > 1 then
-                                                        remote.waitForExit
-                                                            |> Task.andThen (\_ -> remote.hangUp)
+                                                        -- hung up: its program killed if it
+                                                        -- still runs, and its exit taken off
+                                                        -- the loop; waiting for it here held
+                                                        -- the window while a program that
+                                                        -- closed its terminal carried on (the
+                                                        -- code review's MA23)
+                                                        remote.hangUp
                                                             |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "wait", path = Nothing, detail = why })
                                                             |> Task.andThen (\_ -> dropShown m)
                                                             |> Task.andThen (\next -> step next.remote ms next)

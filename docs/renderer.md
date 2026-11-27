@@ -1269,3 +1269,20 @@ come. Reading them without waiting is left.
 
 **Checked**: the app builds and the pixel gate (56) passes; no gate
 counts the round trips.
+
+## R33. No blink while no cursor is on the screen (2026-11-26, the code review's MA16)
+
+A program that asks for a blinking cursor (mode 12) has it blinked every
+`blink_ms` (500) while the window has the focus. The test asked only for
+the focus, the cursor shown and mode 12: scrolled back, under a box, or
+with puritty's own ssh screen up, the blink went on for a cursor not in
+view, and each blink, the scrollbar or a box being up, drew every cell
+(phase3-select.md §23). `blinking` now also asks that the view is at the
+bottom, that the last frame had no box over it, and that the own screen
+is not up; the timer is not armed otherwise, and a view brought back to
+the bottom blinks again at once.
+
+**Measured** by `harness/blinkback.py` (maximized.py's proxy counting
+the requests puritty sends): a program asking for a blinking cursor and
+printing a hundred lines, 3 s with the view at the bottom and 3 s
+scrolled back a page. Before: 12 and 312 requests. Now 12 and 0.

@@ -155,6 +155,7 @@ Line numbers are `app/src/Main.geng` unless a file is named.
 - What: the total is `m.term.bells + (each hidden tab's term.bells) + TmuxMode.bells m.tmux`: the shown tab's tmux panes are counted, a hidden tab's are not. The sound plays when the total rises.
 - Scenario: (1) a pane rings in a `tmux -CC` tab that is not shown: no sound, against SN6 ("puritty's own or another tab's or a tmux pane's"). (2) Switching from a plain tab to that tmux tab raises the total by its `audible`, so the bell sounds on the switch; switching back lowers it, silently. (3) A tab whose terminal ever rang is closed (the total falls, taken as it is) and reopened with Ctrl+Alt+Shift+T: `reopened` keeps the terminal and its count, the total rises, the bell sounds.
 - Fix: count per tab: keep each tab's heard count beside `TabInfo.bells` (terminal and tmux together) and ring when any tab's own count rises, rather than comparing one sum.
+- Fixed: 2026-11-26, `docs/sounds.md` SN10. Each hidden tab's tmux panes are counted in the bells' sum, so a hidden pane's bell rings and a switch does not. Test: `harness/hiddenbell.py`: before, none while hidden and one on the switch; now one and none.
 
 ### MA15 · Every turn of the loop does several passes over all tabs, and every key parses every binding
 - Where: app/src/Main.geng:2074-2097 (`loop`), 2104 (`bellRung`), 2158-2223 (`tabStates`, `statusNoticed`), 2230-2328 (`noticesShown`, `noticesFrom`), 2378-2420 (`pointerShape`, `hoverShapes`), 2497-2507 (`hiddenOf` and a read task per tab); 3544-3551 (`bound`: `Chord.parse name` per call); 3944, 4140 (log text built whether or not the log is on)
@@ -173,6 +174,7 @@ Line numbers are `app/src/Main.geng` unless a file is named.
 - What: `blinking` asks only for focus, `showCursor` and mode 12. It does not ask whether the view is scrolled back (`m.back > 0`), puritty's own ssh screen or a dialog is up. Each blink sets `urgent`, and a frame drawn while the scrollbar, the search bar, a note or a box is up draws every cell (§23, by design for those frames).
 - Scenario: the user scrolls back to read, in a program that asked for a blinking cursor: twice a second (`blink_ms` 500) the window is repainted whole, to blink a cursor that is not in the view.
 - Fix: make `blinking` false while the cursor is not drawn (scrolled back, own screen, a box over it), so the timer is not armed.
+- Fixed: 2026-11-26, `docs/renderer.md` R33. `blinking` is false while scrolled back, under a box or with the own ssh screen up. Measured by `harness/blinkback.py`: 312 requests in 3 s scrolled back before, 0 now.
 
 ### MA17 · A search match after an emoji sequence, or in a row where lowering a letter changes its length, is highlighted in the wrong columns
 - Where: app/src/Search.geng:58-67, 85-103 (`cells`), 159-175; vt/src/Vt.geng:849-877 (`cellsText`: "a cluster read whole")
@@ -237,6 +239,7 @@ Line numbers are `app/src/Main.geng` unless a file is named.
 - What: an empty read (the pty's other side closed) is taken as "the program ended", and the loop then waits for the child's exit inside the turn.
 - Scenario: the tab's program closes or redirects all three of its terminal descriptors and carries on (`exec >/dev/null 2>&1 </dev/null; sleep 600`, a shell function that daemonizes itself). The read ends; `waitForExit` blocks the loop, and with it every other tab and the window's events, until that process exits.
 - Fix: close the tab at the empty read and collect the exit status off the loop (a spawned task), or kill the child before waiting.
+- Fixed: 2026-11-26, `docs/tabs.md` TB24. A tab's empty read hangs it up at once (its exit taken off the loop); the last tab waits a second, then kills its program. Test: `harness/closedterm.py`: before, neither case within 20 s; now 0.4 s and 1.4 s.
 
 ### MA24 · A binding that names a shifted character or a non-Latin layout's letter never matches
 - Where: app/src/Chord.geng:240-249 (`matches`), 144-170 (`keySym`), 24-41 (`parse`)

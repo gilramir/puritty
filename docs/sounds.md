@@ -355,3 +355,21 @@ failed` for each bell after, and all four logged as played. Now the
 failed write frees the stream, the open while the server is gone is
 refused, the third bell is logged as not played, and the fourth opens a
 stream and is written.
+
+## SN10 · A hidden tmux tab's bells (2026-11-26)
+
+The code review's MA14. The window rings when the bells it knows of,
+added up, rise: the shown tab's terminal and its tmux panes, and each
+hidden tab's terminal. A hidden tab's tmux panes were left out, so a
+pane's bell in a `tmux -CC` tab not shown was not heard, against SN6;
+and showing that tab added its panes' bells to the sum, which rang on
+the switch, and showing another took them away again, silently. Each
+hidden tab's tmux panes are now counted as the shown tab's are, so the
+sum is the same whichever tab is shown. A tab reopened (Ctrl+Alt+Shift+T)
+counts its terminal's bells as heard (TB17), and its tmux starts afresh.
+
+**Tested**: `harness/hiddenbell.py`: a plain tab and a `tmux -CC` tab
+(the system's tmux, 3.4) whose pane rings while the plain one is shown,
+then the tmux tab shown again with Ctrl+Alt+PageDown, the bells counted
+by the log's `rang:` lines. Before, none while hidden and one on the
+switch; now one while hidden and none on the switch.
