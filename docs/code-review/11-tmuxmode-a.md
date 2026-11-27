@@ -181,6 +181,7 @@ read as the answer to the question before it, until the next attach.
 - Confidence: plausible
 - What: TM103's fix reads an answer with every field empty. Before 3.2 `display-message -t` a pane that is gone is an `%error` (TK10.1): the line is not a `C` line, `gone` is false, `copyLine` does nothing, so `copyAsked` keeps the pane (every later `askCopy` for it only sets the flag) and `copy`, `modes`, `back` keep it too.
 - Fix: `if not ok then forgetPane asked`.
+- Fixed: 2026-11-26, `docs/tmux.md` TM141. An `%error` answer to the copy-mode question forgets the pane. App suite test on six tmux versions: without the change the pane was kept.
 
 ### TA18 · Work done on every read that only some events need
 - Where: app/src/TmuxMode.geng:961-981 (`readHere`: `paneBells` twice, `viewLine`), 1448-1512, 9475-9492

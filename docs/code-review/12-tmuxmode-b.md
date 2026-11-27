@@ -136,6 +136,7 @@ finding rests on it.
 - What: `paneModes`, `modes`, `back`, `copy` (and `info`, `scans`, `status.panes` in the first half) are keyed by pane id and pruned only when a copy-mode question comes back empty. `dueAt` asks `Array.any (\m -> m == "clock-mode") (Dict.values s.paneModes)`, over every pane ever seen, shown or not.
 - Scenario: `clock-mode` in a pane, then `kill-pane -t` it from another pane, or its window is closed. tmux sends no `%pane-mode-changed` for a pane that is gone, so the entry stays `clock-mode`: `dueAt` wakes the loop every minute (every second with `clock-mode-style 24-with-seconds`) and `tmuxTick` sets `urgent`, a full `paint`, until control mode ends. `dayAt` is never cleared either.
 - Fix: call `forgetPane` for every id that leaves `s.ids` in `applyLayout`/`ForPanes` (and drop the other per-pane maps there); have `dueAt` look only at panes in the layout shown.
+- Fixed: 2026-11-26, `docs/tmux.md` TM142. `clockAt` looks only at the panes of the window shown; the maps by pane were already pruned by TM110's `forgetGone`. App suite test on six versions: a hidden clock was due in 60,000 ms before, none now.
 
 ### TB14 · A mode puritty draws outlives its pane and its window, unseen but still taking the keys
 - Where: app/src/TmuxMode.geng:4709-4772 (`area` is `Nothing`, nothing drawn), 5689-5712 (`modePlace`), 5433-5441 (keys still go to the mode), 12658-12666 (`customizeArea`), 14094-14108; `notice` (4051-4275) closes none of `tree`, `listing`, `customizing`, `menu`, `numbers`

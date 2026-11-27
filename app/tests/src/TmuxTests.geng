@@ -343,6 +343,91 @@ onVersion version =
                         { unknown = [], first = "line 177", last = "line 200" }
                         { unknown = seen.run.world.unknown, first = row 0 seen, last = row 23 seen }
           }
+        , { name = "a clock in a window not shown does not wake the loop; shown, it does (review TB13)"
+          , test =
+                \_ ->
+                    let
+                        two =
+                            let
+                                w =
+                                    start version
+                            in
+                            { w | others = [ { id = 1, index = 1, name = "two", panes = [ { id = 5, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 } ], active = 5 } ], number = 6 }
+
+                        -- every question answered as the fake tmux answers, but
+                        -- the time of day the clock asks, which it does not
+                        -- expand: answered as tmux would at noon
+                        answered run =
+                            when Array.popFirst run.held is
+                                Just { first, rest } ->
+                                    if String.contains "D %H %M %S" first then
+                                        answered (deliver (Bytes.fromString "%begin 1700000000 902 1\u{000D}\nD 12 00 00\u{000D}\n%end 1700000000 902 1\u{000D}\n") { run | held = rest })
+
+                                    else
+                                        let
+                                            a =
+                                                FakeTmux.answer first run.world
+                                        in
+                                        answered (deliver a.bytes { run | world = a.world, held = rest })
+
+                                Nothing ->
+                                    run
+
+                        happen change run =
+                            let
+                                e =
+                                    change run.world
+                            in
+                            answered (deliver (Bytes.fromString (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") e.notices))) { run | world = e.world })
+
+                        -- a run of its own for each: a run is used up as it goes on
+                        clocked {} =
+                            attached two |> happen (FakeTmux.enterClock 0)
+
+                        shown =
+                            clocked {}
+
+                        hidden =
+                            clocked {} |> happen (FakeTmux.switchWindow 1)
+                    in
+                    Expect.equal { shown = True, hidden = -1 } { shown = TmuxMode.clockAt shown.tmux >= 0, hidden = TmuxMode.clockAt hidden.tmux }
+          }
+        , { name = "a pane asked about copy mode and answered %error, as before 3.2 for a pane that is gone, is forgotten (review TA17)"
+          , test =
+                \_ ->
+                    let
+                        -- every question answered as the fake tmux answers,
+                        -- but copy mode's about pane 0, answered %error
+                        erred run =
+                            when Array.popFirst run.held is
+                                Just { first, rest } ->
+                                    if String.startsWith "display-message" first && String.contains "'%0'" first then
+                                        erred (deliver (Bytes.fromString "%begin 1700000000 901 1\u{000D}\n%error 1700000000 901 1\u{000D}\n") { run | held = rest })
+
+                                    else
+                                        let
+                                            answered =
+                                                FakeTmux.answer first run.world
+                                        in
+                                        erred (deliver answered.bytes { run | world = answered.world, held = rest })
+
+                                Nothing ->
+                                    run
+
+                        -- a run of its own for each: a run is used up as it goes on
+                        copying {} =
+                            attached (start version) |> inCopyMode 0
+
+                        before =
+                            copying {}
+
+                        after =
+                            copying {}
+                                |> deliver (Bytes.fromString "%output %0 x\u{000D}\n")
+                                |> erred
+                    in
+                    Expect.equal { before = True, after = False } { before = TmuxMode.copyKept 0 before.tmux, after = TmuxMode.copyKept 0 after.tmux }
+          }
         , { name = "copy mode scrolled by k shows the lines tmux scrolled to (TM31)"
           , test =
                 \_ ->

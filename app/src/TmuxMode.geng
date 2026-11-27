@@ -7,6 +7,8 @@ module TmuxMode exposing
     , answerEntry
     , anyMotion
     , bells
+    , clockAt
+    , copyKept
     , customize
     , diagnose
     , dragLeft
@@ -4077,8 +4079,11 @@ replied expect ok lines acc =
                 -- a pane that closed in copy mode, which tmux says nothing
                 -- of, answers with every field empty: forgotten, so it is
                 -- not asked about again with each modes answer (TM103)
+                -- Before 3.2 the question about a pane that is gone is
+                -- an %error instead (TK10.1): forgotten too (the code
+                -- review's TA17)
                 gone =
-                    (Array.first lines |> Maybe.map (\l -> String.split " " (Bytes.toStringLossy l)) |> Maybe.andThen (Array.get 1)) == Just ""
+                    not ok || (Array.first lines |> Maybe.map (\l -> String.split " " (Bytes.toStringLossy l)) |> Maybe.andThen (Array.get 1)) == Just ""
 
                 st =
                     if gone then
@@ -11628,21 +11633,7 @@ dueAt : State -> Int
 dueAt s =
     let
         clockDue =
-            if s.dayAt /= Nothing && Array.any (\m -> m == "clock-mode") (Dict.values s.paneModes) then
-                -- the clock drawn again as the minute turns, or the second
-                -- when it shows seconds
-                let
-                    step =
-                        if String.endsWith "-with-seconds" (Maybe.withDefault (meant Reason.NotSet "") (Dict.get "clock-mode-style" s.status.options)) then
-                            1000
-
-                        else
-                            60000
-                in
-                Clock.after s.clock (step - modBy step (Maybe.withDefault (meant Reason.NotSet 0) (dayNow s)))
-
-            else
-                -1
+            clockAt s
     in
     Clock.soonest
         (Clock.soonest s.pollAt
@@ -17145,6 +17136,34 @@ keepPanes listed ids i old acc =
 
         Nothing ->
             meant Reason.NoMore acc
+
+
+{-| Whether anything of copy mode is kept for a pane: its state, or a
+question about it (for the tests; the code review's TA17). -}
+copyKept : Int -> State -> Bool
+copyKept pane s =
+    Dict.member pane s.copy || Dict.member pane s.copyAsked
+
+
+{-| When a clock a pane shows is next drawn again, as the minute turns or
+the second when it shows seconds; -1 for none. Only the panes of the
+window shown: a clock in a window not shown, or in a pane gone that tmux
+said nothing of, does not wake the loop (the code review's TB13). -}
+clockAt : State -> Int
+clockAt s =
+    if s.dayAt /= Nothing && Array.any (\id -> Dict.get id s.paneModes == Just "clock-mode") (layoutIds s.layout) then
+        let
+            step =
+                if String.endsWith "-with-seconds" (Maybe.withDefault (meant Reason.NotSet "") (Dict.get "clock-mode-style" s.status.options)) then
+                    1000
+
+                else
+                    60000
+        in
+        Clock.after s.clock (step - modBy step (Maybe.withDefault (meant Reason.NotSet 0) (dayNow s)))
+
+    else
+        -1
 
 
 {-| A pane that is gone, out of every map kept by pane (TM103). -}

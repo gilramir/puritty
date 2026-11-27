@@ -5056,3 +5056,35 @@ an unknown version is taken as new, as `treeQueries` takes it.
 **Tested** (the app suite, 637): the command asked on 2.7, 3.0 and 3.1
 has the older words and no `t/p:`, and on 3.2 and 3.8 the newer. The format check (TK8) lists `client_height`, newly asked, as every
 dumped tmux has it.
+
+## TM141 · A pane gone in copy mode is forgotten on every tmux (2026-11-26)
+
+The code review's TA17. TM103 forgets a pane that closed in copy mode
+when the question about its copy mode comes back with every field empty,
+which is how tmux from 3.2 answers about a pane that is gone. Before 3.2
+the question is an `%error` (TK10.1), which read as no line at all: the
+pane was not forgotten, the question stayed asked, and copy mode's
+state, its modes and its view stayed kept for it. Now an `%error`
+answer forgets it too.
+
+**Tested** (the app suite, 643: the test on each of the six tmux
+versions): copy mode in pane 0, output that asks about it, and the
+question answered `%error`: the pane is forgotten
+(`TmuxMode.copyKept`). Without the change it was kept.
+
+## TM142 · A clock not on the screen does not wake the loop (2026-11-26)
+
+The code review's TB13. A pane in clock mode is drawn again as the
+minute turns (TM32), which `dueAt` asked of every pane whose mode was
+ever `clock-mode`, shown or not; and tmux sends no `%pane-mode-changed`
+for a pane that is gone, so a clock in a pane killed from another, or in
+a window not shown, woke the loop every minute (every second with
+`clock-mode-style 24-with-seconds`) and drew everything again. The maps
+kept by pane are already pruned when a pane leaves the layout shown
+(TM110's `forgetGone`); `clockAt`, split out of `dueAt`, now looks only
+at the panes of the window shown.
+
+**Tested** (the app suite, 649: the test on each of the six tmux
+versions): pane 0 in clock mode, its time of day answered as tmux
+answers it; shown, the clock is due; the other window shown, none is.
+Before, the hidden clock was due in 60,000 ms.

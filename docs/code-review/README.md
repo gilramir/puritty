@@ -505,7 +505,7 @@ covered" sections. The larger gaps:
 | [TA14](11-tmuxmode-a.md) | bug | plausible | Commands queued earlier in the read that ends control mode are still written |
 | [TA15](11-tmuxmode-a.md) | security | confirmed | **fixed** A pane's output holding the entry sequence types a newline into that pane and hides its output |
 | [TA16](11-tmuxmode-a.md) | efficiency | confirmed | Before 3.2 the status polls are sent every second whether or not the last were answered |
-| [TA17](11-tmuxmode-a.md) | bug | plausible | `ForCopy` does not look at `ok`: before 3.2 a pane killed in copy mode is never forgotten |
+| [TA17](11-tmuxmode-a.md) | bug | plausible | **fixed** `ForCopy` does not look at `ok`: before 3.2 a pane killed in copy mode is never forgotten |
 | [TA18](11-tmuxmode-a.md) | efficiency | confirmed | Work done on every read that only some events need |
 | [TA19](11-tmuxmode-a.md) | security | plausible | **fixed** Text from tmux is drawn on the canvas terminal with its control characters |
 | [TA20](11-tmuxmode-a.md) | bug | plausible | A config reload that changes the look does not tell tmux the new size |
@@ -513,7 +513,7 @@ covered" sections. The larger gaps:
 | [TB9](12-tmuxmode-b.md) | efficiency | confirmed | Before tmux 3.2 the status line is asked with 21 commands a second, whether or not the last second's were answered |
 | [TB11](12-tmuxmode-b.md) | bug | confirmed | Clipping and padding by characters where the neighbours go by cells |
 | [TB12](12-tmuxmode-b.md) | bug | plausible | The loop's time in the state is stale on every path but a key and a tick |
-| [TB13](12-tmuxmode-b.md) | bug | confirmed | A pane that closes leaves its mode behind, and a clock left behind keeps the timer and the repaint going |
+| [TB13](12-tmuxmode-b.md) | bug | confirmed | **fixed** A pane that closes leaves its mode behind, and a clock left behind keeps the timer and the repaint going |
 | [TB14](12-tmuxmode-b.md) | bug | confirmed | A mode puritty draws outlives its pane and its window, unseen but still taking the keys |
 | [TB15](12-tmuxmode-b.md) | bug | confirmed | The mouse's word and line are left on the pane as user options |
 | [TB16](12-tmuxmode-b.md) | security | confirmed | **fixed** FT11's first rule lets a nested host's OSC 7 name a folder on tmux's host |

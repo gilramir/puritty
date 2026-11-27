@@ -240,8 +240,10 @@ SUITES = [
         # MB11: a starting window's lock file kept; 635 since MA17: a match's
         # columns after emoji and after a letter that lowers to two; 636
         # since TB16: a nested host's OSC 7 not taken under ssh; 637 since
-        # TB8: list rows in each tmux's words
-        637,
+        # TB8: list rows in each tmux's words; 643 since TA17: a pane gone
+        # in copy mode forgotten on an %error, on each of six versions; 649
+        # since TB13: a hidden clock does not wake the loop, six versions
+        649,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
