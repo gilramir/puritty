@@ -2598,3 +2598,21 @@ second rule.
 `file://localhost/srv/www` give no folder and `file://box/srv/www` on the
 host `box` gives `/srv/www`; under `bash`, `file:///srv/www` still gives
 it. Before, all four gave `/srv/www`.
+
+## FT49 · The places column scrolls, and its hidden rows take no click (2026-11-27)
+
+The code review's PS19. The picker's places column (the shell's folder,
+home, `/`, recent folders and bookmarks, 24 px a row) was cut by its clip
+with no scroll: a place past its foot could not be seen, nor reached by
+the mouse, nor seen when chosen with the keys, and its click box went on
+below the column, so a click on the status line under it went to a
+bookmark that was not drawn. Now the column has a first row
+(`placesTop`): the wheel over the column moves it three rows a notch,
+and while the places have the keys it keeps the chosen place in view
+(`placesTopOf`). Only rows wholly inside the column take a click.
+
+**Tested** (the picker suite): twenty bookmarks in a window 14 rows high;
+a click just under the column asks for no bookmark, and after ten wheel
+notches over the column a click on its first row asks for a bookmark's
+listing. Before, the first went to a hidden bookmark and the wheel
+scrolled the list instead.

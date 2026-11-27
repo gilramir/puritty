@@ -26,6 +26,7 @@ module SettingsWindow exposing
     , rowTop
     , suggestions
     , told
+    , unread
     , update
     , withFontUsed
     , withPageNamed
@@ -108,6 +109,9 @@ type alias Model =
     , typing : Maybe Typing
     , undo : Array Undo
     , message : Maybe Message
+    -- whether the message is the file's: a failed read or a read's
+    -- problems, which a clean read clears (PS20)
+    , fileProblem : Bool
     , fonts : Array String
     -- the family the terminal shows for the font the file named when the
     -- window opened (ST35): its own, or the one in its place
@@ -223,33 +227,64 @@ init r =
     , form = Nothing
     , lines = []
     , choosing = Nothing
-    , message =
-        when Array.first r.reports is
-            Just first ->
-                Just
-                    (if Array.length r.reports > 1 then
-                        Words.message "message.more" |> Words.with "first" first |> Words.with "more" (String.fromInt (Array.length r.reports - 1))
-
-                     else
-                        Words.plain first
-                    )
-
-            Nothing ->
-                meant Reason.NoMore Nothing
+    , message = reportsMessage r.reports
+    , fileProblem = not (Array.isEmpty r.reports)
     }
+
+
+{-| What the foot says of a read's problems: the first, and how many more. -}
+reportsMessage : Array String -> Maybe Message
+reportsMessage reports =
+    when Array.first reports is
+        Just first ->
+            Just
+                (if Array.length reports > 1 then
+                    Words.message "message.more" |> Words.with "first" first |> Words.with "more" (String.fromInt (Array.length reports - 1))
+
+                 else
+                    Words.plain first
+                )
+
+        Nothing ->
+            meant Reason.NoMore Nothing
 
 
 {-| The file read again after a change from elsewhere (an edit by hand):
 its settings shown, what is being typed kept. -}
 fileRead : { config : Config, reports : Array String } -> Model -> Model
 fileRead r m =
-    { m | config = r.config, reports = r.reports }
+    let
+        -- the read's problems shown, as the terminal puts them on its
+        -- title; a clean read clears what the file said before, and leaves
+        -- any other message (the code review's PS20)
+        message =
+            when reportsMessage r.reports is
+                Just said ->
+                    Just said
+
+                Nothing ->
+                    meant Reason.NoMore
+                        (if m.fileProblem then
+                            Nothing
+
+                         else
+                            m.message
+                        )
+    in
+    { m | config = r.config, reports = r.reports, message = message, fileProblem = not (Array.isEmpty r.reports) }
 
 
 {-| A message at the foot, from the program: a write that failed. -}
 told : Message -> Model -> Model
 told message m =
-    { m | message = Just message }
+    { m | message = Just message, fileProblem = False }
+
+
+{-| The file could not be read (it is not TOML, half written): said at the
+foot until a read succeeds (PS20). -}
+unread : Message -> Model -> Model
+unread message m =
+    { m | message = Just message, fileProblem = True }
 
 
 -- WHAT IS SHOWN
@@ -645,6 +680,69 @@ hostsChanged hosts effects message m =
     { model = keepInView { m | config = { config | hosts = hosts }, undo = Array.pushLast (HostsWere { hosts = config.hosts, did = effects }) m.undo, message = Just message }
     , effects = effects
     }
+
+
+{-| What a host's rename changes besides its table (the code review's
+PS25): another host's `jump` that named it, written again (`PutHost`, which
+undo puts back), and `start` when it is `host:` and the old name. The
+hosts renamed, the config with `start` changed, and the effects; the
+recents are renamed apart (`Recent.renamed`). Before, these pointed at a
+name no host had. -}
+renamedAround : String -> String -> Config -> { hosts : Array Config.Host, config : Config, effects : Array Effect }
+renamedAround from to config =
+    let
+        through h =
+            h.name /= from && h.jump == Just from
+
+        hosts =
+            Array.map
+                (\h ->
+                    if h.name == from then
+                        { h | name = to }
+
+                    else if through h then
+                        { h | jump = Just to }
+
+                    else
+                        h
+                )
+                config.hosts
+
+        jumps =
+            config.hosts
+                |> Array.keepIf through
+                |> Array.map (\h -> PutHost { h | jump = Just to })
+
+        started =
+            config.start == "host:" ++ from
+    in
+    { hosts = hosts
+    , config =
+        if started then
+            { config | start = "host:" ++ to }
+
+        else
+            config
+    , effects =
+        jumps
+            ++ (if started then
+                    startWritten ("host:" ++ to)
+
+                else
+                    []
+               )
+    }
+
+
+{-| `start` written as this. -}
+startWritten : String -> Array Effect
+startWritten value =
+    when Schema.find [ "start" ] is
+        Just setting ->
+            [ Write { setting = setting, value = Text value } ]
+
+        Nothing ->
+            meant Reason.NotKnown []
 
 
 {-| A name for a copy of a host that no host has: `name-2`, `name-3`... -}
@@ -1463,7 +1561,14 @@ undo m =
                                     (\e ->
                                         when e is
                                             RenameHost r ->
+                                                -- with `start` back (PS25)
                                                 [ RenameHost { from = r.to, to = r.from } ]
+                                                    ++ (if m.config.start == "host:" ++ r.to then
+                                                            startWritten ("host:" ++ r.from)
+
+                                                        else
+                                                            []
+                                                       )
 
                                             PutHost h ->
                                                 when hostWas h.name is
@@ -1485,10 +1590,35 @@ undo m =
                                                 []
                                     )
 
+                        -- a rename's `start` and recents back (PS25)
+                        renamesBack =
+                            was.did
+                                |> Array.mapAndFlatten
+                                    (\e ->
+                                        when e is
+                                            RenameHost r ->
+                                                [ r ]
+
+                                            _ ->
+                                                []
+                                    )
+
                         config =
-                            m.config
+                            Array.foldl
+                                (\r c ->
+                                    if c.start == "host:" ++ r.to then
+                                        { c | start = "host:" ++ r.from }
+
+                                    else
+                                        c
+                                )
+                                m.config
+                                renamesBack
+
+                        recents =
+                            Array.foldl (\r rs -> Recent.renamed r.to r.from rs) m.recents renamesBack
                     in
-                    { model = keepInView { m | config = { config | hosts = before }, undo = initial, form = Nothing, message = Just (Words.message "message.hostsBack") }
+                    { model = keepInView { m | config = { config | hosts = before }, recents = recents, undo = initial, form = Nothing, message = Just (Words.message "message.hostsBack") }
                     , effects = effects
                     }
 
@@ -1524,21 +1654,14 @@ typingKey k t m =
 
         else
             let
-                renamed =
-                    hostsChanged
-                        (Array.map
-                            (\h ->
-                                if h.name == from then
-                                    { h | name = to }
+                around =
+                    renamedAround from to m.config
 
-                                else
-                                    h
-                            )
-                            m.config.hosts
-                        )
-                        [ RenameHost { from = from, to = to } ]
+                renamed =
+                    hostsChanged around.hosts
+                        ([ RenameHost { from = from, to = to } ] ++ around.effects)
                         (Words.message "message.renamed" |> Words.with "from" from |> Words.with "to" to)
-                        { m | typing = Nothing }
+                        { m | typing = Nothing, config = around.config, recents = Recent.renamed from to m.recents }
 
                 r =
                     renamed.model

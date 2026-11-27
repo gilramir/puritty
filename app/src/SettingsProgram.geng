@@ -24,6 +24,7 @@ import Os.File as File
 import Os.Path as Path
 import Os.Process as Process
 import Platform
+import Process as Sleep
 import Putty
 import PuttyStore
 import Reason
@@ -616,7 +617,19 @@ effect e s =
             writeWith (Schema.deleteHost name) s
 
         SettingsWindow.RenameHost r ->
+            -- the recents' row kept, under the new name (PS25)
             writeWith (Schema.renameHost r.from r.to) s
+                |> Task.andThen
+                    (\written ->
+                        when written.stateDir is
+                            Just dir ->
+                                RecentFile.rename written.given.fs dir r.from r.to
+                                    |> Task.andThen (\_ -> showRecents written.given.fs dir written.window.config.recentConnections)
+                                    |> Task.map (\_ -> written)
+
+                            Nothing ->
+                                meant Reason.NotSet Task.succeed written
+                    )
 
         SettingsWindow.Hear w ->
             hear w |> Task.map (\_ -> s)
@@ -765,7 +778,10 @@ fileChanged change s =
     in
     when again is
         Just True ->
-            SettingsSource.readSettings s.given
+            -- read once the change has settled, as the terminal does: an
+            -- editor's save is often several writes (PS20)
+            Sleep.sleep (toFloat SettingsSource.reloadDelayMs)
+                |> Task.andThen (\_ -> SettingsSource.readSettings s.given)
                 |> Task.onError (\why -> Task.succeed (Unread why))
                 |> Task.map
                     (\read ->
@@ -774,7 +790,7 @@ fileChanged change s =
                                 { s | window = SettingsWindow.fileRead { config = g.config, reports = g.problems } s.window }
 
                             Unread why ->
-                                { s | window = SettingsWindow.told (Words.plain why) s.window }
+                                { s | window = SettingsWindow.unread (Words.plain why) s.window }
                     )
 
         Just False ->

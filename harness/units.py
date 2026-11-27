@@ -249,8 +249,11 @@ SUITES = [
         # suite); 673 since TB15: the mouse's options unset, six versions;
         # 674 since PS21: a paste's controls dropped; 675 since PS15: a
         # command's words round-trip; 676 since PS14: a text record held to
-        # 65,535 bytes; 677 since PS23: the scrollbar over millions of rows
-        677,
+        # 65,535 bytes; 677 since PS23: the scrollbar over millions of rows;
+        # 678 since PS20: the file's messages shown and cleared; 679 since
+        # PS25: what names a renamed host follows it; 680 since PS19: the
+        # places column scrolls
+        680,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

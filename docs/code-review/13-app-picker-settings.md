@@ -203,6 +203,7 @@ Two facts used throughout, both checked:
 - Confidence: confirmed
 - What: places past the column's height (three fixed, a heading and up to five recent, a heading and any number of bookmarks, 24 px each) are cut by the clip and cannot be reached by the mouse or seen when chosen with the keys; there is no scroll. Their hit boxes continue below `bodyBottom`: a click on the status line's left part under the column goes to a bookmark that is not drawn (the footer's buttons win only because they are later in the list).
 - Fix: scroll the column with the wheel and with `placeAt`, and clip place hits to the column's box.
+- Fixed: 2026-11-27, `docs/sftp.md` FT49. The places column scrolls by the wheel and follows the place chosen with the keys (`placesTop`, `placesTopOf`); only rows inside it take a click. Picker suite test: before, a click under the column hit a hidden bookmark and the wheel did not scroll the places.
 
 ### PS20 · The settings window does not settle before reading, keeps a stale error, and never shows a later read's reports
 - Where: app/src/SettingsProgram.geng:738-784 (`fileChanged` reads at once); app/src/SettingsWindow.geng:238-240 (`fileRead` sets `reports`, which nothing reads after `init`, and leaves `message`); against app/src/SettingsSource.geng:55-59 (`reloadDelayMs`, the terminal's 50 ms)
@@ -211,6 +212,7 @@ Two facts used throughout, both checked:
 - Confidence: confirmed
 - What: an editor's save in several writes is read mid-way: "… is not TOML" is put at the foot by `told`, and the good read that follows does not clear it, so the error stays until the next key. A hand edit that decodes with problems (an unknown key, a value out of range) updates `m.reports` only: the window shows nothing, where the terminal puts it on its title. `Model.reports` is otherwise dead state.
 - Fix: share the terminal's delay (it is in `SettingsSource` for that); in `fileRead` set the message from the reports as `init` does, and clear a file error once a read succeeds.
+- Fixed: 2026-11-27, `docs/settings-gui.md` SG30. The window waits `reloadDelayMs` before reading; a read's problems are shown at the foot; a failed read's error is cleared by a clean read, other messages kept. App suite test (before: the error stayed, the problems unseen); the wait is untested.
 
 ### PS21 · Pasted and committed text is not filtered for control characters
 - Where: app/src/SettingsWindow.geng:662-679 (`Pasted` → `oneLine` → `Typed` → `insert`), app/src/TextEdit.geng:197-202 (`oneLine` handles tab, CR and line ends only), against 264-266 and SettingsWindow.geng:1209-1211 (`printable`, applied to keys)
@@ -254,6 +256,7 @@ Two facts used throughout, both checked:
 - Confidence: confirmed
 - What: other hosts' `jump = "old"`, `start = "host:old"`, and `Recent.Saved "old"` in `m.recents` and in the recents file are not touched. The recent row stays in the list as "as ~/.ssh/config has it" and Enter on it runs `--host old`.
 - Fix: on rename, rewrite `jump` and `start` where they name the host, and map the recents.
+- Fixed: 2026-11-27, `docs/settings-gui.md` SG31. A rename rewrites the hosts that jump through it, `start` when it names it, and the recent row (window and file); Ctrl+Z puts them all back. App suite test; the file's rename untested.
 
 ### PS26 · `docs/user/settings.md` shows a file that leaves out settings no other user page names
 - Where: docs/user/settings.md:27-93 ("The file"), 119-138 (hosts); against app/src/Schema.geng:340, 412, 448, 466, 484, 520, 916, 1294-1296, 1414-1417

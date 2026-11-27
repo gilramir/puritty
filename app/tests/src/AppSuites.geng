@@ -1560,6 +1560,23 @@ window =
                     Expect.equal { top = most, middle = True, bottom = 0 }
                         { top = at 0, middle = middle > most * 2 // 5 && middle < most * 3 // 5, bottom = at (60 * 17 - 1) }
           }
+        , { name = "the file read again: a failed read's error cleared by a clean read, a read's problems shown, another message kept (review PS20)"
+          , test =
+                \_ ->
+                    let
+                        cfg =
+                            opened.config
+
+                        clean =
+                            SettingsWindow.fileRead { config = cfg, reports = [] }
+                    in
+                    Expect.equal
+                        { cleared = "", problems = "line 3: unknown key", kept = "write failed" }
+                        { cleared = foot (clean (SettingsWindow.unread (Words.plain "not TOML") opened))
+                        , problems = foot (SettingsWindow.fileRead { config = cfg, reports = [ "line 3: unknown key" ] } opened)
+                        , kept = foot (clean (SettingsWindow.told (Words.plain "write failed") opened))
+                        }
+          }
         , { name = "a click on a page shows it"
           , test = \_ -> Expect.equal { page = 1, first = "window.columns = 80" } ((after [ click (SettingsWindow.OnPage 1) 1 ]).model |> (\m -> { page = m.page, first = Maybe.withDefault "" (Array.get 0 (rowsShown m)) }))
           }
@@ -1896,6 +1913,45 @@ window =
                         { said = (onHostsPage False ([ k.down, k.down, k.down, press 0xFF53, k.up, k.enter ] ++ Array.repeat 9 k.backspace ++ typeIn "box2" ++ [ k.enter, ctrl 'z' ])).said
                         , bookmarks = (decoded file).hosts |> Array.first |> Maybe.map .bookmarks |> Maybe.withDefault []
                         }
+          }
+        , { name = "a host renamed: a host jumping through it, start and the recent row follow, and Ctrl+Z puts them back (review PS25)"
+          , test =
+                \_ ->
+                    let
+                        example =
+                            decoded Schema.example
+
+                        web =
+                            Config.host "web" "web.example.com"
+
+                        config =
+                            { example | start = "host:build-box", hosts = example.hosts ++ [ { web | jump = Just "build-box" } ] }
+
+                        start =
+                            SettingsWindow.init { config = config, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [], putty = [], launcher = False }
+                                |> SettingsWindow.withRecents [ Recent.Saved "build-box", Recent.Quick "me@there" ]
+
+                        rename =
+                            [ k.tab, k.tab ] ++ Array.repeat (Array.length Schema.pages) k.down ++ [ press 0xFF53 ] ++ [ k.down, k.down, k.down, press 0xFF53, k.up, k.enter ] ++ Array.repeat 9 k.backspace ++ typeIn "box2" ++ [ k.enter ]
+
+                        renamed =
+                            Screen.feedInputs rename start
+
+                        back =
+                            Screen.feedInputs (rename ++ [ ctrl 'z' ]) start
+
+                        seen r =
+                            { start = r.model.config.start
+                            , jump = r.model.config.hosts |> Array.findFirst (\h -> h.name == "web") |> Maybe.andThen (\f -> f.value.jump)
+                            , recents = r.model.recents
+                            }
+                    in
+                    Expect.equal
+                        { said = [ "rename build-box to box2", "put web", "start = host:box2", "rename box2 to build-box", "start = host:build-box", "put web" ]
+                        , renamed = { start = "host:box2", jump = Just "box2", recents = [ Recent.Saved "box2", Recent.Quick "me@there" ] }
+                        , back = { start = "host:build-box", jump = Just "build-box", recents = [ Recent.Saved "build-box", Recent.Quick "me@there" ] }
+                        }
+                        { said = said back.effects, renamed = seen renamed, back = seen back }
           }
         , { name = "a host is renamed from its form's first row"
           , test =

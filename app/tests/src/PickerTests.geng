@@ -124,6 +124,43 @@ cases =
                 in
                 Expect.equal (Picker.Send (Bytes.fromString "/x")) (press 0xFF0D 0 2 down).outcome
       }
+    , { name = "the places column scrolls by the wheel and its hidden rows take no click (review PS19)"
+      , test =
+            \_ ->
+                let
+                    size =
+                        { cols = 100, rows = 14, cellWidth = 9, cellHeight = 17 }
+
+                    l =
+                        Picker.layout size
+
+                    marks =
+                        Array.range 0 19 |> Array.map (\i -> Bytes.fromString ("/b" ++ String.padLeft 2 '0' (String.fromInt i)))
+
+                    p0 =
+                        (Picker.open { host = "h", files = [], at = Bytes.fromString "/x", places = { shell = Nothing, home = Nothing, recent = [], bookmarks = marks } }).picker
+
+                    x =
+                        l.placesX + 10
+
+                    at button y p =
+                        Picker.pointer size with { action = 0, button = button, x = x, y = y, ms = 0 } p
+
+                    clicked y p =
+                        asks (at 1 y p).requests
+                            ++ asks (Picker.pointer size with { action = 1, button = 1, x = x, y = y, ms = 0 } (at 1 y p).picker).requests
+
+                    scrolled =
+                        Array.foldl (\_ p -> (at 5 (l.bodyY + 5) p).picker) p0 (Array.range 1 10)
+
+                    bookmarkAsked r =
+                        Array.any (String.startsWith "list /b") r
+                in
+                Expect.equal { below = False, scrolledTop = True }
+                    { below = bookmarkAsked (clicked (l.bodyBottom + 2) p0)
+                    , scrolledTop = bookmarkAsked (clicked (l.bodyY + 5) scrolled)
+                    }
+      }
     , { name = "Ctrl+D bookmarks the folder you are in, and again takes it off"
       , test =
             \_ ->

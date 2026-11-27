@@ -3,6 +3,7 @@ module Picker exposing
     , Ask(..)
     , Entry
     , Kind(..)
+    , Layout
     , Outcome(..)
     , Picker
     , Places
@@ -21,6 +22,7 @@ module Picker exposing
     , folderOf
     , keptFitting
     , key
+    , layout
     , listed
     , made
     , open
@@ -179,6 +181,9 @@ type alias Picker =
     , naming : Maybe TextEdit.Edit
     , focus : Focus
     , placeAt : Int
+    -- the places column's first row shown: the wheel's, or `Nothing` to
+    -- keep the place chosen with the keys in view (the code review's PS19)
+    , placesTop : Maybe Int
     , places : Places
     , problem : Maybe String
     , mouse : { x : Int, y : Int }
@@ -216,6 +221,7 @@ open o =
             , naming = Nothing
             , focus = InList
             , placeAt = 0
+            , placesTop = Nothing
             , places = o.places
             , problem = Nothing
             , mouse = { x = -1, y = -1 }
@@ -1527,7 +1533,7 @@ listKey with k s =
             goUp s
 
     else if k.sym == 0xFF09 || k.sym == 0xFE20 then
-        { s | picker = { p | focus = InPlaces, placeAt = max 0 p.placeAt } }
+        { s | picker = { p | focus = InPlaces, placeAt = max 0 p.placeAt, placesTop = Nothing } }
 
     else if printable then
         if p.filter == "" && (k.text == "/" || k.text == "~") then
@@ -1601,10 +1607,10 @@ placesKey with k s =
             Array.get at choices |> Maybe.andThen .path
     in
     if k.sym == 0xFF54 then
-        { s | picker = { p | placeAt = min (count - 1) (at + 1) } }
+        { s | picker = { p | placeAt = min (count - 1) (at + 1), placesTop = Nothing } }
 
     else if k.sym == 0xFF52 then
-        { s | picker = { p | placeAt = max 0 (at - 1) } }
+        { s | picker = { p | placeAt = max 0 (at - 1), placesTop = Nothing } }
 
     else if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0xFF53 then
         when chosen is
@@ -1639,6 +1645,47 @@ placesKey with k s =
 {-| A row of the places: a heading (no path) or a place. -}
 type alias PlaceRow =
     { label : String, path : Maybe Bytes, removable : Bool }
+
+
+{-| A row of the places column's height. -}
+placeRowHeight : Layout -> Int
+placeRowHeight l =
+    l.px 24
+
+
+{-| The first row of the places column shown (the code review's PS19):
+the wheel's, held to the rows there are; else, with the places focused,
+the place chosen with the keys kept in view. Before, the column did not
+scroll: places past its foot could not be seen or reached by the mouse. -}
+placesTopOf : Layout -> Array PlaceRow -> Picker -> Int
+placesTopOf l prows p =
+    let
+        fit =
+            max 1 ((l.bodyBottom - l.bodyY) // max 1 (placeRowHeight l))
+
+        most =
+            max 0 (Array.length prows - fit)
+
+        -- the chosen place's row among all the rows, headings too
+        chosenRow =
+            Array.indexedMap (\i r -> { i = i, r = r }) prows
+                |> Array.keepIf (\x -> Maybe.isJust x.r.path)
+                |> Array.get p.placeAt
+                |> Maybe.map .i
+                |> Maybe.withDefault (meant Reason.OutOfRange 0)
+    in
+    when p.placesTop is
+        Just t ->
+            clamp 0 most t
+
+        Nothing ->
+            meant Reason.NotSet
+                (if p.focus == InPlaces then
+                    clamp 0 most (chosenRow - fit + 1)
+
+                 else
+                    0
+                )
 
 
 placeRows : With -> Picker -> Array PlaceRow
@@ -1740,6 +1787,24 @@ pointer size with e p =
 
             Nothing ->
                 meant Reason.NotOpen s0
+
+    else if (e.button == 4 || e.button == 5) && e.x >= l.placesX && e.x < l.placesX + l.placesW && e.y >= l.bodyY && e.y < l.bodyBottom then
+        -- the wheel over the places scrolls them (PS19), three rows a notch
+        let
+            prows =
+                placeRows with p1
+
+            notch =
+                if e.button == 4 then
+                    -3
+
+                else
+                    3
+
+            fit =
+                max 1 ((l.bodyBottom - l.bodyY) // max 1 (placeRowHeight l))
+        in
+        { s0 | picker = { p1 | placesTop = Just (clamp 0 (max 0 (Array.length prows - fit)) (placesTopOf l prows p1 + notch)) } }
 
     else if e.button == 4 || e.button == 5 then
         let
@@ -2377,10 +2442,17 @@ sceneWith size with timeText p0 =
             placeRows with p
 
         placeRowH =
-            px 24
+            placeRowHeight l
+
+        placesTop =
+            placesTopOf l prows p
 
         placeY i =
-            l.bodyY + i * placeRowH
+            l.bodyY + (i - placesTop) * placeRowH
+
+        -- a row wholly inside the column: only those take a click (PS19)
+        placeShown i =
+            placeY i >= l.bodyY && placeY i + placeRowH <= l.bodyBottom
 
         choices =
             Array.keepIf (\r -> Maybe.isJust r.path) prows
@@ -2396,7 +2468,11 @@ sceneWith size with timeText p0 =
             Array.indexedMap (\i r -> { i = i, r = r }) prows
                 |> Array.mapAndKeepJust
                     (\x ->
-                        Maybe.map (\path -> { x = l.placesX, y = placeY x.i, w = l.placesW, h = placeRowH, target = Place path }) x.r.path
+                        if placeShown x.i then
+                            Maybe.map (\path -> { x = l.placesX, y = placeY x.i, w = l.placesW, h = placeRowH, target = Place path }) x.r.path
+
+                        else
+                            Nothing
                     )
 
         removeW =
@@ -2406,7 +2482,7 @@ sceneWith size with timeText p0 =
             Array.indexedMap (\i r -> { i = i, r = r }) prows
                 |> Array.mapAndKeepJust
                     (\x ->
-                        if x.r.removable then
+                        if x.r.removable && placeShown x.i then
                             Maybe.map (\path -> { x = l.placesX + l.placesW - removeW, y = placeY x.i, w = removeW, h = placeRowH, target = Unmark path }) x.r.path
 
                         else

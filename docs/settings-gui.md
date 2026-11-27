@@ -919,3 +919,43 @@ place and a press jumped to a wrong row. Both are now worked in `Float`
 track's top is all the way back, at its middle about halfway, at its
 bottom none. Before, the press at the bottom gave 4,271,222 rows back,
 on node and natively.
+
+## SG30 · The file read again: settled, its problems shown, a stale error cleared (2026-11-27)
+
+The code review's PS20. When `config.toml` changed from elsewhere the
+settings window read it at once, so an editor's save in several writes
+could be read half written: "… is not TOML" went to the foot, and the
+good read that followed did not clear it. A read that decoded with
+problems (an unknown key, a value out of range) was kept in the model and
+shown nowhere, where the terminal puts it on its title. Now the window
+waits `SettingsSource.reloadDelayMs` (50 ms, the terminal's) before
+reading; a failed read's message is marked the file's (`unread`); a read
+with problems says them at the foot, as the window's start does
+(`reportsMessage`); and a clean read clears a message that was the
+file's, leaving any other (a write that failed) as it is.
+
+**Tested** (the app suite, 678): a failed read then a clean one leaves
+the foot empty; a read with a problem shows it; a write's failure stays
+after a clean read. Before, the first kept "not TOML" and the second
+showed nothing. The wait is not tested: no test makes an editor's
+writes.
+
+## SG31 · What names a host follows its rename (2026-11-27)
+
+The code review's PS25. Renaming a host in the settings window renamed
+its table and nothing that named it: another host's `jump = "old"`,
+`start = "host:old"` and the recent connection `old` were left pointing
+at a name no host had, and Enter on that recent row ran `--host old`.
+Now the rename (`renamedAround`) writes again each host that jumped
+through it, with the new name, rewrites `start` when it named the host,
+and renames its recent row, in the window and in the recents file
+(`RecentFile.rename`, under the file's lock, MB12) with the jump list
+after. Ctrl+Z puts all of them back: the jumping hosts as they were,
+`start`, and the recents, the file's too, since undo's rename back goes
+through the same effect.
+
+**Tested** (the app suite, 679): `build-box` renamed `box2` where `web`
+jumps through it, `start` is `host:build-box` and `build-box` is a
+recent: the rename writes `web` and `start`, and all three follow; Ctrl+Z
+brings all three back. Before, only the table was renamed. The recents
+file's rename is not tested.
