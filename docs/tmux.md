@@ -5038,3 +5038,21 @@ code did not find it (0 of 6). **Measured** (scratch bench as TM137):
 `Control.feed` outside control mode over 520,000 bytes of colored
 output, an ESC every 7 to 13 bytes, in 32 KiB reads: 1 to 2 ms native
 and 5 to 12 ms on node before, 0 to 1 ms and 2 to 7 ms after.
+
+## TM140 · choose-buffer's and choose-client's rows in each tmux's words (2026-11-26)
+
+The code review's TB8. The lists puritty draws for `choose-buffer` and
+`choose-client` (TM55) asked their rows' text with 3.2's formats,
+`#{t/p:buffer_created}: #{buffer_sample}` and `#{t/p:client_activity}:
+session #{session_name}`, on every tmux; `t/p:` is from 3.2 (TV10), and
+before it is empty, so on RHEL 8's 2.7 every row read `buffer0: : text`.
+`listQuery` now takes the version and asks, before 3.2, the formats
+those releases' lists use (`WINDOW_BUFFER_DEFAULT_FORMAT` and
+`WINDOW_CLIENT_DEFAULT_FORMAT`, read in 2.7's and 3.0's sources):
+`#{buffer_size} bytes (#{t:buffer_created})` and `session
+#{session_name} (#{client_width}x#{client_height}, #{t:client_activity})`;
+an unknown version is taken as new, as `treeQueries` takes it.
+
+**Tested** (the app suite, 637): the command asked on 2.7, 3.0 and 3.1
+has the older words and no `t/p:`, and on 3.2 and 3.8 the newer. The format check (TK8) lists `client_height`, newly asked, as every
+dumped tmux has it.

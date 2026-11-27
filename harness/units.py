@@ -238,8 +238,10 @@ SUITES = [
         # 631 since MB16: a temporary image file removed when its read fails;
         # 632 since MB12: connections remembered at once all kept; 633 since
         # MB11: a starting window's lock file kept; 635 since MA17: a match's
-        # columns after emoji and after a letter that lowers to two
-        635,
+        # columns after emoji and after a letter that lowers to two; 636
+        # since TB16: a nested host's OSC 7 not taken under ssh; 637 since
+        # TB8: list rows in each tmux's words
+        637,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

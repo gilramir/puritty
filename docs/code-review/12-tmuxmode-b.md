@@ -89,6 +89,7 @@ finding rests on it.
 - What: the row text is `#{t/p:buffer_created}: #{buffer_sample}` and `#{t/p:client_activity}: session #{session_name}` with no version test. docs/tmux-versions.md TV10: `t/p:` is from 3.2, "before, `#{op:…}` is empty".
 - Scenario: RHEL 8's tmux 2.7 (a named target), `prefix =`: every row reads `buffer0: : text`. tmux 2.7 to 3.1 show the size and the full time (`N bytes (time): sample`; a client as `session NAME (WxH, time)`). The tree's rows have four forms by version (`treeQueries`), these have one.
 - Fix: the pre-3.2 formats from those releases' `window-buffer.c` and `window-client.c`, chosen as `treeQueries` chooses.
+- Fixed: 2026-11-26, `docs/tmux.md` TM140. `listQuery` takes the version: before 3.2 the rows are asked in 2.7's and 3.0's own formats (size and time). App suite test.
 
 ### TB9 · Before tmux 3.2 the status line is asked with 21 commands a second, whether or not the last second's were answered
 - Where: app/src/TmuxMode.geng:10999-11004 (`tick`), 9327-9367 (`pollsFor`, `pollOf`), 9295-9318
@@ -162,6 +163,7 @@ finding rests on it.
 - What: `shellSaid` is taken when the URI's host is empty, `localhost` or tmux's host, and it is taken before `blindCommands` is looked at.
 - Scenario: the pane runs `ssh other`; the remote shell's prompt prints `ESC ] 7 ; file:///srv/www` (an empty host is what many hand-written prompts send) or `file://localhost/…`. tmux keeps it as `pane_path`; the drop's label says `Drop into /srv/www` and the files go to that path on tmux's host, where rule 2 would have said "the pane runs ssh, whose folder tmux can't see". A hostile remote can aim it at any folder it can guess.
 - Fix: when `pane_current_command` is one of `blindCommands`, accept OSC 7 only with tmux's own host name spelled out, not empty or `localhost`.
+- Fixed: 2026-11-26, `docs/sftp.md` FT48. In a pane running a command of `blindCommands`, OSC 7 is taken only when it names tmux's host. App suite test: before, an unnamed or localhost URI under ssh gave a folder.
 
 ### TB17 · The three modes are three `Maybe`s, and their kinds are bare `Int`s
 - Where: app/src/TmuxMode.geng:226-247 (`tree`, `listing`, `customizing`), 168-188 (`asking`, `view`, `menu`, `numbers`); the same three-way `when` at 4556, 5433, 8107, 8238, 8398, 8560, 8577; `purpose : Int` (1-5, 11, 12, 21-24: 5382, 11851, 13016, 13625-13662), `Drag.kind` 0-7 (8615-8667, 17213-17249), `previewMode`, `sort`, `start`, `Sel.mode`, `ending`

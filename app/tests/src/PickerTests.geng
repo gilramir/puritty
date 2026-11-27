@@ -133,6 +133,34 @@ cases =
                 in
                 Expect.equal [ [ "/x" ], [] ] [ Array.map Bytes.toStringLossy (Picker.bookmarks marked), Array.map Bytes.toStringLossy (Picker.bookmarks (press 0x64 0x64 2 marked).picker) ]
       }
+    , { name = "choose-buffer's and choose-client's rows asked in each tmux's own words: t/p from 3.2, size and time before (review TB8)"
+      , test =
+            \_ ->
+                Expect.equal
+                    [ True, True, False, False, True, True ]
+                    [ String.contains "#{buffer_size} bytes (#{t:buffer_created})" (TmuxMode.listQuery 27 "buffer").command
+                    , String.contains "session #{session_name} (#{client_width}x#{client_height}, #{t:client_activity})" (TmuxMode.listQuery 30 "client").command
+                    , String.contains "t/p:" (TmuxMode.listQuery 31 "buffer").command
+                    , String.contains "t/p:" (TmuxMode.listQuery 27 "client").command
+                    , String.contains "#{t/p:buffer_created}: #{buffer_sample}" (TmuxMode.listQuery 38 "buffer").command
+                    , String.contains "#{t/p:client_activity}: session #{session_name}" (TmuxMode.listQuery 32 "client").command
+                    ]
+      }
+    , { name = "a pane running ssh: an OSC 7 with no host or localhost is not taken for a folder on tmux's host; one naming tmux's host is (review TB16)"
+      , test =
+            \_ ->
+                let
+                    folder command uri =
+                        TmuxMode.dropFolderOf (Array.map Bytes.fromString [ "/home/me", command, uri, "box.example", "box" ])
+                in
+                Expect.equal
+                    [ TmuxMode.NoFolder "the pane runs ssh, whose folder tmux can't see"
+                    , TmuxMode.NoFolder "the pane runs ssh, whose folder tmux can't see"
+                    , TmuxMode.Folder (Bytes.fromString "/srv/www")
+                    , TmuxMode.Folder (Bytes.fromString "/srv/www")
+                    ]
+                    [ folder "ssh" "file:///srv/www", folder "ssh" "file://localhost/srv/www", folder "ssh" "file://box/srv/www", folder "bash" "file:///srv/www" ]
+      }
     , { name = "a tmux pane's drop label: a path that fits whole"
       , test = \_ -> Expect.equal " Drop into /srv/www/site " (TmuxMode.dropLabel 40 (TmuxMode.Folder (Bytes.fromString "/srv/www/site")))
       }

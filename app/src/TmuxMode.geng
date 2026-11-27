@@ -11,6 +11,7 @@ module TmuxMode exposing
     , diagnose
     , dragLeft
     , dragOver
+    , dropFolderOf
     , dropLabel
     , dropTarget
     , dueAt
@@ -25,6 +26,7 @@ module TmuxMode exposing
     , keyName
     , keys
     , linkAt
+    , listQuery
     , newWindow
     , paint
     , paste
@@ -12070,7 +12072,7 @@ openListing ctx l s =
     let
         opened =
             sendAsking
-                ([ listQuery l.kind ]
+                ([ listQuery s.version l.kind ]
                     ++ (if l.filter == "" then
                             []
 
@@ -12110,13 +12112,46 @@ openListing ctx l s =
 
 {-| The list's rows asked of tmux, with tmux's own text for each
 (`window-buffer.c`, `window-client.c`); fields split at tabs. -}
-listQuery : String -> { command : String, expect : Expect }
-listQuery kind =
+listQuery : Int -> String -> { command : String, expect : Expect }
+listQuery version kind =
+    let
+        -- each row's text as this tmux's own list words it
+        -- (`WINDOW_BUFFER_DEFAULT_FORMAT`, `WINDOW_CLIENT_DEFAULT_FORMAT`):
+        -- `t/p:` is from 3.2, and before it a row is its size and its whole
+        -- time (2.7's and 3.0's window-buffer.c and window-client.c; the
+        -- code review's TB8)
+        since32 =
+            version == 0 || version >= 32
+    in
     if kind == "buffer" then
-        { command = Command.listBuffers "L\t#{buffer_name}\t#{buffer_created}\t#{buffer_size}\t0\t#{t/p:buffer_created}: #{buffer_sample}\t0", expect = ForListRows }
+        { command =
+            Command.listBuffers
+                ("L\t#{buffer_name}\t#{buffer_created}\t#{buffer_size}\t0\t"
+                    ++ (if since32 then
+                            "#{t/p:buffer_created}: #{buffer_sample}"
+
+                        else
+                            "#{buffer_size} bytes (#{t:buffer_created})"
+                       )
+                    ++ "\t0"
+                )
+        , expect = ForListRows
+        }
 
     else
-        { command = Command.listClients "L\t#{client_name}\t#{client_created}\t#{client_width}\t#{client_activity}\t#{t/p:client_activity}: session #{session_name}\t#{client_control_mode}", expect = ForListRows }
+        { command =
+            Command.listClients
+                ("L\t#{client_name}\t#{client_created}\t#{client_width}\t#{client_activity}\t"
+                    ++ (if since32 then
+                            "#{t/p:client_activity}: session #{session_name}"
+
+                        else
+                            "session #{session_name} (#{client_width}x#{client_height}, #{t:client_activity})"
+                       )
+                    ++ "\t#{client_control_mode}"
+                )
+        , expect = ForListRows
+        }
 
 
 listFilterQuery : String -> String -> { command : String, expect : Expect }
@@ -12243,7 +12278,7 @@ listRun : Array String -> Listing -> (taken s : State) -> { state : State, comma
 listRun commands l s =
     sendAsking
         (Array.map (\c -> { command = c, expect = ForRan }) commands
-            ++ [ listQuery l.kind ]
+            ++ [ listQuery s.version l.kind ]
             ++ (if l.filter == "" then
                     []
 
@@ -17892,11 +17927,25 @@ dropFolderOf parts =
         short =
             part 4
 
+        -- a pane running ssh or the like: an OSC 7 with no host or
+        -- `localhost` may be the far host's prompt, and its folder is
+        -- not on tmux's host; only tmux's own host spelled out is taken
+        -- (the code review's TB16)
+        blind =
+            Array.member command blindCommands
+
         shellSaid =
             Drop.fileUri (part 2)
                 |> Maybe.andThen
                     (\u ->
-                        if (Bytes.isEmpty u.host || u.host == host || u.host == short || u.host == Bytes.fromString "localhost") && not (Bytes.isEmpty u.path) then
+                        let
+                            tmuxHost =
+                                u.host == host || u.host == short
+
+                            unnamed =
+                                Bytes.isEmpty u.host || u.host == Bytes.fromString "localhost"
+                        in
+                        if (tmuxHost || (unnamed && not blind)) && not (Bytes.isEmpty u.path) then
                             Just u.path
 
                         else
@@ -17910,7 +17959,7 @@ dropFolderOf parts =
         Nothing ->
             -- the shell sent no OSC 7, or one of another host
             meant Reason.FromOutside
-                (if Array.member command blindCommands then
+                (if blind then
                     NoFolder ("the pane runs " ++ command ++ ", whose folder tmux can't see")
 
                  else if Bytes.isEmpty (part 0) then

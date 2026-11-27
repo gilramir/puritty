@@ -198,6 +198,7 @@ read as the answer to the question before it, until the next attach.
 - What: `drawText` concatenates the text between a CUP and an SGR reset and feeds it to `Vt.feed`. `said` is whatever a `%message` or a reply's first line held; other pieces (labels, names) come the same way. tmux itself sanitises window names and titles, so the reachable cases are messages built from formats and error lines that quote input.
 - Scenario: an escape sequence in a message moves the cursor, changes modes or paints over other parts of puritty's picture of tmux (the tab bar, a prompt). Replies are dropped (`takeReplies`), so I found no way out of the canvas.
 - Fix: strip C0, DEL and C1 in `drawText` itself, once, rather than at each source.
+- Fixed: with TB6, 2026-11-23, `docs/tmux.md` TM118 (2333fab): `drawText` puts every piece through `inert`, C0, DEL and C1 as spaces. Checked 2026-11-26: the other `Vt.feed`s in TmuxMode are a pane's own output to its terminal.
 
 ### TA20 · A config reload that changes the look does not tell tmux the new size
 - Where: app/src/Main.geng:3440, app/src/TmuxMode.geng:1946-1948 (`setLook`), 1955-1972 (`statusRows`)

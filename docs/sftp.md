@@ -2577,3 +2577,24 @@ with a ForceCommand that answers the paste's command with `yes` and runs
 every other as asked, and pastes a picture twice. Before, the second
 paste was refused, "A picture is still being sent to the host"; now each
 is closed and said to have failed.
+
+## FT48 · A far host's OSC 7 is not a folder on tmux's host (2026-11-26)
+
+The code review's TB16. A drop on a tmux pane goes to the pane's folder
+by FT11's rules; the first takes the folder a shell said with OSC 7
+(`pane_path`) when its URI names no host, `localhost`, or tmux's host,
+and it was asked before the second, which says no folder for a pane
+running `ssh` and the like (`blindCommands`). A pane running `ssh other`
+whose far shell's prompt sends `file:///srv/www`, as many hand-written
+prompts do with no host, had its drop's label say "Drop into /srv/www"
+and the files went to that folder on tmux's host, where the second rule
+would have said the pane runs ssh; a hostile far host could name any
+folder it could guess. Now, in a pane running one of those commands, an
+OSC 7 is taken only when it names tmux's host (`#{host}` or
+`#{host_short}`); one naming none or `localhost` falls through to the
+second rule.
+
+**Tested** (the app suite, 636): under `ssh`, `file:///srv/www` and
+`file://localhost/srv/www` give no folder and `file://box/srv/www` on the
+host `box` gives `/srv/www`; under `bash`, `file:///srv/www` still gives
+it. Before, all four gave `/srv/www`.

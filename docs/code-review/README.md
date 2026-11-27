@@ -507,16 +507,16 @@ covered" sections. The larger gaps:
 | [TA16](11-tmuxmode-a.md) | efficiency | confirmed | Before 3.2 the status polls are sent every second whether or not the last were answered |
 | [TA17](11-tmuxmode-a.md) | bug | plausible | `ForCopy` does not look at `ok`: before 3.2 a pane killed in copy mode is never forgotten |
 | [TA18](11-tmuxmode-a.md) | efficiency | confirmed | Work done on every read that only some events need |
-| [TA19](11-tmuxmode-a.md) | security | plausible | Text from tmux is drawn on the canvas terminal with its control characters |
+| [TA19](11-tmuxmode-a.md) | security | plausible | **fixed** Text from tmux is drawn on the canvas terminal with its control characters |
 | [TA20](11-tmuxmode-a.md) | bug | plausible | A config reload that changes the look does not tell tmux the new size |
-| [TB8](12-tmuxmode-b.md) | bug | confirmed | choose-buffer's and choose-client's rows are asked with 3.2's format on every tmux |
+| [TB8](12-tmuxmode-b.md) | bug | confirmed | **fixed** choose-buffer's and choose-client's rows are asked with 3.2's format on every tmux |
 | [TB9](12-tmuxmode-b.md) | efficiency | confirmed | Before tmux 3.2 the status line is asked with 21 commands a second, whether or not the last second's were answered |
 | [TB11](12-tmuxmode-b.md) | bug | confirmed | Clipping and padding by characters where the neighbours go by cells |
 | [TB12](12-tmuxmode-b.md) | bug | plausible | The loop's time in the state is stale on every path but a key and a tick |
 | [TB13](12-tmuxmode-b.md) | bug | confirmed | A pane that closes leaves its mode behind, and a clock left behind keeps the timer and the repaint going |
 | [TB14](12-tmuxmode-b.md) | bug | confirmed | A mode puritty draws outlives its pane and its window, unseen but still taking the keys |
 | [TB15](12-tmuxmode-b.md) | bug | confirmed | The mouse's word and line are left on the pane as user options |
-| [TB16](12-tmuxmode-b.md) | security | confirmed | FT11's first rule lets a nested host's OSC 7 name a folder on tmux's host |
+| [TB16](12-tmuxmode-b.md) | security | confirmed | **fixed** FT11's first rule lets a nested host's OSC 7 name a folder on tmux's host |
 | [TB18](12-tmuxmode-b.md) | design | confirmed | The mode tree's keys are written three times and have drifted from each other and from tmux |
 | [TB20](12-tmuxmode-b.md) | inaccuracy | confirmed | Comments that no longer say what the function does |
 | [TB21](12-tmuxmode-b.md) | test-gap | plausible | No test drives the pointer over a pane in a mode, or holds lines written to replies expected |
