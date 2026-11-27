@@ -837,3 +837,22 @@ so comments inside its table are not kept.
 Test (the app's SettingsWindow suite): a host renamed and Ctrl+Z. Before,
 `put build-box` and `delete box2`; now `rename box2 to build-box`. And a
 host with bookmarks written whole keeps them; before, they were lost.
+
+## SG25 · The recent and folder files changed one window at a time (2026-11-26)
+
+The code review's MB12. The recent connections (SG14), the hosts' folders
+(FT26) and the settings window's page are small files in the state
+folder that several puritty processes change: a restore starts its
+windows at once, each a process, and two `puritty --host` started
+together both remember a connection. Each change read the file, changed
+it and wrote it through one shared `NAME.new`, then moved that into
+place: two at once lost one change, and two writes to the one `.new` at
+once could leave a file that was not TOML, which reads as empty, so the
+next change wrote a list of one and the history was gone, with nothing
+said. `FileChange` now holds `NAME.lock` beside the file across a read,
+change and write (`File.tryLock`, tried for two seconds, the change made
+anyway past that), and each process writes through `NAME.PID.new`, a
+name of its own.
+
+**Tested** (the app's native suite, 632): twenty connections remembered
+at once (`Task.concurrent`) are all in the file after. Before, one was.

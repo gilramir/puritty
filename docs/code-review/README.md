@@ -494,8 +494,8 @@ covered" sections. The larger gaps:
 | [MB8](10-app-main-b.md) | bug | confirmed | Tabs past the window's right edge cannot be seen or clicked |
 | [MB9](10-app-main-b.md) | efficiency | plausible | **fixed** `lineEnds` builds each pasted piece as an `Array UInt8`, a `pushLast` a byte |
 | [MB10](10-app-main-b.md) | efficiency | confirmed | **fixed** `Diag.lines` decodes and rewrites each pasted piece although the log is off |
-| [MB11](10-app-main-b.md) | bug | plausible | `Restore.fresh` ignores whether its lock was taken, and another window's `others` can remove a new window's lock file under it |
-| [MB12](10-app-main-b.md) | bug | confirmed | The recent and folder files are read, changed and written with no lock, through one shared `.new` name |
+| [MB11](10-app-main-b.md) | bug | plausible | **fixed** `Restore.fresh` ignores whether its lock was taken, and another window's `others` can remove a new window's lock file under it |
+| [MB12](10-app-main-b.md) | bug | confirmed | **fixed** The recent and folder files are read, changed and written with no lock, through one shared `.new` name |
 | [MB13](10-app-main-b.md) | inaccuracy | confirmed | **fixed** The log writes tab titles and a program's name, which the log's contract says are never written; `Diag.command` shows some typed words |
 | [MB14](10-app-main-b.md) | bug | confirmed | **fixed** A closed tab is lost, with its scrollback, when opening it again does not start |
 | [MB15](10-app-main-b.md) | design | confirmed | `handleOne` carries a `remote` beside `m.remote`, and four paths go on with the stale one |

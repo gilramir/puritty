@@ -17,6 +17,9 @@ import Os.Process as Process
 import Picker
 import PickerSftp
 import Platform
+import Recent
+import RecentFile
+import Restore
 import Schema
 import Sending
 import SettingsFile
@@ -40,7 +43,64 @@ settingsFile =
         , setUp = \_ -> Task.succeed {}
         , tearDown = U.noTearDown
         , tests =
-            [ U.test "a temporary image file whose read fails is removed all the same (review MB16)"
+            [ U.test "a window starting, its lock file made and not yet locked, is running to a window closing, and its file kept (review MB11)"
+                (\_ ->
+                    Task.map3 (\fs proc pid -> { fs = fs, proc = proc, pid = pid }) File.initialize Process.initialize Process.currentId
+                        |> Task.andThen
+                            (\go ->
+                                let
+                                    dir =
+                                        Path.fromString ("mb11-" ++ String.fromInt go.pid)
+
+                                    starting =
+                                        Path.append (Path.fromString "0123456789abcdef.lock") dir
+                                in
+                                Restore.fresh go.fs dir
+                                    |> Task.andThen
+                                        (\mine ->
+                                            File.writeFile go.fs Bytes.empty starting
+                                                |> Task.andThen (\_ -> Restore.others go.fs dir mine)
+                                                |> Task.andThen
+                                                    (\running ->
+                                                        File.exists go.fs starting
+                                                            |> Task.map (\there -> { running = running, kept = there })
+                                                    )
+                                                |> Task.andThen (\seen -> Restore.forget go.fs dir mine |> Task.map (\_ -> seen))
+                                        )
+                                    |> Task.onError (\_ -> Task.succeed { running = False, kept = False })
+                                    |> Task.andThen
+                                        (\seen ->
+                                            Process.run go.proc "rm" [ "-rf", Path.toString dir ] Process.defaultRunOptions
+                                                |> Task.map (\_ -> {})
+                                                |> Task.onError (\_ -> Task.succeed {})
+                                                |> Task.map (\_ -> Expect.equal { running = True, kept = True } seen)
+                                        )
+                            )
+                )
+            , U.test "twenty connections remembered at once are all kept (review MB12)"
+                (\_ ->
+                    Task.map3 (\fs proc pid -> { fs = fs, proc = proc, pid = pid }) File.initialize Process.initialize Process.currentId
+                        |> Task.andThen
+                            (\go ->
+                                let
+                                    dir =
+                                        Path.fromString ("mb12-" ++ String.fromInt go.pid)
+
+                                    names =
+                                        Array.range 1 20 |> Array.map (\i -> "host" ++ String.fromInt i)
+                                in
+                                Task.concurrent (Array.map (\n -> RecentFile.remember go.fs dir 50 (Recent.Saved n)) names)
+                                    |> Task.andThen (\_ -> RecentFile.load go.fs dir)
+                                    |> Task.andThen
+                                        (\kept ->
+                                            Process.run go.proc "rm" [ "-rf", Path.toString dir ] Process.defaultRunOptions
+                                                |> Task.map (\_ -> {})
+                                                |> Task.onError (\_ -> Task.succeed {})
+                                                |> Task.map (\_ -> Expect.equal 20 (Array.length kept))
+                                        )
+                            )
+                )
+            , U.test "a temporary image file whose read fails is removed all the same (review MB16)"
                 (\_ ->
                     if Platform.pathSeparator == "\\" then
                         Task.succeed Expect.pass

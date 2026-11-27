@@ -12,6 +12,7 @@ lock, so that two starting at once never claim the same one.
 -}
 
 import Bytes
+import Int64
 import Os.Directory as Directory
 import Os.Error
 import Os.File as File exposing (Access(..), Creation(..))
@@ -20,6 +21,7 @@ import Os.Random
 import Reason
 import RestoreFile exposing (State, decode)
 import Task exposing (Task)
+import Time
 
 
 {-| A window's files: its id, and the handle whose lock it holds. -}
@@ -147,11 +149,19 @@ anyGone fs dir ids =
                     )
 
 
-{-| A new window's files: a fresh id, and its lock taken. -}
+{-| A new window's files: a fresh id, and its lock taken. A lock another
+holds (an id met by chance, or a lock file another window has) is not
+taken for its own: another id is tried, five in all (the code review's
+MB11). -}
 fresh : File.Permission -> Path -> Task Os.Error.Error Window
 fresh fs dir =
     Directory.createAll fs dir
-        |> Task.andThen (\_ -> Os.Random.bytes 8)
+        |> Task.andThen (\_ -> freshFrom fs dir 5)
+
+
+freshFrom : File.Permission -> Path -> Int -> Task Os.Error.Error Window
+freshFrom fs dir tries =
+    Os.Random.bytes 8
         |> Task.andThen
             (\bytes ->
                 let
@@ -159,7 +169,21 @@ fresh fs dir =
                         Bytes.toHexString { padding = False } bytes
                 in
                 File.open fs (ForWrite CreateIfMissing) (lockOf dir id)
-                    |> Task.andThen (\handle -> File.tryLock handle |> Task.map (\_ -> { id = id, lock = handle }))
+                    |> Task.andThen
+                        (\handle ->
+                            File.tryLock handle
+                                |> Task.andThen
+                                    (\taken ->
+                                        if taken then
+                                            Task.succeed { id = id, lock = handle }
+
+                                        else if tries > 1 then
+                                            File.close handle |> Task.andThen (\_ -> freshFrom fs dir (tries - 1))
+
+                                        else
+                                            File.close handle |> Task.andThen (\_ -> Task.fail { kind = Os.Error.Other, operation = "lock", path = Just (lockOf dir id), detail = "no lock could be taken" })
+                                    )
+                        )
             )
 
 
@@ -188,8 +212,9 @@ forget fs dir w =
 
 
 {-| Whether another window is running whose files are here: a lock this one
-cannot take. Lock files with no state, left by a window that ended between
-forgetting the two, are removed on the way. -}
+cannot take, or a lock file with no state made in the last ten seconds, a
+window starting (MB11). Older lock files with no state, left by a window
+that ended between forgetting the two, are removed on the way. -}
 others : File.Permission -> Path -> Window -> Task x Bool
 others fs dir mine =
     Directory.list fs dir
@@ -226,16 +251,27 @@ anyRunning fs dir ids =
                                 meant Reason.Refused Task.succeed True
 
                             Just handle ->
-                                File.exists fs (stateOf dir first)
-                                    |> Task.onError (\_ -> Task.succeed True)
+                                Task.map3 (\kept meta now -> { kept = kept, young = Time.posixToMillis now - Time.posixToMillis meta.modified < 10000 })
+                                    (File.exists fs (stateOf dir first) |> Task.onError (\_ -> Task.succeed True))
+                                    (File.metadata fs (lockOf dir first) |> Task.onError (\_ -> Time.now |> Task.map (\t -> { kind = File.File, size = Int64.fromInt 0, modified = t, accessed = t })))
+                                    Time.now
                                     |> Task.andThen
-                                        (\kept ->
-                                            (if kept then
-                                                File.close handle |> Task.onError (\_ -> Task.succeed {})
+                                        (\found ->
+                                            if found.kept then
+                                                File.close handle
+                                                    |> Task.onError (\_ -> Task.succeed {})
+                                                    |> Task.andThen (\_ -> anyRunning fs dir rest)
 
-                                             else
+                                            else if found.young then
+                                                -- a window starting, between making its lock
+                                                -- file and locking it: not its files to
+                                                -- remove, and a window that runs (MB11)
+                                                File.close handle
+                                                    |> Task.onError (\_ -> Task.succeed {})
+                                                    |> Task.map (\_ -> True)
+
+                                            else
                                                 forget fs dir { id = first, lock = handle }
-                                            )
-                                                |> Task.andThen (\_ -> anyRunning fs dir rest)
+                                                    |> Task.andThen (\_ -> anyRunning fs dir rest)
                                         )
                     )

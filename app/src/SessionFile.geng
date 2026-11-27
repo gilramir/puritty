@@ -16,6 +16,7 @@ cannot be written is left.
 -}
 
 import Bytes
+import FileChange
 import Os.Directory as Directory
 import Os.File as File
 import Os.Path as Path exposing (Path)
@@ -113,12 +114,5 @@ page fs dir =
 {-| The settings window's page kept, written whole and moved into place. -}
 setPage : File.Permission -> Path -> String -> Task x {}
 setPage fs dir name =
-    let
-        next =
-            Path.append (Path.fromString (pageFile ++ ".new")) dir
-    in
-    Directory.createAll fs dir
-        |> Task.andThen (\_ -> File.writeFile fs (Bytes.fromString (name ++ "\n")) next)
-        |> Task.andThen (\_ -> File.move fs { from = next, to = Path.append (Path.fromString pageFile) dir })
-        |> Task.map (\_ -> {})
+    FileChange.written fs dir pageFile (Bytes.fromString (name ++ "\n"))
         |> Task.onError (\_ -> Task.succeed {})

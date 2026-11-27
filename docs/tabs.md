@@ -960,3 +960,23 @@ program can start, reopens (refused: "spawn sh: Resource temporarily
 unavailable"), puts the limit back, closes the box and reopens again.
 Before, the second try had nothing to reopen; now the window shows two
 tabs again.
+
+## TB26 · A window starting keeps its lock file (2026-11-26)
+
+The code review's MB11. A window that keeps its tabs (TB10) makes
+`ID.lock` and locks it, and saves `ID.toml` every few seconds. `fresh`
+took no notice of whether its lock was taken; and a window closing by
+its button, asking whether others run, took every other lock it could
+and removed a lock file with no state beside it, left by a window that
+ended. A window starting, between making its lock file and saving its
+first state, was such a file: it was removed, and the starting window
+held a lock on a file no longer there, so the next puritty to start
+restored its tabs while it ran, and both wrote its state. Now a lock
+file with no state made in the last ten seconds is a window starting:
+left, and counted as running. And `fresh` that cannot take its lock
+tries another id, five in all.
+
+**Tested** (the app's native suite, 633): beside a fresh window's files,
+a new lock file with no state; `Restore.others` must answer that a
+window runs and leave the file. Before, it answered none and removed it.
+`bench/tabs/restore.py` as TB10 records.

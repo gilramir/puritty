@@ -8,8 +8,8 @@ the file first, so another window's changes since are kept.
 -}
 
 import Bytes exposing (Bytes)
+import FileChange
 import Folders exposing (Folders)
-import Os.Directory as Directory
 import Os.File as File
 import Os.Path as Path exposing (Path)
 import Reason
@@ -50,25 +50,25 @@ marked fs dir host paths =
 
 change : File.Permission -> Path -> (Folders -> Folders) -> Task x Folders
 change fs dir edit =
-    load fs dir
-        |> Task.andThen
-            (\folders ->
-                let
-                    next =
-                        edit folders
-                in
-                write fs dir next |> Task.map (\_ -> next)
-            )
+    -- read, changed and written with the lock held, so that another
+    -- window's change at the same time is not lost (MB12)
+    FileChange.locked fs
+        dir
+        fileName
+        (load fs dir
+            |> Task.andThen
+                (\folders ->
+                    let
+                        next =
+                            edit folders
+                    in
+                    write fs dir next |> Task.map (\_ -> next)
+                )
+        )
+        |> Task.onError (\_ -> load fs dir)
 
 
 write : File.Permission -> Path -> Folders -> Task x {}
 write fs dir folders =
-    let
-        fresh =
-            Path.append (Path.fromString (fileName ++ ".new")) dir
-    in
-    Directory.createAll fs dir
-        |> Task.andThen (\_ -> File.writeFile fs (Bytes.fromString (Folders.toText folders)) fresh)
-        |> Task.andThen (\_ -> File.move fs { from = fresh, to = Path.append (Path.fromString fileName) dir })
-        |> Task.map (\_ -> {})
+    FileChange.written fs dir fileName (Bytes.fromString (Folders.toText folders))
         |> Task.onError (\_ -> Task.succeed {})

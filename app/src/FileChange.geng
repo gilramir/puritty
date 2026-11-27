@@ -1,0 +1,72 @@
+module FileChange exposing (locked, written)
+
+{-| A small file of the user's that several puritty processes change: the
+recent connections, the hosts' folders, the settings window's page. A
+restore starts several windows at once, each a process, and two
+`puritty --host` started together both remember a connection: each read
+the file, changed it and wrote it through one shared `.new` name, so one
+change was lost, and two writes at once could leave a file that was not
+TOML, read then as empty and the history gone (the code review's MB12).
+Now a change that reads the file holds a lock file beside it across the
+read and the write (`locked`), and each process writes through a name of
+its own (`written`).
+-}
+
+import Bytes exposing (Bytes)
+import Os.Directory as Directory
+import Os.Error
+import Os.File as File
+import Os.Path as Path exposing (Path)
+import Os.Process
+import Process as Sleep
+import Task exposing (Task)
+
+
+{-| `change` run while `NAME.lock` in `dir` is held. The lock is tried
+for two seconds (`flock` on Linux, which only other locks heed); past
+that the change is made all the same, as before, rather than not at all:
+these files are a convenience. -}
+locked : File.Permission -> Path -> String -> Task Os.Error.Error a -> Task Os.Error.Error a
+locked fs dir name change =
+    Directory.createAll fs dir
+        |> Task.onError (\_ -> Task.succeed {})
+        |> Task.andThen
+            (\_ ->
+                File.withHandle fs
+                    (File.ForReadAndWrite File.CreateIfMissing)
+                    (Path.append (Path.fromString (name ++ ".lock")) dir)
+                    (\h -> holding h 100 |> Task.andThen (\_ -> change))
+            )
+
+
+{-| The lock taken, tried every 20 ms `tries` times. -}
+holding : File.Handle -> Int -> Task Os.Error.Error {}
+holding h tries =
+    File.tryLock h
+        |> Task.andThen
+            (\got ->
+                if got || tries <= 0 then
+                    Task.succeed {}
+
+                else
+                    Sleep.sleep 20 |> Task.andThen (\_ -> holding h (tries - 1))
+            )
+
+
+{-| `bytes` written whole to `NAME.PID.new` in `dir`, a name of this
+process's own, and moved into place as `NAME`, so that a reader never
+sees half of it and two writers never write one file at once. -}
+written : File.Permission -> Path -> String -> Bytes -> Task Os.Error.Error {}
+written fs dir name bytes =
+    Os.Process.currentId
+        |> Task.andThen
+            (\pid ->
+                let
+                    next =
+                        Path.append (Path.fromString (name ++ "." ++ String.fromInt pid ++ ".new")) dir
+                in
+                Directory.createAll fs dir
+                    |> Task.andThen (\_ -> File.writeFile fs bytes next)
+                    |> Task.andThen (\_ -> File.move fs { from = next, to = Path.append (Path.fromString name) dir })
+                    |> Task.map (\_ -> {})
+            )
