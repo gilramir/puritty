@@ -229,6 +229,10 @@ type alias State =
     -- when the status line is next asked, before tmux 3.2 has
     -- subscriptions (TM72); -1 when it is told
     , pollAt : Int
+    -- the pane whose options hold the mouse's word and line, set for a
+    -- binding puritty runs (TB15): unset once nothing that may read them
+    -- is open
+    , mouseOptions : Maybe Int
     -- when tmux, asked after a line that was not its own, is given up on
     -- (docs/tmux-checks.md TK14); -1 when nothing is in doubt, -2 when the
     -- wait starts at the next tick, which knows the time (a read does not,
@@ -885,6 +889,7 @@ idle _ =
     , numbers = Nothing
     , clock = 0
     , pollAt = -1
+    , mouseOptions = Nothing
     , strayUntil = -1
     , panesMs = 1000
     , status = noStatus
@@ -10857,7 +10862,13 @@ runHeld ctx word line command s =
                 []
 
         set =
-            sendAsking options s
+            sendAsking options
+                (if Array.isEmpty options then
+                    s
+
+                 else
+                    { s | mouseOptions = Just ctx.pane }
+                )
 
         ran =
             runLine ctx command set.state
@@ -11724,7 +11735,14 @@ dueAt s =
             clockAt s
     in
     Clock.soonest
-        (Clock.soonest s.pollAt
+        (Clock.soonest
+            (if mouseOptionsDone s then
+                -- at once: the mouse's options unset (TB15)
+                s.clock
+
+             else
+                s.pollAt
+            )
             (if s.strayUntil == -2 then
                 -- at once: the wait starts from the next tick's time
                 s.clock
@@ -11790,7 +11808,21 @@ tick ms s0 =
             else
                 s2
     in
-    if s.on && s.pollAt >= 0 && Clock.reached s.pollAt ms && pollWaited s then
+    if s.on && mouseOptionsDone s then
+        -- the mouse's word and line unset from the pane (the code
+        -- review's TB15): what read them has been sent
+        let
+            pane =
+                Maybe.withDefault (meant Reason.NotOpen -1) s.mouseOptions
+        in
+        { state = { s | mouseOptions = Nothing }
+        , commands =
+            [ Command.unsetOption 6 (paneName pane) "@puritty_mouse_word"
+            , Command.unsetOption 6 (paneName pane) "@puritty_mouse_line"
+            ]
+        }
+
+    else if s.on && s.pollAt >= 0 && Clock.reached s.pollAt ms && pollWaited s then
         -- the last poll not all answered (a stalled link, tmux blocked
         -- behind wait-for): none asked again until it is, where twenty a
         -- second piled up (the code review's TA16, TB9)
@@ -11805,6 +11837,34 @@ tick ms s0 =
 
     else
         { state = s, commands = [] }
+
+
+{-| Whether the mouse's word and line set on a pane are to be unset:
+nothing that may read them is open, a menu, a prompt, the tree, a list,
+customize mode, or a question asked for a binding's branch. -}
+mouseOptionsDone : State -> Bool
+mouseOptionsDone s =
+    s.mouseOptions /= Nothing
+        && s.menu == Nothing
+        && s.asking == Nothing
+        && s.tree == Nothing
+        && s.listing == Nothing
+        && s.customizing == Nothing
+        && not
+            (Array.any
+                (\a ->
+                    when a.expect is
+                        ForCondition _ ->
+                            True
+
+                        ForRunExpanded _ ->
+                            True
+
+                        _ ->
+                            False
+                )
+                s.expecting
+            )
 
 
 {-| Whether an answer to the status line's last poll is still awaited. -}

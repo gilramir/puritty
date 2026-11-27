@@ -2018,6 +2018,34 @@ onVersion version =
                     in
                     Expect.equal (drawnMenu version ">") items
           }
+        , { name = "the mouse's word and line set on the pane for its menu are unset once the menu is closed (review TB15)"
+          , test =
+                \_ ->
+                    let
+                        mouseOption c =
+                            String.contains "@puritty_mouse_" c
+
+                        opened =
+                            prefixThen ">" (attached (start version))
+
+                        closed =
+                            settle (named escapeKey opened)
+
+                        ticked =
+                            TmuxMode.tick 10000 closed.tmux
+                    in
+                    -- 2.7 has no pane menu (display-menu is from 3.0): nothing set
+                    Expect.equal
+                        (if version == "2.7" then
+                            [ False, False ]
+
+                         else
+                            [ True, True ]
+                        )
+                        [ Array.any (\c -> mouseOption c && String.contains " -u" c && String.contains "word" c) ticked.commands
+                        , Array.any (\c -> mouseOption c && String.contains " -u" c && String.contains "line" c) ticked.commands
+                        ]
+          }
         , { name = "the pane's cursor is shown once attached, from tmux's flags before 3.8 (TM71)"
           , test = \_ -> Expect.equal True (TmuxMode.paint (attached (start version)).tmux).canvas.showCursor
           }

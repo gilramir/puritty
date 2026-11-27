@@ -5170,3 +5170,24 @@ formats are not merged into one `display-message`.
 **Tested** (the app suite, 667): on tmux 3.0, two ticks a minute apart
 with nothing answered between: the first sends the poll, the second
 nothing. Before, the second sent 20 commands more.
+
+## TM148 · The mouse's word and line unset when nothing reads them (2026-11-27)
+
+The code review's TB15. A binding puritty runs from a right click that
+names `mouse_word` or `mouse_line` (tmux's pane menu does) has them set
+first as the pane's options `@puritty_mouse_word` and
+`@puritty_mouse_line` (TM86), since tmux has no mouse event of this
+client's to read them from; they were never unset, so a line of the
+pane's screen, a password typed at a prompt among them, stayed on the
+pane for its life, in `show-options -p`, in customize mode and in what a
+session-saving plugin writes. Now the state notes the pane they were set
+on, and once nothing that may read them is open (a menu, a prompt, the
+tree, a list, customize mode, a binding's branch awaited) the loop is
+woken at once and both are unset (`set-option -u -p -t PANE`). A menu's
+item is sent as it is chosen, before the menu closes, so it reads them
+first.
+
+**Tested** (the app suite, 673: the test on each of the six tmux
+versions): the pane menu opened with `prefix >` and closed with Escape,
+then a tick: it unsets both, from 3.0; 2.7 has no pane menu and sets
+none. Before, nothing unset them.

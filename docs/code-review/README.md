@@ -515,7 +515,7 @@ covered" sections. The larger gaps:
 | [TB12](12-tmuxmode-b.md) | bug | plausible | **fixed** The loop's time in the state is stale on every path but a key and a tick |
 | [TB13](12-tmuxmode-b.md) | bug | confirmed | **fixed** A pane that closes leaves its mode behind, and a clock left behind keeps the timer and the repaint going |
 | [TB14](12-tmuxmode-b.md) | bug | confirmed | **in part** A mode puritty draws outlives its pane and its window, unseen but still taking the keys |
-| [TB15](12-tmuxmode-b.md) | bug | confirmed | The mouse's word and line are left on the pane as user options |
+| [TB15](12-tmuxmode-b.md) | bug | confirmed | **fixed** The mouse's word and line are left on the pane as user options |
 | [TB16](12-tmuxmode-b.md) | security | confirmed | **fixed** FT11's first rule lets a nested host's OSC 7 name a folder on tmux's host |
 | [TB18](12-tmuxmode-b.md) | design | confirmed | The mode tree's keys are written three times and have drifted from each other and from tmux |
 | [TB20](12-tmuxmode-b.md) | inaccuracy | confirmed | **fixed** Comments that no longer say what the function does |

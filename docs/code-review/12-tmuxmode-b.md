@@ -158,6 +158,7 @@ finding rests on it.
 - What: every right click on a pane whose binding names `mouse_` sends `set-option -p -t %N @puritty_mouse_word '…'` and `@puritty_mouse_line '…'` and never unsets them.
 - Scenario: after one right click the pane carries a line of its screen as an option for its lifetime: it shows in `show-options -p`, in puritty's own customize-mode under the pane's options, to every other client, and in what session-saving plugins write to disk. A line with a password typed at a prompt is kept there.
 - Fix: `set-option -pu` both when the menu closes or its item has run (on the same line as the command), or expand `#{mouse_word}`/`#{mouse_line}` in puritty before sending rather than parking them in tmux.
+- Fixed: 2026-11-27, `docs/tmux.md` TM148. The pane the mouse's options were set on is noted, and once no menu, prompt, tree, list, customize mode or awaited branch is open they are unset. App suite test on six versions: before, never unset.
 
 ### TB16 · FT11's first rule lets a nested host's OSC 7 name a folder on tmux's host
 - Where: app/src/TmuxMode.geng:17054-17067 (`dropFolderOf`); docs/sftp.md FT11 rule 1 (lines 1588-1589)

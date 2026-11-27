@@ -246,8 +246,8 @@ SUITES = [
         # 655 since TA14: nothing written after %exit, six versions; 661
         # since TB14: a mode closed with its pane, six versions; 667 since
         # TA16: no poll while the last is unanswered (run in each version's
-        # suite)
-        667,
+        # suite); 673 since TB15: the mouse's options unset, six versions
+        673,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
