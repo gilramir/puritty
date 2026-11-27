@@ -2144,3 +2144,26 @@ text's are.
 on the clipboard, presses Ctrl+Shift+V at the question and then Enter:
 the login goes on and the command ends with 0. Before, the field stayed
 empty and the window was still asking when the case ended.
+
+## SC45 · An OpenSSH tab's helpers closed and forgotten (2026-11-26)
+
+The code review's MA22, in part. A tab of the OpenSSH client runs a
+second `ssh` for each channel beside the session (the folder chooser's
+SFTP, a picture's upload), kept by its reference in `Backend.helpers`.
+`SideClose` killed the helper and forgot it but left its input pipe
+open, which only `SideEof` closed, and the folder chooser ends with
+`SideClose` alone: each chooser left a pipe. A helper that ended by
+itself stayed in the dictionary for good. And its error output was read
+only once its output had ended, so a helper that wrote more than a
+pipe's buffer to its error output first stopped, and the read with it.
+Now `SideClose` closes the input pipe too; a helper that ends sends
+`SideClose` for itself, so that the loop drops it (`kill` does nothing to
+a child known to have ended, and goes through a pidfd on Linux); and the
+output and the error output are read side by side (`Task.concurrent`).
+
+Left: `SideWrite` writes a piece whole inside the one loop that takes
+every helper's inputs, so a slow `ssh` reading a large picture holds the
+chooser's requests behind it.
+
+**Tested**: nothing fails on the code before; the gates' OpenSSH cases
+(sshwindow's `paste-picture-openssh`, the drop gate's) pass.

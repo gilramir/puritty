@@ -278,7 +278,14 @@ helpers cp via s children =
                             |> Task.andThen (\_ -> helpers cp via s children)
 
                     Just (Session.SideClose ref) ->
-                        withChild ref (\c -> Process.kill c.child |> Task.onError (\_ -> Task.succeed {}))
+                        -- its input closed too, which only SideEof closed:
+                        -- the folder chooser ends with SideClose alone (MA22)
+                        withChild ref
+                            (\c ->
+                                Process.kill c.child
+                                    |> Task.onError (\_ -> Task.succeed {})
+                                    |> Task.andThen (\_ -> File.close c.pipes.input |> Task.onError (\_ -> Task.succeed {}))
+                            )
                             |> Task.andThen (\_ -> helpers cp via s (Dict.remove ref children))
 
                     Just _ ->
@@ -304,7 +311,7 @@ started cp s ref subsystem args =
                         when Process.pipes child is
                             Just pipes ->
                                 Source.emit s.events { ref = ref, event = Connection.Started }
-                                    |> Task.andThen (\_ -> Light.spawn (helperOutput s ref subsystem child pipes False))
+                                    |> Task.andThen (\_ -> Light.spawn (helperOutput s ref subsystem child pipes))
                                     |> Task.map (\_ -> Just { child = child, pipes = pipes })
 
                             Nothing ->
@@ -322,46 +329,66 @@ refused s ref why =
         |> Task.map (\_ -> Nothing)
 
 
-{-| A helper's output told until it ends, then what it said on its error
-output and how it ended. -}
-helperOutput : Helpers -> Int -> Bool -> Process.Child -> Process.Pipes -> Bool -> Task x {}
-helperOutput s ref subsystem child pipes wrote =
+{-| A helper's output told until it ends, its error output read beside it
+(a helper that fills its error pipe first no longer stops the output, the
+code review's MA22), then what it said on its error output and how it
+ended; its pipes closed, and its entry dropped by the loop that keeps it. -}
+helperOutput : Helpers -> Int -> Bool -> Process.Child -> Process.Pipes -> Task x {}
+helperOutput s ref subsystem child pipes =
+    Task.concurrent
+        [ outputTold s ref pipes False |> Task.map (\wrote -> { wrote = wrote, said = Bytes.empty })
+        , errorOutput pipes.error [] |> Task.map (\said -> { wrote = False, said = said })
+        ]
+        |> Task.andThen
+            (\both ->
+                let
+                    wrote =
+                        Array.any .wrote both
+
+                    said =
+                        Bytes.flatten (Array.map .said both)
+                in
+                Process.waitForExit child
+                    |> Task.onError (\_ -> Task.succeed -1)
+                    |> Task.andThen
+                        (\status ->
+                            (if subsystem && not wrote && status /= 0 then
+                                -- a subsystem helper that wrote nothing and
+                                -- failed: the server refused the subsystem (the
+                                -- code review's ST19)
+                                Source.emit s.events { ref = ref, event = Connection.SubsystemRefused (String.trim (Bytes.toStringLossy said)) }
+
+                             else
+                                (if Bytes.isEmpty said then
+                                    Task.succeed {}
+
+                                 else
+                                    Source.emit s.events { ref = ref, event = Connection.ErrorOutput said }
+                                )
+                                    |> Task.andThen (\_ -> Source.emit s.events { ref = ref, event = Connection.Exited status })
+                            )
+                                |> Task.andThen (\_ -> Source.emit s.events { ref = ref, event = Connection.Ended })
+                        )
+            )
+        |> Task.andThen (\_ -> File.close pipes.output |> Task.onError (\_ -> Task.succeed {}))
+        |> Task.andThen (\_ -> File.close pipes.error |> Task.onError (\_ -> Task.succeed {}))
+        -- its entry dropped, and its input closed, by the loop (MA22)
+        |> Task.andThen (\_ -> Source.emit s.inputs (Session.SideClose ref))
+
+
+{-| A helper's output told as it comes; whether it wrote any. -}
+outputTold : Helpers -> Int -> Process.Pipes -> Bool -> Task x Bool
+outputTold s ref pipes wrote =
     File.read pipes.output
         |> Task.onError (\_ -> Task.succeed Bytes.empty)
         |> Task.andThen
             (\bytes ->
                 if Bytes.isEmpty bytes then
-                    errorOutput pipes.error []
-                        |> Task.andThen
-                            (\said ->
-                                Process.waitForExit child
-                                    |> Task.onError (\_ -> Task.succeed -1)
-                                    |> Task.andThen
-                                        (\status ->
-                                            (if subsystem && not wrote && status /= 0 then
-                                                -- a subsystem helper that wrote nothing and
-                                                -- failed: the server refused the subsystem (the
-                                                -- code review's ST19)
-                                                Source.emit s.events { ref = ref, event = Connection.SubsystemRefused (String.trim (Bytes.toStringLossy said)) }
-
-                                             else
-                                                (if Bytes.isEmpty said then
-                                                    Task.succeed {}
-
-                                                 else
-                                                    Source.emit s.events { ref = ref, event = Connection.ErrorOutput said }
-                                                )
-                                                    |> Task.andThen (\_ -> Source.emit s.events { ref = ref, event = Connection.Exited status })
-                                            )
-                                                |> Task.andThen (\_ -> Source.emit s.events { ref = ref, event = Connection.Ended })
-                                        )
-                            )
-                        |> Task.andThen (\_ -> File.close pipes.output |> Task.onError (\_ -> Task.succeed {}))
-                        |> Task.andThen (\_ -> File.close pipes.error |> Task.onError (\_ -> Task.succeed {}))
+                    Task.succeed wrote
 
                 else
                     Source.emit s.events { ref = ref, event = Connection.Output bytes }
-                        |> Task.andThen (\_ -> helperOutput s ref subsystem child pipes True)
+                        |> Task.andThen (\_ -> outputTold s ref pipes True)
             )
 
 

@@ -486,7 +486,7 @@ covered" sections. The larger gaps:
 | [MA19](09-app-main-a.md) | bug | confirmed | **fixed** A restored window shows the wrong tab when one of its tabs does not start |
 | [MA20](09-app-main-a.md) | bug | confirmed | **fixed** A font that cannot be opened on reload also drops a size change made with it |
 | [MA21](09-app-main-a.md) | bug | confirmed | A synchronized update holds back puritty's own frames too |
-| [MA22](09-app-main-a.md) | bug | plausible | The helper processes of an OpenSSH tab: a pipe left open, entries never removed, and two ways to stall |
+| [MA22](09-app-main-a.md) | bug | plausible | **in part** The helper processes of an OpenSSH tab: a pipe left open, entries never removed, and two ways to stall |
 | [MA23](09-app-main-a.md) | bug | plausible | **fixed** A program that closes its terminal but keeps running freezes the window |
 | [MA24](09-app-main-a.md) | bug | plausible | A binding that names a shifted character or a non-Latin layout's letter never matches |
 | [MA25](09-app-main-a.md) | security | confirmed | **fixed** What a host's paste command prints is kept without bound |
