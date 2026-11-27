@@ -171,6 +171,10 @@ type alias Picker =
     , nextId : Int
     -- every folder listed, by its path's bytes in hex
     , cache : Dict String Listing
+    -- a folder asked for by one path and answered by another (a link the
+    -- host resolved, `~`): the asked path's key to the answered path, so
+    -- that completion finds the listing (the code review's PS18)
+    , answeredAs : Dict String Bytes
     , highlight : Int
     , top : Int
     -- whether the view follows the highlight: set when the keys move it,
@@ -213,6 +217,7 @@ open o =
             , parts = Dict.empty
             , nextId = 1
             , cache = Dict.empty
+            , answeredAs = Dict.empty
             , highlight = -1
             , top = 0
             , follow = True
@@ -559,6 +564,17 @@ listed with l p =
                 cached =
                     { p
                         | cache = Dict.set key0 { entries = all, keys = keys, complete = not l.more } p.cache
+                        , answeredAs =
+                            when purpose is
+                                Peek asked ->
+                                    if keyOf asked /= key0 then
+                                        Dict.set (keyOf asked) l.path p.answeredAs
+
+                                    else
+                                        p.answeredAs
+
+                                _ ->
+                                    p.answeredAs
                         , waiting =
                             if l.more then
                                 p.waiting
@@ -1296,10 +1312,24 @@ normal path =
         )
 
 
+{-| A folder's listing as far as it came, under the path asked or the
+one the host answered it by (`answeredAs`, PS18). -}
+listingOf : Picker -> Bytes -> Maybe Listing
+listingOf p d =
+    when Dict.get (keyOf d) p.cache is
+        Just l ->
+            Just l
+
+        Nothing ->
+            meant Reason.NotYet (Dict.get (keyOf d) p.answeredAs |> Maybe.andThen (\real -> Dict.get (keyOf real) p.cache))
+
+
 {-| The folders a typed path could go on to: those named in the folder
 its last slash ends, as far as it was listed, that start with what
-follows. -}
-completions : With -> Picker -> String -> { dir : Maybe Bytes, prefix : String, found : Array Bytes }
+follows; `found` the first eight, shown, and `all` of them, which Tab
+completes over (PS18: it took the eight shown, and could complete past
+where all the matches agree). -}
+completions : With -> Picker -> String -> { dir : Maybe Bytes, prefix : String, found : Array Bytes, all : Array Bytes }
 completions with p typed =
     let
         cut =
@@ -1320,7 +1350,7 @@ completions with p typed =
         names =
             when dir is
                 Just d ->
-                    when Dict.get (keyOf d) p.cache is
+                    when listingOf p d is
                         Just l ->
                             Array.keepIf (\e -> e.kind == Folder && String.startsWith (String.toLower cut.prefix) (String.toLower (with.decode e.name))) l.entries |> Array.map .name
 
@@ -1330,7 +1360,7 @@ completions with p typed =
                 Nothing ->
                     meant Reason.NotYet []
     in
-    { dir = dir, prefix = cut.prefix, found = Array.takeFirst 8 names }
+    { dir = dir, prefix = cut.prefix, found = Array.takeFirst 8 names, all = names }
 
 
 {-| A key while a path is typed. -}
@@ -1378,17 +1408,17 @@ pathKey with k t s =
 
     else if k.sym == 0xFF09 then
         -- Tab: as far as the folders it could be agree, a slash after one
-        if Array.length c.found == 1 then
+        if Array.length c.all == 1 then
             let
                 only =
-                    Array.getProven 0 c.found
+                    Array.getProven 0 c.all
             in
             peekTyped with (dirText ++ with.decode only ++ "/") { s | picker = { p | typing = Just (setText (dirText ++ with.decode only ++ "/")) } }
 
         else
             let
                 common =
-                    commonPrefix (Array.map with.decode c.found)
+                    commonPrefix (Array.map with.decode c.all)
             in
             if String.count common > String.count c.prefix then
                 { s | picker = { p | typing = Just (setText (dirText ++ common)) } }
@@ -1439,7 +1469,7 @@ peekTyped with typed s =
     else
         when typedPath with p dirText is
             Just dir ->
-                if Dict.member (keyOf dir) p.cache || Dict.any (\_ purpose -> purpose == Peek dir) p.waiting then
+                if listingOf p dir /= Nothing || Dict.any (\_ purpose -> purpose == Peek dir) p.waiting then
                     s
 
                 else

@@ -195,6 +195,7 @@ Two facts used throughout, both checked:
 - Confidence: plausible
 - What: when the typed folder is reached through a link (`/var/www/` answering as `/srv/www`), or typed as `~/…` before `Home` has come, the listing is cached under another key than `completions` and `peekTyped` look up. No completions show, and since the `Peek` leaves `waiting` when answered, each further character sends another full listing of that folder. Separately, Tab extends to the common prefix of the eight names shown, not of all that match: with nine or more matches the text can be completed past where they agree, hiding the rest.
 - Fix: record typed-path → answered-path when a `Peek`/`Go` is answered and look up through it; compute the common prefix over all matches, cut to eight only for display.
+- Fixed: 2026-11-27, `docs/sftp.md` FT50. A peek answered by another path is recorded (`answeredAs`) and listings are looked up through it (`listingOf`); Tab completes over all matches (`completions`' `all`). Picker suite test: before, re-asked on each key and Tab went past the agreement.
 
 ### PS19 · The places column does not scroll, and its hidden rows still take clicks
 - Where: app/src/Picker.geng:2300-2332 (`placeY i = l.bodyY + i * placeRowH`, hits unclipped), 2535-2538 (drawn clipped)
@@ -265,6 +266,7 @@ Two facts used throughout, both checked:
 - Confidence: confirmed
 - What: every key the page documents exists in `Schema` with the documented name, values and default (checked: `[window]`, `[font]`, `[sound]`, `[colors]` and all sixteen scheme names against `Palettes`, `[terminal]`, `[scrollback]`, `[selection]`, `[mouse]`, `[clipboard] osc52_read`, `[files]`, `[images]`, `[debug] log`, `start`, `[connections]`, and the host keys). The reverse fails for keys documented nowhere under `docs/user/`: `font.glyph_cache_mb`, `colors.bold_is_bright`, `cursor.blink_ms`, `frames.every_ms`, `frames.sync_timeout_ms`, `program.command` (the page says "the program" is taken by new windows but never gives its key), `keys.mark_log`, and for a host `title`, `paste_folder`, `[hosts.NAME.font]` (`family`, `size`), `colors.foreground` and `colors.palette`. The page presents the block as "The file" with no word that it is a selection, and gives no ranges (`font.size` 4-200, `recent` 0-50, `padding` 0-72, `scrollback.lines` 0-10,000,000).
 - Fix: generate the block from `Schema.example` (which a test already holds to the table), or say it is a selection and point at the settings window's search for the rest.
+- Fixed: 2026-11-27, `docs/user/settings.md`. The block is said to be a selection, with the settings window's search for the rest; ranges are given for the numbers it shows; `window.title`, `program.command`, and a host's `title`, `paste_folder`, `colors.foreground`/`palette` and `[hosts.NAME.font]` are added; a new More settings section gives `font.glyph_cache_mb`, `colors.bold_is_bright`, `cursor.blink_ms`, `frames.every_ms`, `frames.sync_timeout_ms`, `clipboard.paste_folder`, `keys.mark_log` and `connections.recent` with defaults and ranges, read from `Schema`. A documentation fix: no test.
 
 ### PS27 · Test gaps that matter
 - Where: app/tests/src/AppSuites.geng, app/tests/src/PickerTests.geng, harness/store.py
@@ -297,3 +299,4 @@ Two facts used throughout, both checked:
 - `Chord.parse`, `Hosts.quick`/`Hosts.spec`, `Words.geng`'s tables (only grepped), `Toml.Edit` (gren-toml), `Window.raise` (whether one settings window is found by title or by class).
 - `docs/settings-ui.md` and the parts of `docs/settings-gui.md` before SG20 were skimmed by heading, not read line by line.
 - Nothing was run: no build, no tests, no gates.
+- Fixed: 2026-11-27. The gaps listed came with their fixes: Enter in the font box (PS1), a click away from quick connect (PS2), typing through Modified only (PS3), a color beside a scheme (PS4), an undone rename's bookmarks (PS10), two requests for one path (PS6), a non-UTF-8 `With` (PS7), the wheel after End (PS11). Added now: two `SettingsFile.change` at once both land (native FileSuite); with the lock taken out, one fails and its setting is lost. Not added: an undone rename's comments in the file.

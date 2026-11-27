@@ -252,8 +252,9 @@ SUITES = [
         # 65,535 bytes; 677 since PS23: the scrollbar over millions of rows;
         # 678 since PS20: the file's messages shown and cleared; 679 since
         # PS25: what names a renamed host follows it; 680 since PS19: the
-        # places column scrolls
-        680,
+        # places column scrolls; 681 since PS18: completion through a link;
+        # 682 since PS27: two settings written at once
+        682,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

@@ -124,6 +124,62 @@ cases =
                 in
                 Expect.equal (Picker.Send (Bytes.fromString "/x")) (press 0xFF0D 0 2 down).outcome
       }
+    , { name = "a typed folder the host answers by another path completes without asking again, and Tab stops where all the matches agree (review PS18)"
+      , test =
+            \_ ->
+                let
+                    typeIn text p0 =
+                        String.foldl
+                            (\c acc ->
+                                let
+                                    r =
+                                        Picker.key with { sym = Char.toCode c, unshifted = Char.toCode c, mods = 0, text = String.fromChar c } acc.picker
+                                in
+                                { picker = r.picker, requests = acc.requests ++ r.requests }
+                            )
+                            { picker = p0, requests = [] }
+                            text
+
+                    peeked =
+                        typeIn "/var/www/" listedAt
+
+                    -- nine folders under the link's target: the first eight
+                    -- agree as far as `alpha`, all nine as far as `alp`
+                    names =
+                        Array.map (\i -> "alpha" ++ String.fromInt i) (Array.range 1 8) ++ [ "alpine" ]
+
+                    answeredBy path =
+                        when Array.last peeked.requests is
+                            Just r ->
+                                (Picker.answer with (Listed { id = r.id, path = Bytes.fromString path, entries = Array.map folderNamed names, more = False }) peeked.picker).picker
+
+                            Nothing ->
+                                peeked.picker
+
+                    answered =
+                        answeredBy "/srv/www"
+
+                    -- answered by the path asked: Tab alone
+                    direct =
+                        press 0xFF09 0xFF09 0 (typeIn "a" (answeredBy "/var/www")).picker
+
+                    more =
+                        typeIn "a" answered
+
+                    tabbed =
+                        press 0xFF09 0xFF09 0 more.picker
+
+                    typedNow t =
+                        when t.typing is
+                            Just e ->
+                                String.fromArray e.edit.chars
+
+                            Nothing ->
+                                ""
+                in
+                Expect.equal { peeks = [ "list /", "list /var", "list /var/www" ], again = [], tab = "/var/www/alp", tabDirect = "/var/www/alp" }
+                    { peeks = asks peeked.requests, again = asks more.requests, tab = typedNow tabbed.picker, tabDirect = typedNow direct.picker }
+      }
     , { name = "the places column scrolls by the wheel and its hidden rows take no click (review PS19)"
       , test =
             \_ ->

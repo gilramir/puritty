@@ -2616,3 +2616,25 @@ a click just under the column asks for no bookmark, and after ten wheel
 notches over the column a click on its first row asks for a bookmark's
 listing. Before, the first went to a hidden bookmark and the wheel
 scrolled the list instead.
+
+## FT50 · Completion through a link, and Tab over every match (2026-11-27)
+
+The code review's PS18. A typed path's folder is listed for completion
+(a `Peek`), and the listing is cached under the path the host answered
+by: for a folder reached through a link (`/var/www/` answered as
+`/srv/www`), or typed as `~/…` before the home folder was known, that is
+not the path typed, so completion never found it, and since the peek was
+answered each further character asked for the whole listing again. Now
+a peek answered by another path records the asked path's key against the
+answered path (`answeredAs`), and completion and the peek look listings
+up through it (`listingOf`). And Tab completed to the common prefix of
+the eight names shown, not of all that match: with nine or more it could
+complete past where they agree. `completions` now gives `all` the
+matches, which Tab uses; the list still shows eight.
+
+**Tested** (the picker suite): `/var/www/` typed and answered as
+`/srv/www` with nine folders (`alpha1` to `alpha8`, `alpine`); `a` typed
+asks nothing more, and Tab gives `/var/www/alp`; answered by the path
+asked, Tab gives `/var/www/alp` too. Before, `a` asked for the listing
+again and Tab completed nothing; by the path asked, Tab gave
+`/var/www/alpha`.

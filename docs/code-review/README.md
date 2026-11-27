@@ -524,7 +524,7 @@ covered" sections. The larger gaps:
 | [PS15](13-app-picker-settings.md) | bug | confirmed | **fixed** A command with a quote in a word does not survive the settings window |
 | [PS16](13-app-picker-settings.md) | speed | confirmed | Every pointer event builds the picker's whole frame to find what is under it, and `rows` is rebuilt several times a frame |
 | [PS17](13-app-picker-settings.md) | efficiency | confirmed | The settings window measures and draws more than it needs per event, and row positions are quadratic |
-| [PS18](13-app-picker-settings.md) | bug | plausible | Path completion asks the host again on every keystroke under a link or `~`, and Tab completes from the first eight only |
+| [PS18](13-app-picker-settings.md) | bug | plausible | **fixed** Path completion asks the host again on every keystroke under a link or `~`, and Tab completes from the first eight only |
 | [PS19](13-app-picker-settings.md) | bug | confirmed | **fixed** The places column does not scroll, and its hidden rows still take clicks |
 | [PS20](13-app-picker-settings.md) | bug | confirmed | **fixed** The settings window does not settle before reading, keeps a stale error, and never shows a later read's reports |
 | [PS21](13-app-picker-settings.md) | bug | confirmed | **fixed** Pasted and committed text is not filtered for control characters |
@@ -532,8 +532,8 @@ covered" sections. The larger gaps:
 | [PS23](13-app-picker-settings.md) | bug | plausible | **fixed** The terminal scrollbar's arithmetic overflows `Int` with a very long scrollback |
 | [PS24](13-app-picker-settings.md) | design | confirmed | Strings outside the translation table: the whole picker, the search bar's placeholder, the settings' units |
 | [PS25](13-app-picker-settings.md) | bug | confirmed | **fixed** Renaming a host leaves what names it pointing at the old name |
-| [PS26](13-app-picker-settings.md) | inaccuracy | confirmed | `docs/user/settings.md` shows a file that leaves out settings no other user page names |
-| [PS27](13-app-picker-settings.md) | test-gap | confirmed | Test gaps that matter |
+| [PS26](13-app-picker-settings.md) | inaccuracy | confirmed | **fixed** `docs/user/settings.md` shows a file that leaves out settings no other user page names |
+| [PS27](13-app-picker-settings.md) | test-gap | confirmed | **fixed** Test gaps that matter |
 | [OS4](14-dep-os.md) | bug | confirmed | A child inherits every ignored signal: only `SIGPIPE` is set back to its default |
 | [OS6](14-dep-os.md) | bug | confirmed | `File.copy` of a file onto itself empties it |
 | [OS7](14-dep-os.md) | inaccuracy | confirmed | `Os.Env.executable` answers a path ending in ` (deleted)` after the binary is replaced, and its doc says otherwise |

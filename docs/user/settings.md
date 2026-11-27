@@ -26,19 +26,25 @@ clicks as you turn key sounds on, so you hear what you are choosing.
 
 ## The file
 
+The settings most people change, not all of them: the rest are below
+under [More settings](#more-settings), and the settings window's search
+finds every one, with what it takes. A number outside its range is said
+in the window's title and the setting's default used.
+
 ```toml
 [window]
 columns = 120
 rows = 36
+title = "puritty"           # while the program has set none
 padding = 8                 # points between the text and the window's
-                            # left and right edges; 0 for none
+                            # left and right edges, 0 to 72; 0 for none
 padding_vertical = 4        # the same above and below
 
 [font]
 family = "Fira Code"        # DejaVu Sans Mono when left out,
                             # Cascadia Mono on Windows; a font of your
                             # own: see fonts.md
-size = 11                   # points
+size = 11                   # points, 4 to 200
 language = "ko"             # the forms Han characters are drawn in:
                             # "ko", "ja", "zh-cn", "zh-tw" or "zh-hk"
 ligatures = true            # the font's, as Fira Code's != and ->; the
@@ -60,7 +66,11 @@ palette = ["#1d1f21", "#cc6666", "#b5bd68", "#f0c674"]   # the 16 named colors, 
 charset = "utf-8"           # or "euc-kr", "cp949"
 
 [scrollback]
-lines = 25000
+lines = 25000               # 0 to 10,000,000; 0 keeps none
+
+[program]
+command = ["htop"]          # what a new window runs, and its arguments;
+                            # your shell when left out
 
 [selection]
 word_boundaries = " \t'\"│`|:;,()[]{}<>$"
@@ -90,6 +100,43 @@ read_files = false          # true: a program on this computer may
 [debug]
 log = false                 # true: a diagnostic log for each window,
                             # see the diagnostic log guide
+```
+
+## More settings
+
+These are kept as they are by nearly everyone, and named here so that
+every setting is somewhere; their defaults are shown.
+
+```toml
+[font]
+glyph_cache_mb = 8          # the glyphs drawn kept for reuse, 4 to 1024 MB
+
+[colors]
+bold_is_bright = false      # true: bold text in one of the first eight
+                            # colors is drawn in its bright one
+
+[cursor]
+blink_ms = 500              # how long a blinking cursor is shown, then
+                            # hidden, 0 to 10,000 ms; 0 never blinks
+
+[frames]
+every_ms = 16               # output is drawn at most this often, 1 to
+                            # 1000 ms
+sync_timeout_ms = 150       # how long a program may hold a frame back
+                            # (mode 2026), 0 to 10,000 ms
+
+[clipboard]
+paste_folder = ""           # where a picture pasted into an ssh session
+                            # is put on the host, ~/ its home there;
+                            # empty: ~/.cache/puritty/paste
+
+[keys]
+mark_log = "Ctrl+Alt+Shift+M"  # while [debug] log is on, writes a
+                            # numbered mark into the log; "" for none
+
+[connections]
+recent = 8                  # the connections made last the host list
+                            # offers, 0 to 50; 0 keeps none
 ```
 
 ## Color schemes
@@ -131,10 +178,20 @@ jump = "bastion"                 # another host, or user@host:port
 command = "tmux -CC new -A -s main"
 charset = "euc-kr"               # this host's, over the one above
 bookmarks = ["/srv/www", "~/notes"]   # the folder picker's, on this host
+title = "build"                  # the window's title; the host's name
+                                 # when left out
+paste_folder = "~/pasted"        # over [clipboard] paste_folder
 
 [hosts."build-box".colors]
 background = "#2a1010"
 tab = "#c62828"                  # its tabs' color in the bar
+foreground = "#e0e0e0"           # over the settings'
+palette = ["#2a1010", "#ff6666"] # the named colors, from 0, over the
+                                 # settings'
+
+[hosts."build-box".font]
+family = "Cascadia Mono"         # over the settings'
+size = 12                        # points, 4 to 200
 ```
 
 A name the file doesn't have is looked up in `~/.ssh/config`, so your

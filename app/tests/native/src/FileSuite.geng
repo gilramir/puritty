@@ -384,6 +384,46 @@ settingsFile =
                                         |> Task.map (Expect.equal "600\n[window]\ntitle = \"b\"\nconfig.toml\nconfig.toml.bak\nconfig.toml.lock\n")
                                 )
                 )
+            , U.test "two settings written at once both land in config.toml: the second waits for the first's lock (review PS27)"
+                (\_ ->
+                    Task.map2 (\fs pid -> { fs = fs, pid = pid }) File.initialize Process.currentId
+                        |> Task.andThen
+                            (\go ->
+                                let
+                                    dir =
+                                        "ps27-" ++ String.fromInt go.pid
+
+                                    config =
+                                        Path.fromString (dir ++ "/config.toml")
+
+                                    setting path value doc =
+                                        when Schema.find path is
+                                            Just s ->
+                                                Schema.write Config.defaults s value doc
+
+                                            Nothing ->
+                                                doc
+
+                                    change path value =
+                                        SettingsFile.change (setting path value) (SettingsFile.store go.fs config)
+                                            |> Task.map (\_ -> "written")
+                                            |> Task.onError (\why -> Task.succeed why)
+                                in
+                                Directory.createAll go.fs (Path.fromString dir)
+                                    |> Task.andThen (\_ -> File.writeFile go.fs (Bytes.fromString "[window]\ntitle = \"a\"\n") config)
+                                    |> Task.andThen (\_ -> Task.concurrent [ change [ "window", "title" ] (Schema.Text "b"), change [ "window", "columns" ] (Schema.Whole 100) ])
+                                    |> Task.andThen (\said -> File.readFile go.fs config |> Task.map (\now -> { said = said, now = Bytes.toStringLossy now }))
+                                    |> Task.andThen (\seen -> Directory.list go.fs (Path.fromString dir) |> Task.map (\names -> { seen = seen, names = Array.sort (Array.map (\e -> Path.filename e.path) names) }))
+                                    |> Task.andThen (\both -> Directory.removeAll go.fs (Path.fromString dir) |> Task.map (\_ -> both))
+                                    |> Task.map
+                                        (\both ->
+                                            Expect.equal
+                                                { said = [ "written", "written" ], title = True, columns = True, names = [ "config.toml", "config.toml.bak", "config.toml.lock" ] }
+                                                { said = both.seen.said, title = String.contains "title = \"b\"" both.seen.now, columns = String.contains "columns = 100" both.seen.now, names = both.names }
+                                        )
+                                    |> Task.onError (\e -> Task.succeed (Expect.fail (Os.Error.toString e)))
+                            )
+                )
             , U.test "a setting written while another holds config.toml's lock: nothing written, and why; once let go, written, no temporary left (review PS12)"
                 (\_ ->
                     -- on Windows too: the lock, the path made real and the
