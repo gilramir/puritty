@@ -308,7 +308,7 @@ covered" sections. The larger gaps:
 | [W3](08-win32.md) | bug | plausible | **fixed** A capture taken from the window forgets the held buttons without telling the program; the native menu does this every time |
 | [W4](08-win32.md) | bug | confirmed | **fixed** The pop-up menu opens up and left of the pointer by the padding, so the pointer starts over its first item |
 | [W5](08-win32.md) | security | confirmed | The ssh agents' named pipes are opened as ordinary files: the server may impersonate the user, and its owner is not checked |
-| [W6](08-win32.md) | bug | plausible | A font is found by its registry name, which on a localized Windows is not the family name FreeType reads |
+| [W6](08-win32.md) | bug | plausible | **in part** A font is found by its registry name, which on a localized Windows is not the family name FreeType reads |
 | [MA4](09-app-main-a.md) | bug | confirmed | **fixed** The dialog shown and the dialog the keys go to are decided by two different orders |
 | [MA5](09-app-main-a.md) | bug | confirmed | **fixed** A settings reload reaches only the shown tab's terminal |
 | [MA6](09-app-main-a.md) | security | confirmed | **fixed** `[images] read_files` turned off (or on) does not reach a running terminal |
@@ -465,7 +465,7 @@ covered" sections. The larger gaps:
 | [X27](07-x11-text.md) | design | confirmed | The build turns Nix's hardening off and names one machine's paths |
 | [X28](07-x11-text.md) | security | plausible | **fixed** A notification's body is given to `notify-send` as markup |
 | [X29](07-x11-text.md) | inaccuracy | confirmed | **fixed** Comments that no longer say what the code does |
-| [W7](08-win32.md) | bug | plausible | `refit` changes the text layer and the window's size state outside the locks the window thread uses for them |
+| [W7](08-win32.md) | bug | plausible | **fixed** `refit` changes the text layer and the window's size state outside the locks the window thread uses for them |
 | [W8](08-win32.md) | bug | confirmed | **fixed** The event queue is 64 KB and a record that does not fit is dropped with no trace, a resize, a close or a release included |
 | [W9](08-win32.md) | bug | confirmed | **fixed** After Explorer restarts, no notification is ever shown again |
 | [W10](08-win32.md) | security | confirmed | **fixed** A second `puritty settings` is satisfied by any puritty window whose title is the settings window's |

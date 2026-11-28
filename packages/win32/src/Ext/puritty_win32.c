@@ -346,12 +346,27 @@ static int exact_face(const char *family, int variant, int *any) {
  * gives it: a bold italic the family lacks is its bold, and an italic its
  * regular, whose glyphs the renderer then slants (C§9 rule 6); -1 when
  * the family has no entry. */
-static int find_face(const char *family, int variant) {
-    scan_family(family);
+static int closest_face(const char *family, int variant) {
     int any = -1, e = exact_face(family, variant, &any);
     if (e < 0 && (variant & 2)) e = exact_face(family, variant & 1, &any);
     if (e < 0 && variant) e = exact_face(family, 0, &any);
     return e >= 0 ? e : any;
+}
+
+/* The files are found by the registry's names for them, which a localized
+ * Windows writes in its language ("맑은 고딕", "ＭＳ ゴシック") where FreeType's
+ * family is English: a family none of them names is looked for in every
+ * file, scanned once (about 230 ms, WS32), before it is given up (the code
+ * review's W6). Before, "Malgun Gothic" was not found on a Korean Windows
+ * until a fallback's full scan, and a line mixed it with Gulim. */
+static int find_face(const char *family, int variant) {
+    scan_family(family);
+    int e = closest_face(family, variant);
+    if (e < 0) {
+        scan_everything();
+        e = closest_face(family, variant);
+    }
+    return e;
 }
 
 /* Windows' own monospace fonts, in the order they stand in for a font
@@ -1440,26 +1455,46 @@ static void place_ime(HWND h) {
     ImmReleaseContext(h, c);
 }
 
-static void size_in(int w, int h) {
+/* The cells that fit the window reported as its size when they are not
+ * what was reported last, or always with `again`; and answered. One rule
+ * for the size's state: win_w, win_h, win_cols and win_rows are read and
+ * written only under queue_lock, on either thread (the code review's W7:
+ * refit, on Geng's, wrote them outside it, and wrote back a size a
+ * WM_SIZE had just replaced). queue_lock is taken after paint where both
+ * are, never before. */
+static void report_cells(int again, int *cols, int *rows) {
     EnterCriticalSection(&queue_lock);
-    int cw = cell_w, ch = cell_h, px = padx, py = pady;
+    if (again) win_cols = -1;
+    int cw = cell_w, ch = cell_h;
+    if (cw > 0 && ch > 0) {
+        int c = (win_w - 2 * padx) / cw, r = (win_h - 2 * pady) / ch;
+        if (c < 1) c = 1;
+        if (r < 1) r = 1;
+        if (c > 65535) c = 65535;
+        if (r > 65535) r = 65535;
+        if (c != win_cols || r != win_rows) {
+            win_cols = c;
+            win_rows = r;
+            uint8_t rec[5] = {2, (uint8_t) (c >> 8), (uint8_t) c, (uint8_t) (r >> 8), (uint8_t) r};
+            record(rec, 5);
+        }
+    }
+    if (cols) *cols = win_cols;
+    if (rows) *rows = win_rows;
+    LeaveCriticalSection(&queue_lock);
+}
+
+/* The window's client area now `w` by `h` (WM_SIZE, or rescale's), and
+ * its cells reported. */
+static void size_in(int w, int h, int again, int *cols, int *rows) {
+    EnterCriticalSection(&queue_lock);
     win_w = w;
     win_h = h;
     /* the cells moved within the window: drawn again where they now are */
     int moved = place_cells();
     LeaveCriticalSection(&queue_lock);
     if (moved && win) InvalidateRect(win, NULL, FALSE);
-    if (cw <= 0 || ch <= 0) return;
-    int c = (w - 2 * px) / cw, r = (h - 2 * py) / ch;
-    if (c < 1) c = 1;
-    if (r < 1) r = 1;
-    if (c > 65535) c = 65535;
-    if (r > 65535) r = 65535;
-    if (c == win_cols && r == win_rows) return;
-    win_cols = c;
-    win_rows = r;
-    uint8_t rec[5] = {2, (uint8_t) (c >> 8), (uint8_t) c, (uint8_t) (r >> 8), (uint8_t) r};
-    record(rec, 5);
+    report_cells(again, cols, rows);
 }
 
 static void focus_in(int in) {
@@ -1551,9 +1586,9 @@ static void rescale(int dpi, int x, int y, const RECT *whole) {
     RECT cr;
     GetClientRect(win, &cr);
     EnterCriticalSection(&paint);
-    win_cols = -1;
-    size_in(cr.right - cr.left, cr.bottom - cr.top);
-    pt_resize(win_cols, win_rows);
+    int now_cols, now_rows;
+    size_in(cr.right - cr.left, cr.bottom - cr.top, 1, &now_cols, &now_rows);
+    pt_resize(now_cols, now_rows);
     LeaveCriticalSection(&paint);
     InvalidateRect(win, NULL, FALSE);
 }
@@ -1569,7 +1604,7 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         /* minimized, the client area is 0x0: not a size for the terminal,
          * which would keep one cell of its screen (docs/windows.md WS31) */
         if (wp == SIZE_MINIMIZED) return 0;
-        size_in(LOWORD(lp), HIWORD(lp));
+        size_in(LOWORD(lp), HIWORD(lp), 0, NULL, NULL);
         return 0;
     case WM_DPICHANGED: {
         /* moved to a monitor of another scale, or the scale changed: the
@@ -2253,14 +2288,19 @@ geng_cancel puritty_win32_take(geng_wait *wait) {
 /* The window fitted to a new cell: the cells that now fit it reported as a
  * new size. */
 static void refit(void) {
+    /* under paint, as rescale's is: pt_resize fills the bitmap the window
+     * thread may be replacing (W7); the size the window has kept, not read
+     * and written back */
+    EnterCriticalSection(&paint);
     EnterCriticalSection(&queue_lock);
     cell_w = pt_cw;
     cell_h = pt_ch;
-    int w = win_w, h = win_h;
+    place_cells();
     LeaveCriticalSection(&queue_lock);
-    win_cols = -1;
-    size_in(w, h);
-    pt_resize(win_cols, win_rows);
+    int cols, rows;
+    report_cells(1, &cols, &rows);
+    pt_resize(cols, rows);
+    LeaveCriticalSection(&paint);
     InvalidateRect(win, NULL, FALSE);
 }
 

@@ -1362,3 +1362,33 @@ the exe before had none. Not tried: a signing through SimplySign, which
 needs Gilbert's phone, and so whether Certum's chain verifies against
 the system's CA certificates here; if it does not, signing fails,
 leaving the file unsigned, and `PURITTY_SIGN_CAFILE` names Certum's.
+
+## WS38 · A font Windows names in its language, and the window's size under one lock (2026-11-27)
+
+The code review's W6 (in part) and W7, in
+`packages/win32/src/Ext/puritty_win32.c`.
+
+- **W6.** A family's files are found by the registry's names for them,
+  and a localized Windows writes those in its language (`맑은 고딕`,
+  `ＭＳ ゴシック & …`) where FreeType's family is English, so
+  `find_face("Malgun Gothic")` found nothing there: the first Hangul
+  cluster went through every listed family to the full scan and took
+  whichever face came first in the registry, and the next got Malgun
+  Gothic, two fonts on one line. Now a family no registry name gives is
+  looked for in every file, scanned once (some 230 ms, WS32), before it
+  is given up. Left: a font typed by its localized name (`맑은 고딕`) is
+  still not found, since faces are matched by FreeType's English
+  family; matching every language's name (`FT_Get_Sfnt_Name`, names 1
+  and 16) would find it.
+- **W7.** The window's size in pixels and in cells was written by both
+  threads, `refit` (on Geng's) outside `queue_lock`, writing back a size
+  it had read so that a `WM_SIZE` in between was lost, and `refit`'s
+  `pt_resize` ran outside `paint` while the window thread's `rescale` may
+  replace the bitmap under it. Now the four are read and written only
+  under `queue_lock` (`report_cells`), `refit` reports from the size the
+  window keeps rather than writing one back, and its `pt_resize` is under
+  `paint`, `paint` taken before `queue_lock` as `rescale` takes them.
+
+**Tested**: not by a case. beelink1 is an English Windows (its registry
+names Malgun Gothic in English), so W6's case is not there; W7 is a race.
+The exe cross-builds and the Windows suites pass.
