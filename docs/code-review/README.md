@@ -466,14 +466,14 @@ covered" sections. The larger gaps:
 | [X28](07-x11-text.md) | security | plausible | **fixed** A notification's body is given to `notify-send` as markup |
 | [X29](07-x11-text.md) | inaccuracy | confirmed | **fixed** Comments that no longer say what the code does |
 | [W7](08-win32.md) | bug | plausible | `refit` changes the text layer and the window's size state outside the locks the window thread uses for them |
-| [W8](08-win32.md) | bug | confirmed | The event queue is 64 KB and a record that does not fit is dropped with no trace, a resize, a close or a release included |
-| [W9](08-win32.md) | bug | confirmed | After Explorer restarts, no notification is ever shown again |
-| [W10](08-win32.md) | security | confirmed | A second `puritty settings` is satisfied by any puritty window whose title is the settings window's |
+| [W8](08-win32.md) | bug | confirmed | **fixed** The event queue is 64 KB and a record that does not fit is dropped with no trace, a resize, a close or a release included |
+| [W9](08-win32.md) | bug | confirmed | **fixed** After Explorer restarts, no notification is ever shown again |
+| [W10](08-win32.md) | security | confirmed | **fixed** A second `puritty settings` is satisfied by any puritty window whose title is the settings window's |
 | [W11](08-win32.md) | bug | confirmed | **in part** Clipboard failures are silent, and a failed allocation in a large paste is dereferenced |
 | [W12](08-win32.md) | bug | confirmed | **fixed** An image paste takes the PNG's allocation size, not its length, and initializes COM once per paste |
 | [W13](08-win32.md) | bug | confirmed | **fixed** A registry font path is read past its end when the value is not NUL-terminated |
-| [W14](08-win32.md) | bug | plausible | Text that arrives as a bare `WM_CHAR` or `WM_UNICHAR` is dropped |
-| [W15](08-win32.md) | inaccuracy | confirmed | A `Resized` in the old order can precede `Rescaled`, against the comment |
+| [W14](08-win32.md) | bug | plausible | **fixed** Text that arrives as a bare `WM_CHAR` or `WM_UNICHAR` is dropped |
+| [W15](08-win32.md) | inaccuracy | confirmed | **fixed** A `Resized` in the old order can precede `Rescaled`, against the comment |
 | [W16](08-win32.md) | security | confirmed | **fixed** The secret's copy in Windows' buffer is freed unwiped |
 | [W17](08-win32.md) | design | confirmed | The signing script trusts the remote's word that the file is signed, and the exe carries no version resource |
 | [W18](08-win32.md) | inaccuracy | confirmed | Comments and names that no longer say what the code does; a little dead code |

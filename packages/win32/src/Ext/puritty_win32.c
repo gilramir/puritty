@@ -779,7 +779,13 @@ typedef struct holder {
 #define HOLDER_HEADER (GENG_HEADER_WORDS(holder) | GENG_HEADER_POINTER(holder, pending))
 
 static CRITICAL_SECTION queue_lock;
-static uint8_t evbuf[65536];
+/* The records since Geng last took them, filled by the window thread while
+ * Geng's loop may be busy (a long draw, a message box, a clipboard read):
+ * it grows rather than drop one, since a dropped Resized, key release or
+ * close left Geng and the window disagreeing (the code review's W8, as X20
+ * on X11). Only memory running out drops a record. */
+static uint8_t *evbuf;
+static size_t evcap;
 static int evlen;
 static geng_post *post;
 static holder *held;
@@ -788,6 +794,9 @@ static HWND win;
 static volatile int start_maximized;
 static HANDLE made;
 static wchar_t *title0;
+/* The window's property holding the title it opened with, an atom
+ * (puritty_win32_raise, W10). */
+#define OPENED_AS L"puritty.openedAs"
 static int open_cols, open_rows;
 /* The resolution the font is drawn at, and its size in points: the
  * monitor's the window is on, changed by WM_DPICHANGED (docs/windows.md
@@ -851,16 +860,28 @@ static int system_count;
 
 
 /* A record queued, and the post sent when the queue was empty, which wakes
- * Geng's loop. A motion takes the place of one at the queue's end. */
+ * Geng's loop. A motion takes the place of one of its kind at the queue's
+ * end: a pointer's motion, or a drag's (W8: each OLE DragOver was queued). */
 static void record_as(const uint8_t *r, int n, int motion) {
     EnterCriticalSection(&queue_lock);
     int was = evlen;
-    if (motion && last_motion >= 0 && last_motion + n == evlen) {
+    if (motion && last_motion >= 0 && last_motion + n == evlen && evbuf[last_motion] == r[0]) {
         memcpy(evbuf + last_motion, r, (size_t) n);
-    } else if (evlen + n <= (int) sizeof evbuf) {
-        memcpy(evbuf + evlen, r, (size_t) n);
-        last_motion = motion ? evlen : -1;
-        evlen += n;
+    } else {
+        if ((size_t) evlen + (size_t) n > evcap && evlen < INT_MAX / 2) {
+            size_t cap = evcap ? evcap : 65536;
+            while (cap < (size_t) evlen + (size_t) n) cap *= 2;
+            uint8_t *grown = realloc(evbuf, cap);
+            if (grown) {
+                evbuf = grown;
+                evcap = cap;
+            }
+        }
+        if ((size_t) evlen + (size_t) n <= evcap) {
+            memcpy(evbuf + evlen, r, (size_t) n);
+            last_motion = motion ? evlen : -1;
+            evlen += n;
+        }
     }
     LeaveCriticalSection(&queue_lock);
     if (was == 0) geng_post_send(post, malloc(1));
@@ -1103,29 +1124,33 @@ static void key_record(int action, int code, int mods, int consumed, uint32_t un
     record(rec, 16 + n);
 }
 
+/* A UTF-16 unit typed as itself, no key: its text alone, a high
+ * surrogate kept for its low half. */
+static void char_typed(WCHAR unit) {
+    WCHAR w[2] = {unit, 0};
+    int n = 1;
+    if (w[0] >= 0xD800 && w[0] < 0xDC00) {
+        packet_high = w[0];
+        return;
+    }
+    if (w[0] >= 0xDC00 && w[0] < 0xE000) {
+        if (!packet_high) return;
+        w[1] = w[0];
+        w[0] = packet_high;
+        n = 2;
+    }
+    packet_high = 0;
+    char text[8];
+    int k = utf8_of(w, n, text, sizeof text);
+    key_record(1, 0, mods_now(), 0, 0, char_sym(first_cp(w, n), 0), text, k);
+}
+
 /* A character typed as itself (SendInput's KEYEVENTF_UNICODE, the emoji
  * panel): no key, its text alone. */
 static void packet_key(MSG *msg) {
     TranslateMessage(msg);
     MSG c;
-    while (PeekMessageW(&c, msg->hwnd, WM_CHAR, WM_CHAR, PM_REMOVE)) {
-        WCHAR w[2] = {(WCHAR) c.wParam, 0};
-        int n = 1;
-        if (w[0] >= 0xD800 && w[0] < 0xDC00) {
-            packet_high = w[0];
-            continue;
-        }
-        if (w[0] >= 0xDC00 && w[0] < 0xE000) {
-            if (!packet_high) continue;
-            w[1] = w[0];
-            w[0] = packet_high;
-            n = 2;
-        }
-        packet_high = 0;
-        char text[8];
-        int k = utf8_of(w, n, text, sizeof text);
-        key_record(1, 0, mods_now(), 0, 0, char_sym(first_cp(w, n), 0), text, k);
-    }
+    while (PeekMessageW(&c, msg->hwnd, WM_CHAR, WM_CHAR, PM_REMOVE)) char_typed((WCHAR) c.wParam);
 }
 
 /* A key message, taken from the loop before it is dispatched; answers 1
@@ -1509,6 +1534,12 @@ static void rescale(int dpi, int x, int y, const RECT *whole) {
     int gx = padx, gy = pady;
     place_cells();
     LeaveCriticalSection(&queue_lock);
+    /* the program told the new cell before the size (`Rescaled`): the
+     * settings window lays its text out by it. Before SetWindowPos, which
+     * sends WM_SIZE at once: after it, a maximized window's Resized at the
+     * new cell went first (the code review's W15) */
+    uint8_t rec[5] = {13, (uint8_t) (pt_cw >> 8), (uint8_t) pt_cw, (uint8_t) (pt_ch >> 8), (uint8_t) pt_ch};
+    record(rec, 5);
     if (whole) {
         SetWindowPos(win, NULL, whole->left, whole->top, whole->right - whole->left, whole->bottom - whole->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1518,10 +1549,6 @@ static void rescale(int dpi, int x, int y, const RECT *whole) {
         AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) dpi);
         SetWindowPos(win, NULL, x, y, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
     }
-    /* the program told the new cell before the size (`Rescaled`): the
-     * settings window lays its text out by it */
-    uint8_t rec[5] = {13, (uint8_t) (pt_cw >> 8), (uint8_t) pt_cw, (uint8_t) (pt_ch >> 8), (uint8_t) pt_ch};
-    record(rec, 5);
     RECT cr;
     GetClientRect(win, &cr);
     EnterCriticalSection(&paint);
@@ -1630,6 +1657,24 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_IME_CHAR:
         return 0;
+    case WM_CHAR:
+        /* a character posted to the window on its own (a text expander,
+         * an on-screen keyboard, a tool that types by WM_CHAR), not one
+         * of a key's, which key_message takes from the queue: typed as a
+         * VK_PACKET's is; before, it went to DefWindowProc and was lost
+         * (the code review's W14) */
+        char_typed((WCHAR) wp);
+        return 0;
+    case WM_UNICHAR:
+        /* yes, this window takes WM_UNICHAR; a code point, as UTF-16 */
+        if (wp == UNICODE_NOCHAR) return TRUE;
+        if (wp >= 0x10000 && wp <= 0x10FFFF) {
+            char_typed((WCHAR) (0xD800 + ((wp - 0x10000) >> 10)));
+            char_typed((WCHAR) (0xDC00 + ((wp - 0x10000) & 0x3FF)));
+        } else if (wp < 0xD800 || (wp >= 0xE000 && wp < 0x10000)) {
+            char_typed((WCHAR) wp);
+        }
+        return 0;
     case WM_CLIPBOARDUPDATE:
         /* another program's clipboard now */
         if (clip_owned && GetClipboardOwner() != h) {
@@ -1696,9 +1741,12 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         record(rec, 1);
         return 0;
     }
-    case WM_DESTROY:
+    case WM_DESTROY: {
+        ATOM a = (ATOM) (ULONG_PTR) RemovePropW(h, OPENED_AS);
+        if (a) GlobalDeleteAtom(a);
         PostQuitMessage(0);
         return 0;
+    }
     }
     return DefWindowProcW(h, m, wp, lp);
 }
@@ -1758,7 +1806,8 @@ static void drag_record(POINTL pt) {
     uint8_t r[13] = {15, (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
                      (uint8_t) (w >> 8), (uint8_t) w, (uint8_t) (h >> 8), (uint8_t) h,
                      (uint8_t) (cw >> 8), (uint8_t) cw, (uint8_t) (ch >> 8), (uint8_t) ch};
-    record(r, sizeof r);
+    /* merged with a drag's motion before it, as a pointer's are (W8) */
+    record_as(r, sizeof r, 1);
 }
 
 static HRESULT STDMETHODCALLTYPE dt_query(IDropTarget *t, REFIID riid, void **out) {
@@ -1891,6 +1940,9 @@ static void *window_thread(void *arg) {
     AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) dpi_now);
     win = CreateWindowExW(ex, L"puritty", title0 ? title0 : L"puritty", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,
                           r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
+    /* the title it opened with, as a property a program in it cannot
+     * change as it can the title (W10) */
+    if (win) SetPropW(win, OPENED_AS, (HANDLE) (ULONG_PTR) GlobalAddAtomW(title0 ? title0 : L"puritty"));
     /* Windows put it on a monitor, the one it was started from: drawn at
      * that monitor's resolution before it is seen, and before the program
      * is answered the cell */
@@ -2191,7 +2243,7 @@ geng_cancel puritty_win32_take(geng_wait *wait) {
     b->data = (uint8_t *) (b + 1);
     b->buffer = NULL;
     b->block = NULL;
-    memcpy(b->data, evbuf, (size_t) n);
+    if (n) memcpy(b->data, evbuf, (size_t) n);
     evlen = 0;
     last_motion = -1;
     LeaveCriticalSection(&queue_lock);
@@ -2281,15 +2333,35 @@ geng_cancel puritty_win32_setfont(int32_t points, void *font_bytes, void *lang_b
     return (geng_cancel) {0};
 }
 
-/* RAISING ANOTHER WINDOW (docs/settings.md ST8): puritty's window titled
- * `name`, restored if it is minimized and brought to the foreground, which
- * Windows allows a process the foreground one started. Answers 1 when one
- * was found. */
+typedef struct {
+    ATOM want;
+    HWND found;
+} Opened;
+
+static BOOL CALLBACK opened_as(HWND h, LPARAM lp) {
+    Opened *o = (Opened *) lp;
+    wchar_t cls[16];
+    if (GetClassNameW(h, cls, 16) && wcscmp(cls, L"puritty") == 0 && (ATOM) (ULONG_PTR) GetPropW(h, OPENED_AS) == o->want) {
+        o->found = h;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* RAISING ANOTHER WINDOW (docs/settings.md ST8): puritty's window opened
+ * titled `name`, restored if it is minimized and brought to the
+ * foreground, which Windows allows a process the foreground one started.
+ * Answers 1 when one was found. By the title it opened with, not the one
+ * it has: a terminal's title is the program's to set, and one set to the
+ * settings window's was raised in its place, so that the settings window
+ * could not be opened (the code review's W10). */
 geng_cancel puritty_win32_raise(void *name_bytes, geng_wait *wait) {
     char *name = string_of(name_bytes);
     wchar_t *w = wide(name);
     free(name);
-    HWND h = FindWindowW(L"puritty", w);
+    Opened o = {GlobalFindAtomW(w), NULL};
+    if (o.want) EnumWindows(opened_as, (LPARAM) &o);
+    HWND h = o.found;
     free(w);
     if (h != NULL) {
         if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
@@ -3037,15 +3109,19 @@ geng_cancel puritty_win32_notify(void *title_bytes, void *body_bytes, geng_wait 
     wcsncpy(n.szInfoTitle, wt, sizeof n.szInfoTitle / sizeof *n.szInfoTitle - 1);
     wcsncpy(n.szInfo, wb[0] ? wb : L" ", sizeof n.szInfo / sizeof *n.szInfo - 1);
     n.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
-    BOOL shown;
-    if (!notify_icon) {
+    BOOL shown = notify_icon && Shell_NotifyIconW(NIM_MODIFY, &n);
+    /* the icon added, or added again: when Explorer restarts the icon goes
+     * with it and NIM_MODIFY fails from then on, which stopped every
+     * notification for the rest of the process (the code review's W9) */
+    if (!shown) {
         shown = Shell_NotifyIconW(NIM_ADD, &n);
         if (shown) {
+            static int removed_at_exit;
             notify_icon = 1;
-            atexit(notify_icon_gone);
+            if (!removed_at_exit) atexit(notify_icon_gone);
+            removed_at_exit = 1;
         }
-    } else
-        shown = Shell_NotifyIconW(NIM_MODIFY, &n);
+    }
     free(wt);
     free(wb);
     geng_succeed(wait, geng_slot_I4(shown ? 1 : 0));

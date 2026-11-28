@@ -1301,3 +1301,25 @@ family is answered with the stand-in (Cascadia Mono). A Windows reload
 case with a missing family and size 15 kept the size before as after,
 and differed from a fresh start by a one-pixel shift of the text, 7,418
 pixels, before and after alike: not this, and not followed here.
+
+## ST42 · A second settings window found by how a window opened, not its title (2026-11-27)
+
+The code review's W10. `puritty settings` raises a settings window already
+open and ends (ST8), and it found one by its title: on Windows the first
+window of class `puritty` titled as the settings window, on X11 any
+window whose `_NET_WM_NAME` or `WM_NAME` was. A terminal's title is its
+program's to set (OSC 0 and 2), so a program titling its window "puritty
+settings" (or "puritty 설정") made every later `puritty settings`, and
+Ctrl+Comma, raise that terminal and end: the settings window could not
+be opened while it lived. On X11 any other client could do the same. Now
+each window holds the title it opened with where a program in it cannot
+change it, and that is what is looked for: on X11 the property
+`_PURITTY_OPENED_AS`, set once as the window opens; on Windows the
+window's property `puritty.openedAs`, a global atom, removed with the
+window.
+
+**Tested** (X11): `harness/settingsraise.py`, on Xvfb, a terminal whose
+program titles it "puritty settings", then `puritty settings`: it stays,
+with a window of its own beside the terminal. Before, it ended, one
+window on the display. Windows is not tested: the same case there needs
+beelink1's desktop; the exe cross-builds.

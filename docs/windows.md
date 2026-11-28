@@ -1276,3 +1276,39 @@ short, and a chunk longer than the block are the whole block. W11, W13
 and W16 are not tested: nothing here drives the clipboard, the registry
 or the Credential Manager on Windows; the Windows build and its suites
 pass on beelink1.
+
+## WS35 · The event queue grows, a notification survives Explorer, a posted character is typed, Rescaled comes first (2026-11-27)
+
+The code review's W8, W9, W14 and W15, in
+`packages/win32/src/Ext/puritty_win32.c`.
+
+- **W8.** The window thread queues records for Geng's loop in a 64 KB
+  buffer and dropped what did not fit, while the loop could be busy (a
+  long draw, a message box, a clipboard read): a lost `Resized` left the
+  terminal at the wrong size for good, since the size is not reported
+  again, and a lost release repeated a key. Now the buffer grows, as
+  X11's does (X20); only memory running out drops a record. And each OLE
+  `DragOver`, which repeats while the pointer rests, was queued; a drag's
+  motion now takes the place of the one before it, as a pointer's does.
+- **W9.** A notification's icon was added once and changed after; when
+  Explorer restarts the icon goes with it and every later change failed,
+  so no notification was shown again. Now a change that fails adds the
+  icon again.
+- **W14.** Characters were read only from a key's own `WM_CHAR`; one
+  posted to the window by itself (a text expander, an on-screen keyboard)
+  went to `DefWindowProc` and was lost. Now `WM_CHAR` is typed as a
+  `VK_PACKET`'s character is (`char_typed`, a surrogate pair joined), and
+  `WM_UNICHAR` is answered and typed. A key's own characters are taken
+  from the queue by `key_message` before they could arrive here, and the
+  IME's `WM_IME_CHAR` is answered without making one, so nothing is
+  typed twice; the keys Windows is left (Alt+F4, Alt+Space) make
+  `WM_SYSCHAR`.
+- **W15.** On a scale change the cell (`Rescaled`) was told after
+  `SetWindowPos`, which sends `WM_SIZE` at once, so a maximized window's
+  `Resized` at the new cell came first; now `Rescaled` is queued before.
+
+**Tested**: not yet. Each is to be shown in the events gate
+(`harness/events.py`, which drives beelink1's desktop with SendInput): a
+posted `WM_CHAR`, a monitor's scale changed while maximized, the icon
+removed from outside. beelink1's desktop was in use, so it was not
+driven; the exe cross-builds and the Windows suites pass there.

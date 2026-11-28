@@ -1357,6 +1357,10 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
     size_hints();
     geng_bytes *t = title_bytes;
     set_title(t->data, (int) t->length);
+    /* the title it opened with, which raise looks for: a program in it
+     * sets the title as it likes, and not this (the code review's W10) */
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, atom("_PURITTY_OPENED_AS"), utf8_string, 8, (uint32_t) t->length,
+                        t->data);
     key_setup();
     gc = xcb_generate_id(conn);
     uint32_t no_exposures = 0;
@@ -2302,7 +2306,7 @@ geng_cancel puritty_x11_title(void *text, geng_wait *wait) {
  * A window of this display whose title is `name`, brought forward, on a
  * connection of its own, since it is asked before this process has a
  * window: the window manager's `_NET_CLIENT_LIST`, or with none the root's
- * children and theirs, searched by `_NET_WM_NAME` and `WM_NAME`; one found
+ * children and theirs, searched by `_PURITTY_OPENED_AS` (W10); one found
  * is asked active with `_NET_ACTIVE_WINDOW` and raised and focused itself,
  * for a display with no window manager. Answers 1 when one was found. */
 
@@ -2313,18 +2317,18 @@ static xcb_atom_t atom_on(xcb_connection_t *c, const char *name) {
     return a;
 }
 
-static int titled(xcb_connection_t *c, xcb_window_t w, const char *name, xcb_atom_t net_name, xcb_atom_t utf8) {
-    const xcb_atom_t props[2] = {net_name, XCB_ATOM_WM_NAME};
-    const xcb_atom_t types[2] = {utf8, XCB_ATOM_STRING};
-    for (int k = 0; k < 2; k++) {
-        xcb_get_property_reply_t *r = xcb_get_property_reply(c, xcb_get_property(c, 0, w, props[k], types[k], 0, 1024), NULL);
-        if (r == NULL) continue;
-        int len = xcb_get_property_value_length(r);
-        int same_name = len == (int) strlen(name) && memcmp(xcb_get_property_value(r), name, (size_t) len) == 0;
-        free(r);
-        if (same_name) return 1;
-    }
-    return 0;
+/* Whether a window is puritty's, opened titled `name`: by
+ * `_PURITTY_OPENED_AS`, which puritty sets once as the window opens. Its
+ * title, which a program in a terminal sets with OSC 0 or 2 and any other
+ * client as it likes, was taken before, so a terminal titled as the
+ * settings window was raised in its place (the code review's W10). */
+static int titled(xcb_connection_t *c, xcb_window_t w, const char *name, xcb_atom_t opened_as, xcb_atom_t utf8) {
+    xcb_get_property_reply_t *r = xcb_get_property_reply(c, xcb_get_property(c, 0, w, opened_as, utf8, 0, 1024), NULL);
+    if (r == NULL) return 0;
+    int len = xcb_get_property_value_length(r);
+    int same_name = r->type == utf8 && len == (int) strlen(name) && memcmp(xcb_get_property_value(r), name, (size_t) len) == 0;
+    free(r);
+    return same_name;
 }
 
 geng_cancel puritty_x11_raise(void *name_bytes, geng_wait *wait) {
@@ -2335,7 +2339,7 @@ geng_cancel puritty_x11_raise(void *name_bytes, geng_wait *wait) {
     if (!xcb_connection_has_error(c)) {
         xcb_screen_t *s = screen_of(c, screen_number);
         xcb_atom_t clients = atom_on(c, "_NET_CLIENT_LIST"), active = atom_on(c, "_NET_ACTIVE_WINDOW");
-        xcb_atom_t net_name = atom_on(c, "_NET_WM_NAME"), utf8 = atom_on(c, "UTF8_STRING");
+        xcb_atom_t opened_as = atom_on(c, "_PURITTY_OPENED_AS"), utf8 = atom_on(c, "UTF8_STRING");
         xcb_window_t *ws = NULL;
         int n = 0;
         xcb_get_property_reply_t *list = xcb_get_property_reply(c, xcb_get_property(c, 0, s->root, clients, XCB_ATOM_WINDOW, 0, 4096), NULL);
@@ -2360,7 +2364,7 @@ geng_cancel puritty_x11_raise(void *name_bytes, geng_wait *wait) {
         }
         free(list);
         for (int i = 0; i < n && !found; i++) {
-            if (!titled(c, ws[i], name, net_name, utf8)) continue;
+            if (!titled(c, ws[i], name, opened_as, utf8)) continue;
             found = 1;
             xcb_client_message_event_t ev = {0};
             ev.response_type = XCB_CLIENT_MESSAGE;
