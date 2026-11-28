@@ -1330,3 +1330,35 @@ name Cascadia Mono where the renderer drew Consolas. Now one table,
 `stand_ins`, serves all three, and `pt_fallback_family` gives its first,
 Cascadia Mono, as `font_used` says. Not tested: comments; the exe
 cross-builds and the Windows suites pass on beelink1.
+
+## WS37 · A signed exe checked where it was built, and a version resource (2026-11-27)
+
+The code review's W17. `scripts/sign-windows.sh` (WS28) signs on beelink1
+and checked what came back only by being longer than what it sent; the
+file's name went unquoted into the remote commands; and the exe's only
+resource was its icon, so Explorer's Details, SmartScreen and a crash
+report named no product, version or company.
+
+Now what comes back goes through `scripts/sign-check.py` before it
+replaces the file: every byte sent must be in it unchanged but the PE
+checksum and the certificate table entry, which Authenticode rewrites,
+with only padding between them and the signature the table points at;
+`osslsigncode verify` (2.14, the pinned nixpkgs') must find the
+signature good against the system's CA certificates (or
+`PURITTY_SIGN_CAFILE`'s); and its leaf must be the certificate the
+thumbprint names (`-require-leaf-hash sha1:`). On the signing machine
+the file is `unsigned.exe`, whatever its name here. And
+`app/build-windows.sh` writes a `VERSIONINFO` beside the icon, from
+`purittyVersion` in `Main.geng` as `prerelease.sh` reads it: product and
+file `puritty` 0.2.1, Gilbert Ramirez, the licence's copyright.
+
+**Tested**: `sign-check.py` on today's exe signed here by a throwaway
+certificate: accepted; with another thumbprint, a byte of the file sent
+changed, the file cut short but still longer (9,175,200 bytes of 9,176,664),
+or the unsigned file sent back: each refused, saying why. The old check
+took the changed and the cut ones. Windows reads the version on beelink1
+(`(Get-Item puritty.exe).VersionInfo`: puritty 0.2.1, Gilbert Ramirez);
+the exe before had none. Not tried: a signing through SimplySign, which
+needs Gilbert's phone, and so whether Certum's chain verifies against
+the system's CA certificates here; if it does not, signing fails,
+leaving the file unsigned, and `PURITTY_SIGN_CAFILE` names Certum's.
