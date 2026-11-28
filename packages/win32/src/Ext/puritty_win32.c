@@ -310,13 +310,6 @@ static void scan_dirs(const char *dirs) {
     free(all);
 }
 
-static int has_word(const char *style, const char *word) {
-    size_t n = strlen(word);
-    for (const char *p = style; *p; p++)
-        if (_strnicmp(p, word, n) == 0 && (p == style || p[-1] == ' ') && (p[n] == 0 || p[n] == ' ')) return 1;
-    return 0;
-}
-
 /* What a style name says: bold 1, italic 2; -1 for a weight that is
  * neither regular nor bold (Light, Medium, SemiBold, ...). */
 static int style_of(const char *style) {
@@ -333,7 +326,6 @@ static int style_of(const char *style) {
         else if (same(word, "Italic") || same(word, "Oblique")) s |= 2;
         else if (!same(word, "Regular") && !same(word, "Book") && !same(word, "Normal") && !same(word, "Roman")) other = 1;
     }
-    (void) has_word;
     return other ? -1 : s;
 }
 
@@ -362,12 +354,18 @@ static int find_face(const char *family, int variant) {
     return e >= 0 ? e : any;
 }
 
+/* Windows' own monospace fonts, in the order they stand in for a font
+ * Windows does not have or FreeType cannot read: one table for the
+ * renderer (pt_font_file, pt_fallback_family) and the settings window
+ * (font_used), which were three lists and could disagree (W18). */
+static const char *const stand_ins[] = {"Cascadia Mono", "Consolas", "Courier New"};
+#define NSTAND_INS ((int) (sizeof stand_ins / sizeof *stand_ins))
+
 char *pt_font_file(const char *font, int variant, int *index) {
     int e = find_face(font, variant & 3);
     /* fontconfig gives the closest font to one it does not have; Windows'
      * own monospace fonts stand in for it */
-    static const char *const stand_ins[] = {"Cascadia Mono", "Consolas", "Courier New"};
-    for (size_t k = 0; e < 0 && !dirs_mode && k < sizeof stand_ins / sizeof *stand_ins; k++) e = find_face(stand_ins[k], variant & 3);
+    for (int k = 0; e < 0 && !dirs_mode && k < NSTAND_INS; k++) e = find_face(stand_ins[k], variant & 3);
     if (e < 0) return NULL;
     *index = entries[e].index;
     return copy(entries[e].file);
@@ -530,8 +528,10 @@ geng_cancel puritty_win32_fonts(geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+/* The family put for a font FreeType cannot read: the stand-ins' first,
+ * which pt_font_file takes the others after, as font_used says. */
 const char *pt_fallback_family(void) {
-    return "Consolas";
+    return stand_ins[0];
 }
 
 /* The family the terminal shows for a font's name, for the settings window
@@ -540,10 +540,9 @@ const char *pt_fallback_family(void) {
 static char *string_of(void *bytes);
 geng_cancel puritty_win32_font_used(void *name_bytes, geng_wait *wait) {
     char *name = string_of(name_bytes);
-    static const char *const stand_ins[] = {"Cascadia Mono", "Consolas", "Courier New"};
     char **lines = malloc(sizeof *lines);
     lines[0] = NULL;
-    for (int k = -1; k < (int) (sizeof stand_ins / sizeof *stand_ins) && lines[0] == NULL; k++) {
+    for (int k = -1; k < NSTAND_INS && lines[0] == NULL; k++) {
         if (k >= 0 && dirs_mode) break;
         int f = find_face(k < 0 ? name : stand_ins[k], 0);
         if (f >= 0 && pt_readable(entries[f].file, entries[f].index)) lines[0] = copy(entries[f].family);
@@ -2171,11 +2170,6 @@ static int write_shot(const char *path) {
     return 0;
 }
 
-/* A sound (docs/sounds.md SN6): -1 Windows' own bell (`MessageBeep`,
- * `system`), else one of puritty's WAV files, played from memory without
- * waiting. PlaySound plays one sound at a time: a key's replaces what
- * plays; a bell asked for while a sound plays is dropped (SND_NOSTOP),
- * since bells come in floods. */
 /* Maximized (docs/window-state.md WP8): `want` -1 asks, 0 or 1 sets;
  * before the window is open, how it will be shown. Answers the state, 1
  * for maximized. ShowWindowAsync, since the window's thread owns it. */
@@ -2194,6 +2188,11 @@ geng_cancel puritty_win32_maximized(int32_t want, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+/* A sound (docs/sounds.md SN6): -1 Windows' own bell (`MessageBeep`,
+ * `system`), else one of puritty's WAV files, played from memory without
+ * waiting. PlaySound plays one sound at a time: a key's replaces what
+ * plays; a bell asked for while a sound plays is dropped (SND_NOSTOP),
+ * since bells come in floods. */
 geng_cancel puritty_win32_sound(int32_t id, geng_wait *wait) {
     int taken = 0;
     if (id < 0) {
@@ -2251,8 +2250,6 @@ geng_cancel puritty_win32_take(geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
-/* The font at `points` (V50): the window kept at its size in pixels, and
- * the cells that now fit it reported as a new size. */
 /* The window fitted to a new cell: the cells that now fit it reported as a
  * new size. */
 static void refit(void) {

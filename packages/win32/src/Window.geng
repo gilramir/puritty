@@ -53,8 +53,9 @@ and the window shows it.
 The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came: the window's own thread queues them and wakes
 the loop (WS4). Keys, the pointer and the IME's records are X11's, read as
-Linux reads them (WS5-WS7, WS19). The selections are step 5's (WS12), and
-until then [`select`](#select) and [`paste`](#paste) change nothing.
+Linux reads them (WS5-WS7, WS19). The clipboard is Windows' and the
+primary selection the window's own (WS12): [`select`](#select) owns one,
+[`paste`](#paste) reads one.
 
 @docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, attention, notify, openLink, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasteOrImage, pasted, dropped, sound, events, take, Event, PointerEvent, DragPosition
 
@@ -243,7 +244,11 @@ type Pointer
     | MovePointer
 
 
-{-| The window owns a selection with this text (V53; step 5's, WS12). -}
+{-| The window owns a selection with this text (V53, WS12): the clipboard,
+or the primary selection, which on Windows is the window's own. The C
+answers why it could not (`docs/windows.md` WS34: 1 another program held
+the clipboard, 2 memory or the text's length), which is not yet passed on
+(W11). -}
 select : Selection -> Bytes -> Task x {}
 select which text =
     selectExtern
@@ -352,8 +357,8 @@ paddingExtern : Int -> Int -> Task x Int
 {-| The font at a new size in points (V50): every face sized again, the
 window kept at its size in pixels, so a `Resized` follows with the cells
 that now fit it; answers the new cell. The size is the screen's
-resolution's, as `open`'s: the system's (`PURITTY_DPI` sets it
-outright). -}
+resolution's, as `open`'s: the monitor the window is on's (WS30;
+`PURITTY_DPI` sets it outright). -}
 zoom : Int -> Task x Cell
 zoom points =
     zoomExtern points |> Task.map (\code -> { width = code // 65536, height = modBy 65536 code })
@@ -619,6 +624,7 @@ type Event
     | Dropped Bool
     | MenuChosen { menu : Int, index : Int }
     | Rescaled Cell
+    -- never decoded on Windows: X11's, which the app's loop shares
     | Note String
 
 
@@ -626,7 +632,8 @@ type Event
 `action` 0 press, 1 release, 2 motion; `button` as Ghostty numbers them
 (0 none, 1 left, 2 right, 3 middle, 4-7 the wheel's steps, 8-11 the
 rest), and a wheel step is a press with no release; `mods` as a key's; the
-position in pixels from the window's top left, negative or past its edge
+position in pixels from the cells' corner, inside the padding (R20),
+negative or past its edge
 while a held button drags outside it; and the window's size and the cell's
 in pixels, as they were when it came. -}
 type alias PointerEvent =

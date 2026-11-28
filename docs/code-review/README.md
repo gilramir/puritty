@@ -476,7 +476,7 @@ covered" sections. The larger gaps:
 | [W15](08-win32.md) | inaccuracy | confirmed | **fixed** A `Resized` in the old order can precede `Rescaled`, against the comment |
 | [W16](08-win32.md) | security | confirmed | **fixed** The secret's copy in Windows' buffer is freed unwiped |
 | [W17](08-win32.md) | design | confirmed | The signing script trusts the remote's word that the file is signed, and the exe carries no version resource |
-| [W18](08-win32.md) | inaccuracy | confirmed | Comments and names that no longer say what the code does; a little dead code |
+| [W18](08-win32.md) | inaccuracy | confirmed | **fixed** Comments and names that no longer say what the code does; a little dead code |
 | [MA13](09-app-main-a.md) | bug | confirmed | **fixed** Three more times are compared after gaps the clock cannot hold |
 | [MA14](09-app-main-a.md) | bug | confirmed | **fixed** Bells in a hidden `tmux -CC` tab are not heard, and switching to or reopening a tab can ring |
 | [MA15](09-app-main-a.md) | efficiency | confirmed | Every turn of the loop does several passes over all tabs, and every key parses every binding |

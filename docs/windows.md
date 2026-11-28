@@ -1312,3 +1312,21 @@ The code review's W8, W9, W14 and W15, in
 posted `WM_CHAR`, a monitor's scale changed while maximized, the icon
 removed from outside. beelink1's desktop was in use, so it was not
 driven; the exe cross-builds and the Windows suites pass there.
+
+## WS36 · Comments that say what the code does, and one stand-in table (2026-11-27)
+
+The code review's W18. `Window.geng`'s comments said the selections were
+still to come (they are WS12's), the zoom's resolution was the system's
+(it is the window's monitor's, WS30), and a pointer's position was from
+the window's top left (it is from the cells' corner, R20); `Note` is
+marked as X11's, never made here. In the C, the sound's comment was above
+the maximized state's function, `refit` had a header for a function
+that is gone, and `has_word` was unused, kept by a `(void)`: fixed and
+deleted. The monospace stand-ins were written in two lists and a third
+name: `pt_font_file` and the settings window's `font_used` tried Cascadia
+Mono, Consolas, Courier New, and `pt_fallback_family`, the family for a
+font FreeType cannot read, said Consolas, so the settings window could
+name Cascadia Mono where the renderer drew Consolas. Now one table,
+`stand_ins`, serves all three, and `pt_fallback_family` gives its first,
+Cascadia Mono, as `font_used` says. Not tested: comments; the exe
+cross-builds and the Windows suites pass on beelink1.
